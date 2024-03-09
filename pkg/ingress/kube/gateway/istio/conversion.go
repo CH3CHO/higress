@@ -20,7 +20,9 @@ import (
 	"crypto/tls"
 	"fmt"
 	"net"
+	"path"
 	"sort"
+	"strconv"
 	"strings"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -40,9 +42,14 @@ import (
 	"istio.io/istio/pkg/config/protocol"
 	"istio.io/istio/pkg/config/schema/gvk"
 	"istio.io/istio/pkg/config/schema/kind"
+	"istio.io/istio/pkg/env"
 	"istio.io/istio/pkg/ptr"
 	"istio.io/istio/pkg/slices"
 	"istio.io/istio/pkg/util/sets"
+)
+
+var (
+	podNamespace = env.RegisterStringVar("POD_NAMESPACE", "higress-system", "").Get()
 )
 
 // convertResources is the top level entrypoint to our conversion logic, computing the full state based
@@ -178,6 +185,20 @@ func convertVirtualService(r configContext) []config.Config {
 	return result
 }
 
+// Added by ingress
+func generateRouteName(obj config.Config, pos int) string {
+	if obj.Namespace == podNamespace {
+		return obj.Name
+	}
+	if pos == 0 {
+		return path.Join(obj.Namespace, obj.Name)
+	} else {
+		return path.Join(obj.Namespace, obj.Name, strconv.Itoa(pos))
+	}
+}
+
+// End added by ingress
+
 func convertHTTPRoute(r k8s.HTTPRouteRule, ctx configContext,
 	obj config.Config, pos int, enforceRefGrant bool,
 ) (*istio.HTTPRoute, *ConfigError) {
@@ -185,7 +206,10 @@ func convertHTTPRoute(r k8s.HTTPRouteRule, ctx configContext,
 	vs := &istio.HTTPRoute{}
 	// Auto-name the route. If upstream defines an explicit name, will use it instead
 	// The position within the route is unique
-	vs.Name = fmt.Sprintf("%s.%s.%d", obj.Namespace, obj.Name, pos)
+	// Updated by Higress
+	//vs.Name = fmt.Sprintf("%s.%s.%d", obj.Namespace, obj.Name, pos)
+	vs.Name = generateRouteName(obj, pos)
+	// Updated by Higress
 
 	for _, match := range r.Matches {
 		uri, err := createURIMatch(match)
