@@ -56,18 +56,68 @@ static_resources:
                             "@type": "type.googleapis.com/google.protobuf.StringValue"
                             value: |
                               {
-                                "provider": {
-                                  "type": "moonshot",
-                                  "domain": "api.moonshot.cn",
-                                  "apiToken": "****",
-                                  "timeout": 1200000,
-                                  "modelMapping": {
-                                    "gpt-3": "moonshot-v1-8k",
-                                    "gpt-35-turbo": "moonshot-v1-32k",
-                                    "gpt-4-turbo": "moonshot-v1-128k",
-                                    "*": "moonshot-v1-8k"
+                                "providers": [
+                                  {
+                                    "id": "ms-1",
+                                    "type": "moonshot",
+                                    "apiToken": "****",
+                                    "timeout": 1200000,
+                                    "modelMapping": {
+                                      "gpt-3": "moonshot-v1-8k",
+                                      "gpt-35-turbo": "moonshot-v1-32k",
+                                      "gpt-4-turbo": "moonshot-v1-128k",
+                                      "*": "moonshot-v1-8k"
+                                    }
                                   },
-                                }
+                                  {
+                                    "id": "ms-2",
+                                    "type": "moonshot",
+                                    "apiToken": "****",
+                                    "timeout": 1200000,
+                                    "modelMapping": {
+                                      "gpt-3": "moonshot-v1-8k",
+                                      "gpt-35-turbo": "moonshot-v1-32k",
+                                      "gpt-4-turbo": "moonshot-v1-128k",
+                                      "*": "moonshot-v1-8k"
+                                    },
+                                    "moonshotFileId": "abcd12345"
+                                  },
+                                  {
+                                    "id": "az-1",
+                                    "type": "azure",
+                                    "azureServiceUrl": "https://demo.openai.azure.com/openai/deployments/gpt-35-turbo/chat/completions?api-version=2024-02-15-preview",
+                                    "apiToken": "****",
+                                    "timeout": 1200000
+                                  },
+                                  {
+                                    "id": "qwen-1",
+                                    "type": "qwen",
+                                    "apiToken": "****",
+                                    "timeout": 1200000,
+                                    "modelMapping": {
+                                      "gpt-3": "qwen-turbo",
+                                      "gpt-35-turbo": "qwen-plus",
+                                      "gpt-4-turbo": "qwen-max",
+                                      "*": "qwen-turbo"
+                                    },
+                                  },
+                                  {
+                                    "id": "openai-1",
+                                    "type": "openai",
+                                    "apiToken": "****",
+                                    "timeout": 1200000
+                                  }
+                                ],
+                                "contexts": [
+                                  {
+                                    "id": "ctx-1",
+                                    "fileUrl": "http://file.default.svc.cluster.local/ai/context.txt",
+                                    "serviceName": "file.dns",
+                                    "servicePort": 80
+                                  }
+                                ],
+                                "activeProvider": "ms-1",
+                                "activeContext": "ctx-1"
                               }
                   - name: envoy.filters.http.router
   clusters:

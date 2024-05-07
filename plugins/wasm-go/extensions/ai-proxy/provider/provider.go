@@ -60,6 +60,7 @@ var (
 
 type Provider interface {
 	GetPointcuts() map[Pointcut]interface{}
+	InitializeContext(config ContextConfig) error
 	OnApiRequestHeaders(ctx wrapper.HttpContext, apiName ApiName, log wrapper.Log) (types.Action, error)
 	OnApiRequestBody(ctx wrapper.HttpContext, apiName ApiName, body []byte, log wrapper.Log) (types.Action, error)
 	OnApiResponseHeaders(ctx wrapper.HttpContext, apiName ApiName, log wrapper.Log) (types.Action, error)
@@ -67,8 +68,11 @@ type Provider interface {
 }
 
 type ProviderConfig struct {
+	// @Title zh-CN 唯一标识
+	// @Description zh-CN AI服务提供商的唯一标识
+	id string `required:"true" yaml:"id" json:"id"`
 	// @Title zh-CN AI服务提供商
-	// @Description zh-CN AI服务提供商类型，目前支持的取值为："moonshot"
+	// @Description zh-CN AI服务提供商类型，目前支持的取值为："moonshot"，"azure"，"qwen"，"openai"
 	typ string `required:"true" yaml:"type" json:"type"`
 	// @Title zh-CN API Token
 	// @Description zh-CN 在请求AI服务时用于认证的API Token。不同的AI服务提供商可能有不同的名称。例Moonshot AI的API Token称为API Key
@@ -85,12 +89,14 @@ type ProviderConfig struct {
 	// @Title zh-CN 模型名称映射表
 	// @Description zh-CN 用于将请求中的模型名称映射为目标AI服务商支持的模型名称。支持通过“*”来配置全局映射
 	modelMapping map[string]string `required:"false" yaml:"modelMapping" json:"modelMapping"`
-	// @Title zh-CN 模型对话上下文
-	// @Description zh-CN 配置一个外部获取对话上下文的文件来源，用于在AI请求中补充对话上下文
-	context *ContextConfig `required:"false" yaml:"context" json:"context"`
+}
+
+func (c *ProviderConfig) GetId() string {
+	return c.id
 }
 
 func (c *ProviderConfig) FromJson(json gjson.Result) {
+	c.id = json.Get("id").String()
 	c.typ = json.Get("type").String()
 	c.apiToken = json.Get("apiToken").String()
 	c.timeout = uint32(json.Get("timeout").Uint())
@@ -103,24 +109,17 @@ func (c *ProviderConfig) FromJson(json gjson.Result) {
 	for k, v := range json.Get("modelMapping").Map() {
 		c.modelMapping[k] = v.String()
 	}
-	contextJson := json.Get("context")
-	if contextJson.Exists() {
-		c.context = &ContextConfig{}
-		c.context.FromJson(contextJson)
-	}
 }
 
 func (c *ProviderConfig) Validate() error {
+	if c.id == "" {
+		return errors.New("missing id in provider config")
+	}
 	if c.apiToken == "" {
 		return errors.New("missing apiToken in provider config")
 	}
 	if c.timeout < 0 {
 		return errors.New("invalid timeout in config")
-	}
-	if c.context != nil {
-		if err := c.context.Validate(); err != nil {
-			return err
-		}
 	}
 
 	if c.typ == "" {

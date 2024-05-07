@@ -25,8 +25,7 @@ func (m *openaiProviderInitializer) ValidateConfig(config ProviderConfig) error 
 
 func (m *openaiProviderInitializer) CreateProvider(config ProviderConfig) (Provider, error) {
 	return &openaiProvider{
-		config:       config,
-		contextCache: createContextCache(&config),
+		config: config,
 	}, nil
 }
 
@@ -37,6 +36,11 @@ type openaiProvider struct {
 
 func (m *openaiProvider) GetPointcuts() map[Pointcut]interface{} {
 	return map[Pointcut]interface{}{PointcutOnRequestHeaders: nil}
+}
+
+func (m *openaiProvider) InitializeContext(config ContextConfig) error {
+	m.contextCache = createContextCache(config, m.config.timeout)
+	return nil
 }
 
 func (m *openaiProvider) OnApiRequestHeaders(ctx wrapper.HttpContext, apiName ApiName, log wrapper.Log) (types.Action, error) {

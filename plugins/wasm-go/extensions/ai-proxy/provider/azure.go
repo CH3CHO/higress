@@ -34,9 +34,8 @@ func (m *azureProviderInitializer) CreateProvider(config ProviderConfig) (Provid
 		serviceUrl = u
 	}
 	return &azureProvider{
-		config:       config,
-		serviceUrl:   serviceUrl,
-		contextCache: createContextCache(&config),
+		config:     config,
+		serviceUrl: serviceUrl,
 	}, nil
 }
 
@@ -49,6 +48,11 @@ type azureProvider struct {
 
 func (m *azureProvider) GetPointcuts() map[Pointcut]interface{} {
 	return map[Pointcut]interface{}{PointcutOnRequestHeaders: nil, PointcutOnRequestBody: nil}
+}
+
+func (m *azureProvider) InitializeContext(config ContextConfig) error {
+	m.contextCache = createContextCache(config, m.config.timeout)
+	return nil
 }
 
 func (m *azureProvider) OnApiRequestHeaders(ctx wrapper.HttpContext, apiName ApiName, log wrapper.Log) (types.Action, error) {

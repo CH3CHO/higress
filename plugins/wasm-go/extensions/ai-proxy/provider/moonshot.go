@@ -23,9 +23,6 @@ type moonshotProviderInitializer struct {
 }
 
 func (m *moonshotProviderInitializer) ValidateConfig(config ProviderConfig) error {
-	if config.moonshotFileId != "" && config.context != nil {
-		return errors.New("moonshotFileId and context cannot be configured at the same time")
-	}
 	return nil
 }
 
@@ -35,7 +32,6 @@ func (m *moonshotProviderInitializer) CreateProvider(config ProviderConfig) (Pro
 		client: wrapper.NewClusterClient(wrapper.RouteCluster{
 			Host: moonshotDomain,
 		}),
-		contextCache: createContextCache(&config),
 	}, nil
 }
 
@@ -49,6 +45,14 @@ type moonshotProvider struct {
 
 func (m *moonshotProvider) GetPointcuts() map[Pointcut]interface{} {
 	return map[Pointcut]interface{}{PointcutOnRequestHeaders: nil, PointcutOnRequestBody: nil}
+}
+
+func (m *moonshotProvider) InitializeContext(config ContextConfig) error {
+	if m.config.moonshotFileId != "" {
+		return errors.New("moonshotFileId and activeContext are mutually exclusive")
+	}
+	m.contextCache = createContextCache(config, m.config.timeout)
+	return nil
 }
 
 func (m *moonshotProvider) OnApiRequestHeaders(ctx wrapper.HttpContext, apiName ApiName, log wrapper.Log) (types.Action, error) {

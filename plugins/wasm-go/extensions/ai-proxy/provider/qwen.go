@@ -35,8 +35,7 @@ func (m *qwenProviderInitializer) ValidateConfig(config ProviderConfig) error {
 
 func (m *qwenProviderInitializer) CreateProvider(config ProviderConfig) (Provider, error) {
 	return &qwenProvider{
-		config:       config,
-		contextCache: createContextCache(&config),
+		config: config,
 	}, nil
 }
 
@@ -48,6 +47,11 @@ type qwenProvider struct {
 
 func (m *qwenProvider) GetPointcuts() map[Pointcut]interface{} {
 	return map[Pointcut]interface{}{PointcutOnRequestHeaders: nil, PointcutOnRequestBody: nil, PointcutOnResponseHeaders: nil, PointcutOnResponseBody: nil}
+}
+
+func (m *qwenProvider) InitializeContext(config ContextConfig) error {
+	m.contextCache = createContextCache(config, m.config.timeout)
+	return nil
 }
 
 func (m *qwenProvider) OnApiRequestHeaders(ctx wrapper.HttpContext, apiName ApiName, log wrapper.Log) (types.Action, error) {
@@ -92,7 +96,7 @@ func (m *qwenProvider) OnApiRequestBody(ctx wrapper.HttpContext, apiName ApiName
 
 	ctx.SetContext(ctxKeyStreaming, request.Stream)
 
-	if m.config.context == nil {
+	if m.contextCache == nil {
 		qwenRequest := m.buildQwenTextGenerationRequest(request)
 		return types.ActionContinue, replaceJsonRequestBody(qwenRequest, log)
 	}

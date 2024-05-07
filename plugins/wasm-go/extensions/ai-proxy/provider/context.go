@@ -11,6 +11,9 @@ import (
 )
 
 type ContextConfig struct {
+	// @Title zh-CN 唯一标识
+	// @Description zh-CN 对话上下文的唯一标识
+	id string `required:"true" yaml:"id" json:"id"`
 	// @Title zh-CN 文件URL
 	// @Description zh-CN 用于获取对话上下文的文件的URL。目前仅支持HTTP和HTTPS协议，纯文本格式文件
 	fileUrl string `required:"true" yaml:"url" json:"url"`
@@ -24,13 +27,21 @@ type ContextConfig struct {
 	fileUrlObj *url.URL `yaml:"-"`
 }
 
+func (c *ContextConfig) GetId() string {
+	return c.id
+}
+
 func (c *ContextConfig) FromJson(json gjson.Result) {
+	c.id = json.Get("id").String()
 	c.fileUrl = json.Get("fileUrl").String()
 	c.serviceName = json.Get("serviceName").String()
 	c.servicePort = json.Get("servicePort").Int()
 }
 
 func (c *ContextConfig) Validate() error {
+	if c.id == "" {
+		return errors.New("missing id in context config")
+	}
 	if c.fileUrl == "" {
 		return errors.New("missing fileUrl in context config")
 	}
@@ -81,11 +92,7 @@ func (c *contextCache) GetContent(callback func(string, error), log wrapper.Log)
 	}, c.timeout)
 }
 
-func createContextCache(providerConfig *ProviderConfig) *contextCache {
-	contextConfig := providerConfig.context
-	if contextConfig == nil {
-		return nil
-	}
+func createContextCache(contextConfig ContextConfig, timeout uint32) *contextCache {
 	fileUrlObj, _ := url.Parse(contextConfig.fileUrl)
 	cluster := plainCluster{
 		serviceName: contextConfig.serviceName,
@@ -95,6 +102,6 @@ func createContextCache(providerConfig *ProviderConfig) *contextCache {
 	return &contextCache{
 		client:  wrapper.NewClusterClient(cluster),
 		fileUrl: fileUrlObj,
-		timeout: providerConfig.timeout,
+		timeout: timeout,
 	}
 }
