@@ -32,6 +32,8 @@ const (
 	CustomLogKey       = "custom_log"
 	AILogKey           = "ai_log"
 	TraceSpanTagPrefix = "trace_span_tag."
+
+	streamingActionKey = "streaming_action"
 )
 
 type HttpContext interface {
@@ -68,6 +70,9 @@ type HttpContext interface {
 	SetRequestBodyBufferLimit(byteSize uint32)
 	// Note that this parameter affects the gateway's memory usage! Support setting a maximum buffer size for each response body individually in response phase.
 	SetResponseBodyBufferLimit(byteSize uint32)
+
+	SetStreamingAction(action types.Action)
+	GetStreamingAction(defaultAction types.Action, reset bool) types.Action
 }
 
 type ParseConfigFunc[PluginConfig any] func(json gjson.Result, config *PluginConfig, log Log) error
@@ -563,7 +568,7 @@ func (ctx *CommonHttpCtx[PluginConfig]) OnHttpRequestBody(bodySize int, endOfStr
 			ctx.plugin.vm.log.Warnf("replace request body chunk failed: %v", err)
 			return types.ActionContinue
 		}
-		return types.ActionContinue
+		return ctx.GetStreamingAction(types.ActionContinue, true)
 	}
 	if ctx.plugin.vm.onHttpRequestBody != nil {
 		ctx.requestBodySize += bodySize
@@ -609,7 +614,7 @@ func (ctx *CommonHttpCtx[PluginConfig]) OnHttpResponseBody(bodySize int, endOfSt
 			ctx.plugin.vm.log.Warnf("replace response body chunk failed: %v", err)
 			return types.ActionContinue
 		}
-		return types.ActionContinue
+		return ctx.GetStreamingAction(types.ActionContinue, true)
 	}
 	if ctx.plugin.vm.onHttpResponseBody != nil {
 		ctx.responseBodySize += bodySize
@@ -634,4 +639,22 @@ func (ctx *CommonHttpCtx[PluginConfig]) OnHttpStreamDone() {
 		return
 	}
 	ctx.plugin.vm.onHttpStreamDone(ctx, *ctx.config, ctx.plugin.vm.log)
+}
+
+func (ctx *CommonHttpCtx[PluginConfig]) SetStreamingAction(action types.Action) {
+	ctx.SetContext(streamingActionKey, action)
+}
+
+func (ctx *CommonHttpCtx[PluginConfig]) GetStreamingAction(defaultAction types.Action, reset bool) types.Action {
+	rawAction := ctx.GetContext(streamingActionKey)
+	if rawAction == nil {
+		return defaultAction
+	}
+	if reset {
+		ctx.SetContext(streamingActionKey, nil)
+	}
+	if action, ok := rawAction.(types.Action); ok {
+		return action
+	}
+	return defaultAction
 }

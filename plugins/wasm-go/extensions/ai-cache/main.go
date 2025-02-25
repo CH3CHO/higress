@@ -4,12 +4,14 @@ package main
 
 import (
 	"strings"
+	"time"
 
 	"github.com/alibaba/higress/plugins/wasm-go/extensions/ai-cache/config"
 	"github.com/alibaba/higress/plugins/wasm-go/pkg/wrapper"
 	"github.com/higress-group/proxy-wasm-go-sdk/proxywasm"
 	"github.com/higress-group/proxy-wasm-go-sdk/proxywasm/types"
 	"github.com/tidwall/gjson"
+	"github.com/tidwall/resp"
 )
 
 const (
@@ -193,5 +195,35 @@ func onHttpResponseBody(ctx wrapper.HttpContext, c config.PluginConfig, chunk []
 
 	cacheResponse(ctx, c, key.(string), value, log)
 	uploadEmbeddingAndAnswer(ctx, c, key.(string), value, log)
+
+	pendingRequests := 2
+	cacheProvider := c.GetCacheProvider()
+	now := time.Now()
+	err = cacheProvider.Set("lastProcessedTime1", now.Format(time.RFC3339), func(response resp.Value) {
+		log.Infof("[onHttpResponseBody] set lastProcessedTime1 response: %v", response)
+		pendingRequests--
+		log.Infof("[onHttpResponseBody] pendingRequests in lastProcessedTime1: %d", pendingRequests)
+		if pendingRequests == 0 {
+			_ = proxywasm.ResumeHttpRequest()
+		}
+	})
+	if err != nil {
+		log.Errorf("[onHttpResponseBody] set lastProcessedTime1 failed, error: %v", err)
+		return chunk
+	}
+	err = cacheProvider.Set("lastProcessedTime2", now.Format("2006-01-02 15:04:05"), func(response resp.Value) {
+		log.Infof("[onHttpResponseBody] set lastProcessedTime2 response: %v", response)
+		pendingRequests--
+		log.Infof("[onHttpResponseBody] pendingRequests in lastProcessedTime2: %d", pendingRequests)
+		if pendingRequests == 0 {
+			_ = proxywasm.ResumeHttpRequest()
+		}
+	})
+	if err != nil {
+		log.Errorf("[onHttpResponseBody] set lastProcessedTime2 failed, error: %v", err)
+		return chunk
+	}
+	ctx.SetStreamingAction(types.ActionPause)
+
 	return chunk
 }
