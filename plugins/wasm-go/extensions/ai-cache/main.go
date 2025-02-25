@@ -4,12 +4,14 @@ package main
 
 import (
 	"strings"
+	"time"
 
 	"github.com/alibaba/higress/plugins/wasm-go/extensions/ai-cache/config"
 	"github.com/alibaba/higress/plugins/wasm-go/pkg/wrapper"
 	"github.com/higress-group/proxy-wasm-go-sdk/proxywasm"
 	"github.com/higress-group/proxy-wasm-go-sdk/proxywasm/types"
 	"github.com/tidwall/gjson"
+	"github.com/tidwall/resp"
 )
 
 const (
@@ -193,5 +195,17 @@ func onHttpResponseBody(ctx wrapper.HttpContext, c config.PluginConfig, chunk []
 
 	cacheResponse(ctx, c, key.(string), value, log)
 	uploadEmbeddingAndAnswer(ctx, c, key.(string), value, log)
+
+	cacheProvider := c.GetCacheProvider()
+	err = cacheProvider.Set("lastProcessedTime", time.Now().Format(time.RFC3339), func(response resp.Value) {
+		log.Infof("[onHttpResponseBody] set lastProcessedTime response: %v", response)
+		_ = proxywasm.ResumeHttpRequest()
+	})
+	if err != nil {
+		log.Errorf("[onHttpResponseBody] set lastProcessedTime failed, error: %v", err)
+		return chunk
+	}
+	ctx.SetStreamingAction(types.ActionPause)
+
 	return chunk
 }
