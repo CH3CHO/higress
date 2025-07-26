@@ -40,6 +40,7 @@ import (
 	"istio.io/istio/pkg/cluster"
 	"istio.io/istio/pkg/config"
 	"istio.io/istio/pkg/config/constants"
+	"istio.io/istio/pkg/config/protocol"
 	"istio.io/istio/pkg/config/schema/collection"
 	"istio.io/istio/pkg/config/schema/gvk"
 	"istio.io/istio/pkg/config/schema/kind"
@@ -54,6 +55,7 @@ import (
 	extlisterv1 "github.com/alibaba/higress/client/pkg/listers/extensions/v1alpha1"
 	netlisterv1 "github.com/alibaba/higress/client/pkg/listers/networking/v1"
 	"github.com/alibaba/higress/pkg/cert"
+	higresscfg "github.com/alibaba/higress/pkg/config"
 	higressconst "github.com/alibaba/higress/pkg/config/constants"
 	"github.com/alibaba/higress/pkg/ingress/kube/annotations"
 	"github.com/alibaba/higress/pkg/ingress/kube/common"
@@ -69,6 +71,7 @@ import (
 	"github.com/alibaba/higress/pkg/ingress/kube/wasmplugin"
 	. "github.com/alibaba/higress/pkg/ingress/log"
 	"github.com/alibaba/higress/pkg/kube"
+	"github.com/alibaba/higress/registry"
 	"github.com/alibaba/higress/registry/memory"
 	"github.com/alibaba/higress/registry/reconcile"
 )
@@ -93,10 +96,19 @@ var (
 			"BODY":   "ALL_BODY",
 		}
 	}
+
+	directServiceRegistryTypes = map[string]bool{
+		string(registry.Static): true,
+		string(registry.DNS):    true,
+	}
 )
 
 const (
 	DefaultMcpbridgeName = "default"
+
+	directServicePlaceholderGatewayName        = "higress-gw-placeholder-for-direct-services"
+	directServicePlaceholderVirtualServiceName = "higress-vs-placeholder-for-direct-services"
+	directServicePlaceholderRouteName          = "higress-route-placeholder-for-direct-services"
 )
 
 type IngressConfig struct {
@@ -481,7 +493,46 @@ func (m *IngressConfig) convertGateways(configs []common.WrapperConfig) []config
 			Spec: gateway.Gateway,
 		})
 	}
+
+	if cfg := m.createGatewayForDirectServices(); cfg != nil {
+		out = append(out, *cfg)
+	}
+
 	return out
+}
+
+func (m *IngressConfig) createGatewayForDirectServices() *config.Config {
+	if !higresscfg.PushAllDirectServices {
+		return nil
+	}
+
+	options := m.commonOptions
+
+	// Create a gateway for dangling cluster.
+	gateway := &networking.Gateway{}
+	if options.GatewaySelectorKey != "" {
+		gateway.Selector = map[string]string{options.GatewaySelectorKey: options.GatewaySelectorValue}
+	}
+	port := higresscfg.DirectServiceGatewayPort
+	if port < 1 || port > 65535 {
+		port = higresscfg.DefaultDirectServiceGatewayPort
+	}
+	gateway.Servers = append(gateway.Servers, &networking.Server{
+		Bind: "127.0.0.1",
+		Port: &networking.Port{
+			Number:   uint32(port),
+			Protocol: string(protocol.HTTP),
+		},
+		Hosts: []string{"*"},
+	})
+	return &config.Config{
+		Meta: config.Meta{
+			GroupVersionKind: gvk.Gateway,
+			Name:             directServicePlaceholderGatewayName,
+			Namespace:        m.namespace,
+		},
+		Spec: gateway,
+	}
 }
 
 func (m *IngressConfig) convertVirtualService(configs []common.WrapperConfig) []config.Config {
@@ -606,9 +657,88 @@ func (m *IngressConfig) convertVirtualService(configs []common.WrapperConfig) []
 		}
 	}
 
+	if cfg := m.appendVirtualServiceForDirectServices(); cfg != nil {
+		out = append(out, *cfg)
+	}
+
 	// We generate some specific envoy filter here to avoid duplicated computation.
 	m.convertEnvoyFilter(&convertOptions)
 	return out
+}
+
+func (m *IngressConfig) appendVirtualServiceForDirectServices() *config.Config {
+	if !higresscfg.PushAllDirectServices {
+		return nil
+	}
+
+	if m.RegistryReconciler == nil {
+		// No registry reconciler, means no MCP cluster at all.
+		return nil
+	}
+
+	mcpServiceWrappers := m.RegistryReconciler.GetAllServiceWrapper()
+	if len(mcpServiceWrappers) == 0 {
+		return nil
+	}
+
+	destinations := make([]*networking.HTTPRouteDestination, 0)
+	for _, serviceWrapper := range mcpServiceWrappers {
+		if !directServiceRegistryTypes[serviceWrapper.RegistryType] {
+			continue
+		}
+
+		se := serviceWrapper.ServiceEntry
+		if se == nil {
+			continue
+		}
+
+		for _, host := range se.Hosts {
+			for _, port := range se.Ports {
+				if port.Number == 0 {
+					continue
+				}
+				destinations = append(destinations, &networking.HTTPRouteDestination{
+					Destination: &networking.Destination{
+						Host: host,
+						Port: &networking.PortSelector{
+							Number: port.Number,
+						},
+					},
+					Weight: 1})
+			}
+		}
+	}
+
+	if len(destinations) == 0 {
+		// No fixed MCP clusters found.
+		return nil
+	}
+
+	vs := &networking.VirtualService{
+		Gateways: []string{directServicePlaceholderGatewayName},
+		Hosts:    []string{"*"},
+		Http: []*networking.HTTPRoute{
+			{
+				Name: directServicePlaceholderVirtualServiceName,
+				Match: []*networking.HTTPMatchRequest{
+					{
+						Uri: &networking.StringMatch{MatchType: &networking.StringMatch_Exact{
+							Exact: "/",
+						}},
+					},
+				},
+				Route: destinations,
+			},
+		},
+	}
+	return &config.Config{
+		Meta: config.Meta{
+			GroupVersionKind: gvk.VirtualService,
+			Name:             directServicePlaceholderRouteName,
+			Namespace:        m.namespace,
+		},
+		Spec: vs,
+	}
 }
 
 func (m *IngressConfig) convertEnvoyFilter(convertOptions *common.ConvertOptions) {

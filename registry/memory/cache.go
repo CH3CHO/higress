@@ -21,8 +21,6 @@ import (
 	"sync"
 	"time"
 
-	higressconfig "github.com/alibaba/higress/pkg/config"
-	"github.com/alibaba/higress/registry"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/types/known/structpb"
 	"google.golang.org/protobuf/types/known/wrapperspb"
@@ -33,7 +31,10 @@ import (
 	"istio.io/pkg/log"
 
 	"github.com/alibaba/higress/pkg/common"
+	higressconfig "github.com/alibaba/higress/pkg/config"
+	"github.com/alibaba/higress/pkg/config/constants"
 	ingress "github.com/alibaba/higress/pkg/ingress/kube/common"
+	"github.com/alibaba/higress/registry"
 )
 
 type Cache interface {
@@ -321,7 +322,7 @@ func (s *store) GetAllDestinationRuleWrapper() []*ingress.WrapperDestinationRule
 		dr := cfg.Spec.(*v1alpha3.DestinationRule)
 		drwList = append(drwList, &ingress.WrapperDestinationRule{
 			DestinationRule: dr,
-			ServiceKey:      ingress.ServiceKey{Namespace: "mcp", Name: dr.Host, ServiceFQDN: dr.Host},
+			ServiceKey:      ingress.ServiceKey{Namespace: constants.McpNamespace, Name: dr.Host, ServiceFQDN: dr.Host},
 		})
 	}
 

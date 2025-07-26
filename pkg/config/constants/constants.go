@@ -27,3 +27,5 @@ const ManagedGatewayController = "higress.io/gateway-controller"
 const RegistryTypeLabelKey = "higress-registry-type"
 
 const RegistryNameLabelKey = "higress-registry-name"
+
+const McpNamespace = "mcp"

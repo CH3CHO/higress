@@ -17,8 +17,6 @@ package common
 import (
 	"strings"
 
-	"github.com/alibaba/higress/pkg/cert"
-	"github.com/alibaba/higress/pkg/ingress/kube/annotations"
 	networking "istio.io/api/networking/v1alpha3"
 	"istio.io/istio/pilot/pkg/model"
 	"istio.io/istio/pkg/cluster"
@@ -26,6 +24,10 @@ import (
 	gatewaytool "istio.io/istio/pkg/config/gateway"
 	listerv1 "k8s.io/client-go/listers/core/v1"
 	"k8s.io/client-go/tools/cache"
+
+	"github.com/alibaba/higress/pkg/cert"
+	higressconst "github.com/alibaba/higress/pkg/config/constants"
+	"github.com/alibaba/higress/pkg/ingress/kube/annotations"
 )
 
 type ServiceKey struct {
@@ -54,7 +56,7 @@ type WrapperGateway struct {
 
 func CreateMcpServiceKey(host string, portNumber int32) ServiceKey {
 	return ServiceKey{
-		Namespace:   "mcp",
+		Namespace:   higressconst.McpNamespace,
 		Name:        host,
 		ServiceFQDN: host,
 		Port:        portNumber,
