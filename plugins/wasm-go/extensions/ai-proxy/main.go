@@ -100,7 +100,24 @@ func init() {
 		wrapper.ProcessStreamingResponseBody(onStreamingResponseBody),
 		wrapper.ProcessResponseBody(onHttpResponseBody),
 	)
+	// Start - Added by Trip.com
+	addPathSuffixWithoutV1()
+	// End - Added by Trip.com
 }
+
+// Start - Added by Trip.com
+func addPathSuffixWithoutV1() {
+	var extraPathSuffixToApiName []pair[string, provider.ApiName]
+	for _, p := range pathSuffixToApiName {
+		if strings.HasPrefix(string(p.value), "openai/") && strings.HasPrefix(p.key, "/v1/") {
+			// Add the same suffix without /v1
+			extraPathSuffixToApiName = append(extraPathSuffixToApiName, pair[string, provider.ApiName]{key: p.key[3:], value: p.value})
+		}
+	}
+	pathSuffixToApiName = append(pathSuffixToApiName, extraPathSuffixToApiName...)
+}
+
+// End - Added by Trip.com
 
 func parseGlobalConfig(json gjson.Result, pluginConfig *config.PluginConfig) error {
 	log.Debugf("loading global config: %s", json.String())
