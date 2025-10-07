@@ -36,7 +36,7 @@ func TestTemplateProcessor_ProcessConfig(t *testing.T) {
 	}
 
 	// Mock value getter function
-	getValue := func(valueType, namespace, name, key string) (string, error) {
+	getValue := func(valueType TemplateResourceType, namespace, name, key string) (string, error) {
 		fullKey := fmt.Sprintf("%s.%s/%s.%s", valueType, namespace, name, key)
 		fmt.Printf("Getting value for %s", fullKey)
 		if value, exists := values[fullKey]; exists {
@@ -93,7 +93,7 @@ func TestTemplateProcessor_ProcessConfig(t *testing.T) {
 			expectError: false,
 		},
 		{
-			name: "auth config with default namespace",
+			name: "auth config with default defaultNamespace",
 			wasmPlugin: &extensions.WasmPlugin{
 				PluginName: "test-plugin",
 				PluginConfig: makeStructValue(t, map[string]interface{}{

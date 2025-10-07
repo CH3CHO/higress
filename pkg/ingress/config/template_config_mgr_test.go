@@ -61,9 +61,9 @@ func (m *mockXdsUpdater) ConfigUpdate(req *istiomodel.PushRequest) {
 	m.lastPushRequest = req
 }
 
-func TestSecretConfigMgr(t *testing.T) {
+func TestTemplateConfigMgr(t *testing.T) {
 	updater := &mockXdsUpdater{}
-	mgr := NewSecretConfigMgr(updater)
+	mgr := NewTemplateConfigMgr(updater)
 
 	// Test AddConfig
 	t.Run("AddConfig", func(t *testing.T) {
@@ -77,9 +77,9 @@ func TestSecretConfigMgr(t *testing.T) {
 
 		err := mgr.AddConfig("default/test-secret", wasmPlugin)
 		assert.NoError(t, err)
-		assert.True(t, mgr.IsSecretWatched("default/test-secret"))
+		assert.True(t, mgr.isResourceWatched("default/test-secret"))
 
-		configs := mgr.GetConfigsForSecret("default/test-secret")
+		configs := mgr.getConfigsForResource("default/test-secret")
 		assert.Len(t, configs, 1)
 		assert.Equal(t, kind.WasmPlugin, configs[0].Kind)
 		assert.Equal(t, "test-plugin", configs[0].Name)
@@ -98,8 +98,8 @@ func TestSecretConfigMgr(t *testing.T) {
 
 		err := mgr.DeleteConfig(wasmPlugin)
 		assert.NoError(t, err)
-		assert.False(t, mgr.IsSecretWatched("default/test-secret"))
-		assert.Empty(t, mgr.GetConfigsForSecret("default/test-secret"))
+		assert.False(t, mgr.isResourceWatched("default/test-secret"))
+		assert.Empty(t, mgr.getConfigsForResource("default/test-secret"))
 	})
 
 	// Test HandleSecretChange

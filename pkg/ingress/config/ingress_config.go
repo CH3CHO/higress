@@ -164,19 +164,19 @@ type IngressConfig struct {
 	httpsConfigMgr *cert.ConfigMgr
 
 	commonOptions common.Options
+
 	// templateProcessor processes template variables in config
 	templateProcessor *TemplateProcessor
-
-	// secretConfigMgr manages secret dependencies
-	secretConfigMgr *SecretConfigMgr
+	// templateConfigMgr manages resources referred by template variables
+	templateConfigMgr *TemplateConfigMgr
 
 	mcpServerCache mcpserver.McpServerCache
 }
 
-// getSecretValue implements the getValue function for secret references
-func (m *IngressConfig) getSecretValue(valueType, namespace, name, key string) (string, error) {
-	if valueType != "secret" {
-		return "", fmt.Errorf("unsupported value type: %s", valueType)
+// getTemplateValue implements the getValue function for template variable references
+func (m *IngressConfig) getTemplateValue(resourceType TemplateResourceType, namespace, name, key string) (string, error) {
+	if resourceType != "secret" {
+		return "", fmt.Errorf("unsupported value type: %s", resourceType)
 	}
 
 	m.mutex.RLock()
@@ -215,11 +215,10 @@ func NewIngressConfig(localKubeClient kube.Client, xdsUpdater istiomodel.XDSUpda
 		commonOptions:              options,
 	}
 
-	// Initialize secret config manager
-	config.secretConfigMgr = NewSecretConfigMgr(xdsUpdater)
-
+	// Initialize template config manager
+	config.templateConfigMgr = NewTemplateConfigMgr(xdsUpdater)
 	// Initialize template processor with value getter function
-	config.templateProcessor = NewTemplateProcessor(config.getSecretValue, namespace, config.secretConfigMgr)
+	config.templateProcessor = NewTemplateProcessor(config.getTemplateValue, namespace, config.templateConfigMgr)
 
 	mcpbridgeController := mcpbridge.NewController(localKubeClient, options)
 	mcpbridgeController.AddEventHandler(config.AddOrUpdateMcpBridge, config.DeleteMcpBridge)
@@ -241,8 +240,8 @@ func NewIngressConfig(localKubeClient kube.Client, xdsUpdater istiomodel.XDSUpda
 	config.http2rpcController = http2rpcController
 	config.http2rpcLister = http2rpcController.Lister()
 
-	higressConfigController := configmap.NewController(localKubeClient, clusterId, namespace)
-	config.configmapMgr = configmap.NewConfigmapMgr(xdsUpdater, namespace, higressConfigController, higressConfigController.Lister())
+	configMapController := configmap.NewController(localKubeClient, clusterId, namespace)
+	config.configmapMgr = configmap.NewConfigmapMgr(xdsUpdater, namespace, configMapController, configMapController.Lister())
 	config.configmapMgr.RegisterMcpServerProvider(&config.mcpServerCache)
 
 	httpsConfigMgr, _ := cert.NewConfigMgr(namespace, localKubeClient.Kube())
@@ -284,7 +283,9 @@ func (m *IngressConfig) RegisterEventHandler(kind config.GroupVersionKind, f ist
 func (m *IngressConfig) AddLocalCluster(options common.Options) {
 	secretController := secret.NewController(m.localKubeClient, options)
 	secretController.AddEventHandler(m.ReflectSecretChanges)
-	secretController.AddEventHandler(m.secretConfigMgr.HandleSecretChange)
+	secretController.AddEventHandler(func(name util.ClusterNamespacedName) {
+		m.templateConfigMgr.HandleResourceChange(TemplateResourceTypeSecret, name)
+	})
 
 	var ingressController common.IngressController
 	v1 := common.V1Available(m.localKubeClient)
@@ -338,7 +339,7 @@ func (m *IngressConfig) List(typ config.GroupVersionKind, namespace string) []co
 func (m *IngressConfig) listFromIngressControllers(typ config.GroupVersionKind, namespace string) []config.Config {
 	// Currently, only support list all namespaces gateways or virtualservices.
 	if namespace != "" {
-		IngressLog.Warnf("ingress store only support type %s of all namespace, request namespace: %s", typ, namespace)
+		IngressLog.Warnf("ingress store only support type %s of all defaultNamespace, request defaultNamespace: %s", typ, namespace)
 		return nil
 	}
 
@@ -594,7 +595,7 @@ func (m *IngressConfig) convertVirtualService(configs []common.WrapperConfig) []
 		}
 
 		cleanHost := common.CleanHost(host)
-		// namespace/name, name format: (istio cluster id)-host
+		// defaultNamespace/name, name format: (istio cluster id)-host
 		gateways := []string{
 			m.namespace + "/" +
 				common.CreateConvertedName(m.clusterId.String(), cleanHost),
@@ -1214,7 +1215,7 @@ func (m *IngressConfig) AddOrUpdateWasmPlugin(clusterNamespacedName util.Cluster
 	}
 	wasmPlugin, err := m.wasmPluginLister.WasmPlugins(clusterNamespacedName.Namespace).Get(clusterNamespacedName.Name)
 	if err != nil {
-		IngressLog.Errorf("wasmPlugin is not found, namespace:%s, name:%s",
+		IngressLog.Errorf("wasmPlugin is not found, defaultNamespace:%s, name:%s",
 			clusterNamespacedName.Namespace, clusterNamespacedName.Name)
 		return
 	}
@@ -1293,7 +1294,7 @@ func (m *IngressConfig) AddOrUpdateWasmPluginMatchRule(clusterNamespacedName uti
 	}
 	wasmPluginMatchRule, err := m.wasmPluginMatchRuleLister.WasmPluginMatchRules(clusterNamespacedName.Namespace).Get(clusterNamespacedName.Name)
 	if err != nil {
-		IngressLog.Errorf("wasmPluginMatchRule is not found, namespace:%s, name:%s",
+		IngressLog.Errorf("wasmPluginMatchRule is not found, defaultNamespace:%s, name:%s",
 			clusterNamespacedName.Namespace, clusterNamespacedName.Name)
 		return
 	}
@@ -1354,7 +1355,7 @@ func (m *IngressConfig) AddOrUpdateMcpBridge(clusterNamespacedName util.ClusterN
 	}
 	mcpbridge, err := m.mcpbridgeLister.McpBridges(clusterNamespacedName.Namespace).Get(clusterNamespacedName.Name)
 	if err != nil {
-		IngressLog.Errorf("Mcpbridge is not found, namespace:%s, name:%s",
+		IngressLog.Errorf("Mcpbridge is not found, defaultNamespace:%s, name:%s",
 			clusterNamespacedName.Namespace, clusterNamespacedName.Name)
 		return
 	}
@@ -1445,7 +1446,7 @@ func (m *IngressConfig) AddOrUpdateHttp2Rpc(clusterNamespacedName util.ClusterNa
 	}
 	http2rpc, err := m.http2rpcLister.Http2Rpcs(clusterNamespacedName.Namespace).Get(clusterNamespacedName.Name)
 	if err != nil {
-		IngressLog.Errorf("http2rpc is not found, namespace:%s, name:%s",
+		IngressLog.Errorf("http2rpc is not found, defaultNamespace:%s, name:%s",
 			clusterNamespacedName.Namespace, clusterNamespacedName.Name)
 		return
 	}

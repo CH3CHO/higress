@@ -20,25 +20,45 @@ import (
 	"regexp"
 	"strings"
 
-	. "github.com/alibaba/higress/v2/pkg/ingress/log"
 	"google.golang.org/protobuf/proto"
 	"istio.io/istio/pkg/config"
+
+	. "github.com/alibaba/higress/v2/pkg/ingress/log"
 )
+
+type TemplateResourceType string
+
+const (
+	TemplateResourceTypeConfigMap = "configmap"
+	TemplateResourceTypeSecret    = "secret"
+)
+
+var (
+	supportedTemplateResourceTypes = map[TemplateResourceType]bool{
+		TemplateResourceTypeConfigMap: true,
+		TemplateResourceTypeSecret:    true,
+	}
+	// Find all variables in format:
+	// ${type.name.key} or ${type.defaultNamespace/name.key}
+	templateVariableRegex = regexp.MustCompile(`\$\{([^.}]+)\.(?:([^/]+)/)?([^.}]+)\.([^}]+)}`)
+)
+
+type templateValueGetter func(valueType TemplateResourceType, namespace, name, key string) (string, error)
 
 // TemplateProcessor handles template substitution in configs
 type TemplateProcessor struct {
 	// getValue is a function that retrieves values by type, namespace, name and key
-	getValue        func(valueType, namespace, name, key string) (string, error)
-	namespace       string
-	secretConfigMgr *SecretConfigMgr
+	getValue          templateValueGetter
+	defaultNamespace  string
+	templateConfigMgr *TemplateConfigMgr
 }
 
 // NewTemplateProcessor creates a new TemplateProcessor with the given value getter function
-func NewTemplateProcessor(getValue func(valueType, namespace, name, key string) (string, error), namespace string, secretConfigMgr *SecretConfigMgr) *TemplateProcessor {
+func NewTemplateProcessor(getValue templateValueGetter, defaultNamespace string, templateConfigMgr *TemplateConfigMgr) *TemplateProcessor {
 	return &TemplateProcessor{
-		getValue:        getValue,
-		namespace:       namespace,
-		secretConfigMgr: secretConfigMgr,
+		getValue:          getValue,
+		defaultNamespace:  defaultNamespace,
+		templateConfigMgr: templateConfigMgr,
 	}
 }
 
@@ -51,15 +71,12 @@ func (p *TemplateProcessor) ProcessConfig(cfg *config.Config) error {
 	}
 
 	configStr := string(jsonBytes)
-	// Find all value references in format:
-	// ${type.name.key} or ${type.namespace/name.key}
-	valueRegex := regexp.MustCompile(`\$\{([^.}]+)\.(?:([^/]+)/)?([^.}]+)\.([^}]+)\}`)
-	matches := valueRegex.FindAllStringSubmatch(configStr, -1)
+	matches := templateVariableRegex.FindAllStringSubmatch(configStr, -1)
 	// If there are no value references, return immediately
 	if len(matches) == 0 {
-		if p.secretConfigMgr != nil {
-			if err := p.secretConfigMgr.DeleteConfig(cfg); err != nil {
-				IngressLog.Errorf("failed to delete secret dependency: %v", err)
+		if p.templateConfigMgr != nil {
+			if err := p.templateConfigMgr.UpdateTemplateReferences(cfg, nil); err != nil {
+				IngressLog.Errorf("failed to delete template resource references for cfg %s/%s: %v", cfg.Namespace, cfg.Name, err)
 			}
 		}
 		return nil
@@ -68,14 +85,19 @@ func (p *TemplateProcessor) ProcessConfig(cfg *config.Config) error {
 	foundSecretSource := false
 	IngressLog.Infof("start to apply config %s/%s with %d variables", cfg.Namespace, cfg.Name, len(matches))
 	for _, match := range matches {
-		valueType := match[1]
+		valueType := TemplateResourceType(match[1])
+		if !supportedTemplateResourceTypes[valueType] {
+			// Unsupported value type. Just keep it as it is.
+			continue
+		}
+
 		var namespace, name, key string
 		if match[2] != "" {
-			// Format: ${type.namespace/name.key}
+			// Format: ${type.defaultNamespace/name.key}
 			namespace = match[2]
 		} else {
 			// Format: ${type.name.key} - use default namespace
-			namespace = p.namespace
+			namespace = p.defaultNamespace
 		}
 		name = match[3]
 		key = match[4]
@@ -87,10 +109,10 @@ func (p *TemplateProcessor) ProcessConfig(cfg *config.Config) error {
 		}
 
 		// Add secret dependency if this is a secret reference
-		if valueType == "secret" && p.secretConfigMgr != nil {
+		if valueType == "secret" && p.templateConfigMgr != nil {
 			foundSecretSource = true
 			secretKey := fmt.Sprintf("%s/%s", namespace, name)
-			if err := p.secretConfigMgr.AddConfig(secretKey, cfg); err != nil {
+			if err := p.templateConfigMgr.AddConfig(secretKey, cfg); err != nil {
 				IngressLog.Errorf("failed to add secret dependency: %v", err)
 			}
 		}
@@ -107,8 +129,8 @@ func (p *TemplateProcessor) ProcessConfig(cfg *config.Config) error {
 
 	// Delete secret dependency if no secret reference is found
 	if !foundSecretSource {
-		if p.secretConfigMgr != nil {
-			if err := p.secretConfigMgr.DeleteConfig(cfg); err != nil {
+		if p.templateConfigMgr != nil {
+			if err := p.templateConfigMgr.DeleteConfig(cfg); err != nil {
 				IngressLog.Errorf("failed to delete secret dependency: %v", err)
 			}
 		}
