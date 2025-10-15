@@ -43,6 +43,7 @@ static RegisterContextFactory register_KeyAuth(CONTEXT_FACTORY(PluginContext),
 namespace {
 
 const std::string OriginalAuthKey("X-HI-ORIGINAL-AUTH");
+const std::string Wildcard("*");
 
 void deniedInvalidCredentials(const std::string& realm) {
   sendLocalResponse(401, "Request denied by Key Auth check. Invalid API key", "",
@@ -310,16 +311,16 @@ bool PluginRootContext::checkPlugin(
 
       auto credential_to_name_iter = rule.credential_to_name.find(credential);
       if (credential_to_name_iter != rule.credential_to_name.end()) {
+        addRequestHeader("X-Mse-Consumer", credential_to_name_iter->second);
         if (allow_set && !allow_set->empty()) {
-          if (allow_set->find(credential_to_name_iter->second) ==
-              allow_set->end()) {
+          if (allow_set->find(credential_to_name_iter->second) == allow_set->end()
+            && allow_set->find(Wildcard) == allow_set->end()) {
             deniedUnauthorizedConsumer(rule.realm);
             LOG_DEBUG("unauthorized consumer: " +
                       credential_to_name_iter->second);
             return false;
           }
         }
-        addRequestHeader("X-Mse-Consumer", credential_to_name_iter->second);
       }
       return true;
     }
@@ -350,20 +351,21 @@ bool PluginRootContext::checkPlugin(
 
         auto credential_to_name_iter = rule.credential_to_name.find(credential);
         if (credential_to_name_iter != rule.credential_to_name.end()) {
+          addRequestHeader("X-Mse-Consumer", credential_to_name_iter->second);
           if (allow_set) {
             if (allow_set->empty()) {
               LOG_DEBUG("allow set is empty, nobody is allowed");
               deniedUnauthorizedConsumer(rule.realm);
               return false;
             }
-            if (allow_set->find(credential_to_name_iter->second) == allow_set->end()) {
+            if (allow_set->find(credential_to_name_iter->second) == allow_set->end()
+              && allow_set->find(Wildcard) == allow_set->end()) {
               deniedUnauthorizedConsumer(rule.realm);
               LOG_DEBUG("unauthorized consumer: " +
                         credential_to_name_iter->second);
               return false;
             }
           }
-          addRequestHeader("X-Mse-Consumer", credential_to_name_iter->second);
         }
         return true;
       }
