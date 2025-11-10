@@ -2,6 +2,7 @@ package provider
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 
@@ -14,11 +15,24 @@ import (
 )
 
 const (
-	doubaoDomain              = "ark.cn-beijing.volces.com"
-	doubaoChatCompletionPath  = "/api/v3/chat/completions"
-	doubaoEmbeddingsPath      = "/api/v3/embeddings"
-	doubaoImageGenerationPath = "/api/v3/images/generations"
-	doubaoResponsesPath       = "/api/v3/responses"
+	doubaoDomain                 = "ark.%s.volces.com"
+	doubaoDefaultRegion          = "cn-beijing"
+	doubaoChatCompletionPath     = "/api/v3/chat/completions"
+	doubaoBotsChatCompletionPath = "/api/v3/bots/chat/completions"
+	doubaoEmbeddingsPath         = "/api/v3/embeddings"
+	doubaoImageGenerationPath    = "/api/v3/images/generations"
+	doubaoResponsesPath          = "/api/v3/responses"
+)
+
+var (
+	knownBotModelUsageProperties = []string{
+		"completion_tokens",
+		"prompt_tokens",
+		"total_tokens",
+		"completion_tokens_details",
+		"prompt_tokens_details",
+		"name",
+	}
 )
 
 type doubaoProviderInitializer struct{}
@@ -40,14 +54,24 @@ func (m *doubaoProviderInitializer) DefaultCapabilities() map[string]string {
 }
 
 func (m *doubaoProviderInitializer) CreateProvider(config ProviderConfig) (Provider, error) {
-	config.setDefaultCapabilities(m.DefaultCapabilities())
+	defaultCapabilities := m.DefaultCapabilities()
+	if config.doubaoUseBotApi {
+		defaultCapabilities[string(ApiNameChatCompletion)] = doubaoBotsChatCompletionPath
+	}
+	config.setDefaultCapabilities(defaultCapabilities)
+	region := config.doubaoRegion
+	if region == "" {
+		region = doubaoDefaultRegion
+	}
 	return &doubaoProvider{
+		domain:       fmt.Sprintf(doubaoDomain, region),
 		config:       config,
 		contextCache: createContextCache(&config),
 	}, nil
 }
 
 type doubaoProvider struct {
+	domain       string
 	config       ProviderConfig
 	contextCache *contextCache
 }
@@ -70,7 +94,7 @@ func (m *doubaoProvider) OnRequestBody(ctx wrapper.HttpContext, apiName ApiName,
 
 func (m *doubaoProvider) TransformRequestHeaders(ctx wrapper.HttpContext, apiName ApiName, headers http.Header) {
 	util.OverwriteRequestPathHeaderByCapability(headers, string(apiName), m.config.capabilities)
-	util.OverwriteRequestHostHeader(headers, doubaoDomain)
+	util.OverwriteRequestHostHeader(headers, m.domain)
 	util.OverwriteRequestAuthorizationHeader(headers, "Bearer "+m.config.GetApiTokenInUse(ctx))
 	headers.Del("Content-Length")
 }
@@ -115,4 +139,70 @@ func (m *doubaoProvider) GetApiName(path string) ApiName {
 		return ApiNameResponses
 	}
 	return ""
+}
+
+func (m *doubaoProvider) OnStreamingEvent(ctx wrapper.HttpContext, apiName ApiName, event StreamEvent) ([]StreamEvent, error) {
+	if apiName == ApiNameChatCompletion && m.config.doubaoUseBotApi {
+		return m.onBotChatCompletionStreamingEvent(ctx, event)
+	}
+	return nil, nil
+}
+
+func (m *doubaoProvider) TransformResponseBody(ctx wrapper.HttpContext, apiName ApiName, body []byte) ([]byte, error) {
+	if apiName == ApiNameChatCompletion && m.config.doubaoUseBotApi {
+		return m.onBotChatCompletionResponseBody(ctx, body)
+	}
+	return body, nil
+}
+
+func (m *doubaoProvider) onBotChatCompletionStreamingEvent(ctx wrapper.HttpContext, event StreamEvent) ([]StreamEvent, error) {
+	if updatedData, err := m.normalizeUsageData([]byte(event.Data)); err != nil {
+		return nil, err
+	} else {
+		updatedEvent := event
+		updatedEvent.Data = string(updatedData)
+		return []StreamEvent{updatedEvent}, err
+	}
+}
+
+func (m *doubaoProvider) onBotChatCompletionResponseBody(ctx wrapper.HttpContext, body []byte) ([]byte, error) {
+	return m.normalizeUsageData(body)
+}
+
+func (m *doubaoProvider) normalizeUsageData(body []byte) ([]byte, error) {
+	botUsage := gjson.GetBytes(body, "bot_usage")
+	if botUsage.Exists() && botUsage.IsObject() {
+		var err error
+		usageOutput := make([]byte, 0)
+		if modelUsage := botUsage.Get("model_usage"); modelUsage.Exists() && modelUsage.IsArray() {
+			modelUsageArray := modelUsage.Array()
+			if len(modelUsageArray) > 0 {
+				modelUsageObj := modelUsageArray[0]
+				for _, prop := range knownBotModelUsageProperties {
+					usageOutput, err = copyJsonField(modelUsageObj, prop, usageOutput)
+				}
+			}
+		}
+
+		if actionUsage := botUsage.Get("action_usage"); actionUsage.Exists() {
+			usageOutput, err = sjson.SetRawBytes(usageOutput, "action_detail", []byte(actionUsage.Raw))
+			if err != nil {
+				return body, err
+			}
+		}
+
+		return sjson.SetRawBytes(body, "usage", []byte(usageOutput))
+	}
+	return nil, nil
+}
+
+func copyJsonField(src gjson.Result, key string, dest []byte) ([]byte, error) {
+	if src.Exists() && src.IsObject() {
+		if value := src.Get(key); value.Exists() {
+			return sjson.SetRawBytes(dest, key, []byte(value.Raw))
+		} else {
+			return sjson.SetRawBytes(dest, key, []byte("null"))
+		}
+	}
+	return dest, nil
 }

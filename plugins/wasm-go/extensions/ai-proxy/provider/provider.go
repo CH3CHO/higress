@@ -333,6 +333,12 @@ type ProviderConfig struct {
 	// @Title zh-CN minimax group id
 	// @Description zh-CN 仅适用于 minimax 服务。minimax API 类型为 pro 时必填
 	minimaxGroupId string `required:"false" yaml:"minimaxGroupId" json:"minimaxGroupId"`
+	// @Title zh-CN 豆包服务端 region
+	// @Description zh-CN 仅适用于豆包服务。默认值为 cn-beijing
+	doubaoRegion string `required:"false" yaml:"doubaoRegion" json:"doubaoRegion"`
+	// @Title zh-CN 是否针对 /chat/completions 请求启用豆包的 Bot API
+	// @Description zh-CN 仅适用于豆包服务。默认值为 false
+	doubaoUseBotApi bool `required:"false" yaml:"doubaoUseBotApi" json:"doubaoUseBotApi"`
 	// @Title zh-CN 模型名称映射表
 	// @Description zh-CN 用于将请求中的模型名称映射为目标AI服务商支持的模型名称。支持通过“*”来配置全局映射
 	modelMapping map[string]string `required:"false" yaml:"modelMapping" json:"modelMapping"`
@@ -475,6 +481,8 @@ func (c *ProviderConfig) FromJson(json gjson.Result) {
 	}
 	c.minimaxApiType = json.Get("minimaxApiType").String()
 	c.minimaxGroupId = json.Get("minimaxGroupId").String()
+	c.doubaoRegion = json.Get("doubaoRegion").String()
+	c.doubaoUseBotApi = json.Get("doubaoUseBotApi").Bool()
 	c.cloudflareAccountId = json.Get("cloudflareAccountId").String()
 	if c.typ == providerTypeGemini || c.typ == providerTypeVertex {
 		c.geminiSafetySetting = make(map[string]string)
