@@ -191,9 +191,9 @@ func (m *doubaoProvider) normalizeUsageData(body []byte) ([]byte, error) {
 			}
 		}
 
-		return sjson.SetRawBytes(body, "usage", []byte(usageOutput))
+		return sjson.SetRawBytes(body, "usage", usageOutput)
 	}
-	return nil, nil
+	return body, nil
 }
 
 func copyJsonField(src gjson.Result, key string, dest []byte) ([]byte, error) {
