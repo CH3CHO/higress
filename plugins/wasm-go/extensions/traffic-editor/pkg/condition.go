@@ -3,6 +3,7 @@ package pkg
 import (
 	"errors"
 	"fmt"
+	"math/rand"
 	"regexp"
 	"strings"
 
@@ -16,6 +17,7 @@ const (
 	conditionTypeSuffix   = "suffix"
 	conditionTypeContains = "contains"
 	conditionTypeRegex    = "regex"
+	conditionTypePercent  = "percent"
 )
 
 var (
@@ -25,6 +27,7 @@ var (
 		conditionTypeSuffix:   newSuffixCondition,
 		conditionTypeContains: newContainsCondition,
 		conditionTypeRegex:    newRegexCondition,
+		conditionTypePercent:  newPercentCondition, // 注册百分比类型
 	}
 )
 
@@ -322,4 +325,32 @@ func (c *regexCondition) Evaluate(ctx EditorContext) bool {
 
 func (c *regexCondition) GetRefs() []*Ref {
 	return []*Ref{c.valueRef}
+}
+
+func newPercentCondition(json gjson.Result) (Condition, error) {
+	percent := json.Get("percent").Float()
+	if percent < 0 || percent > 100 {
+		return nil, errors.New("percentCondition: percent must be between 0 and 100")
+	}
+	return &percentCondition{
+		percent: percent,
+	}, nil
+}
+
+type percentCondition struct {
+	percent float64
+}
+
+func (c *percentCondition) GetType() string {
+	return conditionTypePercent
+}
+
+func (c *percentCondition) GetRefs() []*Ref {
+	return nil
+}
+
+func (c *percentCondition) Evaluate(ctx EditorContext) bool {
+	val := rand.Float64() * 100
+	log.Debugf("Evaluating percent condition: percent=%.2f, random=%.2f", c.percent, val)
+	return val < c.percent
 }
