@@ -32,6 +32,11 @@ const (
 	vertexEmbeddingAction            = "predict"
 )
 
+const (
+	vertexModalityText  = "TEXT"
+	vertexModalityAudio = "AUDIO"
+)
+
 type vertexProviderInitializer struct{}
 
 func (v *vertexProviderInitializer) ValidateConfig(config *ProviderConfig) error {
@@ -237,6 +242,55 @@ func (v *vertexProvider) onChatCompletionResponseBody(ctx wrapper.HttpContext, b
 	return json.Marshal(response)
 }
 
+func toNormalizedUsage(usageMetadata vertexUsageMetadata) *usage {
+	out := &usage{
+		PromptTokens: usageMetadata.PromptTokenCount,
+		TotalTokens:  usageMetadata.TotalTokenCount,
+		TrafficType:  usageMetadata.TrafficType,
+	}
+
+	// Prefer responseTokenCount over candidatesTokenCount for completion_tokens
+	if usageMetadata.ResponseTokenCount > 0 {
+		out.CompletionTokens = usageMetadata.ResponseTokenCount
+	} else {
+		out.CompletionTokens = usageMetadata.CandidatesTokenCount
+	}
+
+	// Map to completion_tokens_details
+	if usageMetadata.ThoughtsTokenCount > 0 || len(usageMetadata.ResponseTokensDetails) > 0 {
+		out.CompletionTokensDetails = &completionTokensDetails{
+			ReasoningTokens: usageMetadata.ThoughtsTokenCount,
+		}
+		// Extract text and audio tokens from responseTokensDetails
+		for _, detail := range usageMetadata.ResponseTokensDetails {
+			switch detail.Modality {
+			case "TEXT":
+				out.CompletionTokensDetails.TextTokens = detail.TokenCount
+			case "AUDIO":
+				out.CompletionTokensDetails.AudioTokens = detail.TokenCount
+			}
+		}
+	}
+
+	// Map to prompt_tokens_details
+	if usageMetadata.CachedContentTokenCount > 0 || len(usageMetadata.PromptTokensDetails) > 0 {
+		out.PromptTokensDetails = &promptTokensDetails{
+			CachedTokens: usageMetadata.CachedContentTokenCount,
+		}
+		// Extract text and audio tokens from promptTokensDetails
+		for _, detail := range usageMetadata.PromptTokensDetails {
+			switch strings.ToUpper(detail.Modality) {
+			case vertexModalityText:
+				out.PromptTokensDetails.TextTokens = detail.TokenCount
+			case vertexModalityAudio:
+				out.PromptTokensDetails.AudioTokens = detail.TokenCount
+			}
+		}
+	}
+
+	return out
+}
+
 func (v *vertexProvider) buildChatCompletionResponse(ctx wrapper.HttpContext, response *vertexChatResponse) *chatCompletionResponse {
 	fullTextResponse := chatCompletionResponse{
 		Id:      response.ResponseId,
@@ -244,11 +298,7 @@ func (v *vertexProvider) buildChatCompletionResponse(ctx wrapper.HttpContext, re
 		Created: time.Now().UnixMilli() / 1000,
 		Model:   ctx.GetStringContext(ctxKeyFinalRequestModel, ""),
 		Choices: make([]chatCompletionChoice, 0, len(response.Candidates)),
-		Usage: &usage{
-			PromptTokens:     response.UsageMetadata.PromptTokenCount,
-			CompletionTokens: response.UsageMetadata.CandidatesTokenCount,
-			TotalTokens:      response.UsageMetadata.TotalTokenCount,
-		},
+		Usage:   toNormalizedUsage(response.UsageMetadata),
 	}
 	for _, candidate := range response.Candidates {
 		choice := chatCompletionChoice{
@@ -309,11 +359,7 @@ func (v *vertexProvider) buildChatCompletionStreamResponse(ctx wrapper.HttpConte
 		Created: time.Now().UnixMilli() / 1000,
 		Model:   ctx.GetStringContext(ctxKeyFinalRequestModel, ""),
 		Choices: []chatCompletionChoice{choice},
-		Usage: &usage{
-			PromptTokens:     vertexResp.UsageMetadata.PromptTokenCount,
-			CompletionTokens: vertexResp.UsageMetadata.CandidatesTokenCount,
-			TotalTokens:      vertexResp.UsageMetadata.TotalTokenCount,
-		},
+		Usage:   toNormalizedUsage(vertexResp.UsageMetadata),
 	}
 	return &streamResponse
 }
@@ -503,9 +549,20 @@ type vertexChatPromptFeedback struct {
 }
 
 type vertexUsageMetadata struct {
-	PromptTokenCount     int `json:"promptTokenCount,omitempty"`
-	CandidatesTokenCount int `json:"candidatesTokenCount,omitempty"`
-	TotalTokenCount      int `json:"totalTokenCount,omitempty"`
+	PromptTokenCount        int                        `json:"promptTokenCount,omitempty"`
+	CandidatesTokenCount    int                        `json:"candidatesTokenCount,omitempty"`
+	TotalTokenCount         int                        `json:"totalTokenCount,omitempty"`
+	ThoughtsTokenCount      int                        `json:"thoughtsTokenCount,omitempty"`
+	CachedContentTokenCount int                        `json:"cachedContentTokenCount,omitempty"`
+	ResponseTokenCount      int                        `json:"responseTokenCount,omitempty"`
+	PromptTokensDetails     []vertexModalityTokenCount `json:"promptTokensDetails,omitempty"`
+	ResponseTokensDetails   []vertexModalityTokenCount `json:"responseTokensDetails,omitempty"`
+	TrafficType             string                     `json:"trafficType,omitempty"`
+}
+
+type vertexModalityTokenCount struct {
+	Modality   string `json:"modality,omitempty"`
+	TokenCount int    `json:"tokenCount,omitempty"`
 }
 
 type vertexEmbeddingResponse struct {
