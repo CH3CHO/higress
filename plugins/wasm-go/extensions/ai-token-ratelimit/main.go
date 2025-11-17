@@ -23,6 +23,7 @@ import (
 
 	"ai-token-ratelimit/config"
 	"ai-token-ratelimit/util"
+
 	"github.com/higress-group/proxy-wasm-go-sdk/proxywasm"
 	"github.com/higress-group/proxy-wasm-go-sdk/proxywasm/types"
 	"github.com/higress-group/wasm-go/pkg/log"
@@ -37,7 +38,7 @@ func main() {}
 func init() {
 	wrapper.SetCtx(
 		"ai-token-ratelimit",
-		wrapper.ParseConfig(parseConfig),
+		wrapper.ParseOverrideConfig(parseGlobalConfig, parseOverrideRuleConfig),
 		wrapper.ProcessRequestHeaders(onHttpRequestHeaders),
 		wrapper.ProcessStreamingResponseBody(onHttpStreamingBody),
 	)
@@ -87,14 +88,32 @@ type LimitRedisContext struct {
 	window int64
 }
 
-func parseConfig(json gjson.Result, cfg *config.AiTokenRateLimitConfig) error {
-	err := config.InitRedisClusterClient(json, cfg)
-	if err != nil {
+func parseGlobalConfig(json gjson.Result, cfg *config.AiTokenRateLimitConfig) error {
+	*cfg = config.AiTokenRateLimitConfig{}
+	return parseConfig(json, cfg)
+}
+
+func parseOverrideRuleConfig(json gjson.Result, global config.AiTokenRateLimitConfig, cfg *config.AiTokenRateLimitConfig) error {
+	*cfg = global
+	if err := parseConfig(json, cfg); err != nil {
 		return err
 	}
-	err = config.ParseAiTokenRateLimitConfig(json, cfg)
-	if err != nil {
-		return err
+	if cfg.RedisClient == nil {
+		return fmt.Errorf("redis client is not configured properly")
+	}
+	return nil
+}
+
+func parseConfig(json gjson.Result, cfg *config.AiTokenRateLimitConfig) error {
+	if config.IsRedisConfigured(json) {
+		if err := config.InitRedisClusterClient(json, cfg); err != nil {
+			return err
+		}
+	}
+	if config.IsRuleNameConfigured(json) {
+		if err := config.ParseAiTokenRateLimitConfig(json, cfg); err != nil {
+			return err
+		}
 	}
 	// Metric settings
 	cfg.CounterMetrics = make(map[string]proxywasm.MetricCounter)

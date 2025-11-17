@@ -24,3 +24,5 @@ require (
 	github.com/tidwall/sjson v1.2.5 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
+
+replace github.com/higress-group/wasm-go => git.dev.sh.ctripcorp.com/framework/ai-gateway-wasm-go-sdk v0.0.0-20251117082617-e96ce75b0d4c

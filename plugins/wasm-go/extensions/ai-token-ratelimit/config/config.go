@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"ai-token-ratelimit/util"
+
 	"github.com/higress-group/proxy-wasm-go-sdk/proxywasm"
 	"github.com/higress-group/wasm-go/pkg/log"
 	"github.com/higress-group/wasm-go/pkg/wrapper"
@@ -103,6 +104,16 @@ func (cfg *AiTokenRateLimitConfig) IncrementCounter(metricName string, inc uint6
 	counter.Increment(inc)
 }
 
+func IsRedisConfigured(json gjson.Result) bool {
+	redisConfig := json.Get("redis")
+	return redisConfig.Exists()
+}
+
+func IsRuleNameConfigured(json gjson.Result) bool {
+	ruleName := json.Get("rule_name")
+	return ruleName.Exists() && ruleName.String() != ""
+}
+
 func InitRedisClusterClient(json gjson.Result, config *AiTokenRateLimitConfig) error {
 	redisConfig := json.Get("redis")
 	if !redisConfig.Exists() {
@@ -149,6 +160,9 @@ func ParseAiTokenRateLimitConfig(json gjson.Result, config *AiTokenRateLimitConf
 	ruleName := json.Get("rule_name")
 	if !ruleName.Exists() {
 		return errors.New("missing rule_name in config")
+	}
+	if ruleName.String() == "" {
+		return errors.New("rule_name must not be empty")
 	}
 	config.RuleName = ruleName.String()
 

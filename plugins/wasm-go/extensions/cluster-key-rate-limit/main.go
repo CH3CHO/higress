@@ -37,7 +37,7 @@ func main() {}
 func init() {
 	wrapper.SetCtx(
 		"cluster-key-rate-limit",
-		wrapper.ParseConfig(parseConfig),
+		wrapper.ParseOverrideConfig(parseGlobalConfig, parseOverrideRuleConfig),
 		wrapper.ProcessRequestHeaders(onHttpRequestHeaders),
 		wrapper.ProcessResponseHeaders(onHttpResponseHeaders),
 	)
@@ -74,14 +74,32 @@ type LimitContext struct {
 	reset     int
 }
 
-func parseConfig(json gjson.Result, cfg *config.ClusterKeyRateLimitConfig) error {
-	err := config.InitRedisClusterClient(json, cfg)
-	if err != nil {
+func parseGlobalConfig(json gjson.Result, cfg *config.ClusterKeyRateLimitConfig) error {
+	*cfg = config.ClusterKeyRateLimitConfig{}
+	return parseConfig(json, cfg)
+}
+
+func parseOverrideRuleConfig(json gjson.Result, global config.ClusterKeyRateLimitConfig, cfg *config.ClusterKeyRateLimitConfig) error {
+	*cfg = global
+	if err := parseConfig(json, cfg); err != nil {
 		return err
 	}
-	err = config.ParseClusterKeyRateLimitConfig(json, cfg)
-	if err != nil {
-		return err
+	if cfg.RedisClient == nil {
+		return fmt.Errorf("redis client is not configured properly")
+	}
+	return nil
+}
+
+func parseConfig(json gjson.Result, cfg *config.ClusterKeyRateLimitConfig) error {
+	if config.IsRedisConfigured(json) {
+		if err := config.InitRedisClusterClient(json, cfg); err != nil {
+			return err
+		}
+	}
+	if config.IsRuleNameConfigured(json) {
+		if err := config.ParseClusterKeyRateLimitConfig(json, cfg); err != nil {
+			return err
+		}
 	}
 	return nil
 }

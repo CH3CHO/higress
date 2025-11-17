@@ -18,6 +18,9 @@ import (
 	"encoding/json"
 	"testing"
 
+	"ai-token-ratelimit/config"
+	"ai-token-ratelimit/util"
+
 	"github.com/higress-group/proxy-wasm-go-sdk/proxywasm/types"
 	"github.com/higress-group/wasm-go/pkg/test"
 	"github.com/stretchr/testify/require"
@@ -191,6 +194,69 @@ var regexpLimitConfig = func() json.RawMessage {
 	return data
 }()
 
+// 测试配置：全局路由混合限流配置
+var globalRouteMixedLimitConfig = func() json.RawMessage {
+	data, _ := json.Marshal(map[string]interface{}{
+		"rule_name": "ai-token-global-limit",
+		"global_threshold": map[string]interface{}{
+			"token_per_minute": 1000,
+		},
+		"redis": map[string]interface{}{
+			"service_name": "redis.static",
+			"service_port": 6379,
+			"timeout":      1000,
+		},
+		"rejected_code": 429,
+		"rejected_msg":  "Too many AI token requests",
+		"_rules_": []map[string]interface{}{
+			{
+				"_match_route_": "routeA",
+				"rule_name":     "routeA-ai-token-limit",
+				"global_threshold": map[string]interface{}{
+					"token_per_minute": 2000,
+				},
+				"rejected_code": 430,
+				"rejected_msg":  "Too many AI token requests for route A",
+			},
+		},
+	})
+	return data
+}()
+
+// 测试配置：全局路由混合限流配置，路由配置覆盖 Redis 配置
+var globalRouteMixedLimitWithRedisConfig = func() json.RawMessage {
+	data, _ := json.Marshal(map[string]interface{}{
+		"rule_name": "ai-token-global-limit",
+		"global_threshold": map[string]interface{}{
+			"token_per_minute": 1000,
+		},
+		"redis": map[string]interface{}{
+			"service_name": "redis.static",
+			"service_port": 6379,
+			"timeout":      1000,
+		},
+		"rejected_code": 429,
+		"rejected_msg":  "Too many AI token requests",
+		"_rules_": []map[string]interface{}{
+			{
+				"_match_route_": "routeA",
+				"rule_name":     "routeA-ai-token-limit",
+				"global_threshold": map[string]interface{}{
+					"token_per_minute": 2000,
+				},
+				"rejected_code": 430,
+				"rejected_msg":  "Too many AI token requests for route A",
+				"redis": map[string]interface{}{
+					"service_name": "redis-2.static",
+					"service_port": 16379,
+					"timeout":      2000,
+				},
+			},
+		},
+	})
+	return data
+}()
+
 func TestParseConfig(t *testing.T) {
 	test.RunGoTest(t, func(t *testing.T) {
 		// 测试全局限流配置解析
@@ -199,9 +265,20 @@ func TestParseConfig(t *testing.T) {
 			defer host.Reset()
 			require.Equal(t, types.OnPluginStartStatusOK, status)
 
-			config, err := host.GetMatchConfig()
+			rawCfg, err := host.GetMatchConfig()
 			require.NoError(t, err)
-			require.NotNil(t, config)
+			require.NotNil(t, rawCfg)
+			parsedConfig := rawCfg.(*config.AiTokenRateLimitConfig)
+			require.Equal(t, "ai-token-global-limit", parsedConfig.RuleName)
+			require.NotNil(t, parsedConfig.GlobalThreshold)
+			require.Equal(t, int64(1000), parsedConfig.GlobalThreshold.Count)
+			require.Equal(t, int64(60), parsedConfig.GlobalThreshold.TimeWindow)
+			require.Equal(t, uint32(429), parsedConfig.RejectedCode)
+			require.Equal(t, "Too many AI token requests", parsedConfig.RejectedMsg)
+			require.NotNil(t, parsedConfig.RedisClient)
+			require.Nil(t, parsedConfig.RuleItems)
+			require.NotNil(t, parsedConfig.CounterMetrics)
+			require.Equal(t, 0, len(parsedConfig.CounterMetrics))
 		})
 
 		// 测试基于请求头的限流配置解析
@@ -210,9 +287,26 @@ func TestParseConfig(t *testing.T) {
 			defer host.Reset()
 			require.Equal(t, types.OnPluginStartStatusOK, status)
 
-			config, err := host.GetMatchConfig()
+			rawCfg, err := host.GetMatchConfig()
 			require.NoError(t, err)
-			require.NotNil(t, config)
+			require.NotNil(t, rawCfg)
+			parsedConfig := rawCfg.(*config.AiTokenRateLimitConfig)
+			require.Equal(t, "ai-token-header-limit", parsedConfig.RuleName)
+			require.Nil(t, parsedConfig.GlobalThreshold)
+			require.Equal(t, uint32(429), parsedConfig.RejectedCode)
+			require.Equal(t, "API key rate limit exceeded", parsedConfig.RejectedMsg)
+			require.NotNil(t, parsedConfig.RedisClient)
+			require.Len(t, parsedConfig.RuleItems, 1)
+			require.Equal(t, config.LimitByHeaderType, parsedConfig.RuleItems[0].LimitType)
+			require.Equal(t, "x-api-key", parsedConfig.RuleItems[0].Key)
+			require.Len(t, parsedConfig.RuleItems[0].ConfigItems, 1)
+			item := parsedConfig.RuleItems[0].ConfigItems[0]
+			require.Equal(t, config.ExactType, item.ConfigType)
+			require.Equal(t, "test-key-123", item.Key)
+			require.Equal(t, int64(100), item.Count)
+			require.Equal(t, int64(60), item.TimeWindow)
+			require.NotNil(t, parsedConfig.CounterMetrics)
+			require.Equal(t, 0, len(parsedConfig.CounterMetrics))
 		})
 
 		// 测试基于请求参数的限流配置解析
@@ -221,9 +315,25 @@ func TestParseConfig(t *testing.T) {
 			defer host.Reset()
 			require.Equal(t, types.OnPluginStartStatusOK, status)
 
-			config, err := host.GetMatchConfig()
+			rawCfg, err := host.GetMatchConfig()
 			require.NoError(t, err)
-			require.NotNil(t, config)
+			require.NotNil(t, rawCfg)
+			parsedConfig := rawCfg.(*config.AiTokenRateLimitConfig)
+			require.Equal(t, "ai-token-param-limit", parsedConfig.RuleName)
+			require.Nil(t, parsedConfig.GlobalThreshold)
+			require.Equal(t, uint32(429), parsedConfig.RejectedCode)
+			require.Equal(t, "Parameter rate limit exceeded", parsedConfig.RejectedMsg)
+			require.NotNil(t, parsedConfig.RedisClient)
+			require.Len(t, parsedConfig.RuleItems, 1)
+			require.Equal(t, config.LimitByParamType, parsedConfig.RuleItems[0].LimitType)
+			require.Equal(t, "apikey", parsedConfig.RuleItems[0].Key)
+			item := parsedConfig.RuleItems[0].ConfigItems[0]
+			require.Equal(t, config.ExactType, item.ConfigType)
+			require.Equal(t, "param-key-456", item.Key)
+			require.Equal(t, int64(50), item.Count)
+			require.Equal(t, int64(60), item.TimeWindow)
+			require.NotNil(t, parsedConfig.CounterMetrics)
+			require.Equal(t, 0, len(parsedConfig.CounterMetrics))
 		})
 
 		// 测试基于 Consumer 的限流配置解析
@@ -232,9 +342,25 @@ func TestParseConfig(t *testing.T) {
 			defer host.Reset()
 			require.Equal(t, types.OnPluginStartStatusOK, status)
 
-			config, err := host.GetMatchConfig()
+			rawCfg, err := host.GetMatchConfig()
 			require.NoError(t, err)
-			require.NotNil(t, config)
+			require.NotNil(t, rawCfg)
+			parsedConfig := rawCfg.(*config.AiTokenRateLimitConfig)
+			require.Equal(t, "ai-token-consumer-limit", parsedConfig.RuleName)
+			require.Nil(t, parsedConfig.GlobalThreshold)
+			require.Equal(t, uint32(429), parsedConfig.RejectedCode)
+			require.Equal(t, "Consumer rate limit exceeded", parsedConfig.RejectedMsg)
+			require.NotNil(t, parsedConfig.RedisClient)
+			require.Len(t, parsedConfig.RuleItems, 1)
+			require.Equal(t, config.LimitByConsumerType, parsedConfig.RuleItems[0].LimitType)
+			require.Equal(t, util.ConsumerHeader, parsedConfig.RuleItems[0].Key)
+			item := parsedConfig.RuleItems[0].ConfigItems[0]
+			require.Equal(t, config.ExactType, item.ConfigType)
+			require.Equal(t, "consumer1", item.Key)
+			require.Equal(t, int64(200), item.Count)
+			require.Equal(t, int64(60), item.TimeWindow)
+			require.NotNil(t, parsedConfig.CounterMetrics)
+			require.Equal(t, 0, len(parsedConfig.CounterMetrics))
 		})
 
 		// 测试基于 Cookie 的限流配置解析
@@ -243,9 +369,25 @@ func TestParseConfig(t *testing.T) {
 			defer host.Reset()
 			require.Equal(t, types.OnPluginStartStatusOK, status)
 
-			config, err := host.GetMatchConfig()
+			rawCfg, err := host.GetMatchConfig()
 			require.NoError(t, err)
-			require.NotNil(t, config)
+			require.NotNil(t, rawCfg)
+			parsedConfig := rawCfg.(*config.AiTokenRateLimitConfig)
+			require.Equal(t, "ai-token-cookie-limit", parsedConfig.RuleName)
+			require.Nil(t, parsedConfig.GlobalThreshold)
+			require.Equal(t, uint32(429), parsedConfig.RejectedCode)
+			require.Equal(t, "Session rate limit exceeded", parsedConfig.RejectedMsg)
+			require.NotNil(t, parsedConfig.RedisClient)
+			require.Len(t, parsedConfig.RuleItems, 1)
+			require.Equal(t, config.LimitByCookieType, parsedConfig.RuleItems[0].LimitType)
+			require.Equal(t, "session-id", parsedConfig.RuleItems[0].Key)
+			item := parsedConfig.RuleItems[0].ConfigItems[0]
+			require.Equal(t, config.ExactType, item.ConfigType)
+			require.Equal(t, "session-789", item.Key)
+			require.Equal(t, int64(75), item.Count)
+			require.Equal(t, int64(60), item.TimeWindow)
+			require.NotNil(t, parsedConfig.CounterMetrics)
+			require.Equal(t, 0, len(parsedConfig.CounterMetrics))
 		})
 
 		// 测试基于 IP 的限流配置解析
@@ -254,9 +396,28 @@ func TestParseConfig(t *testing.T) {
 			defer host.Reset()
 			require.Equal(t, types.OnPluginStartStatusOK, status)
 
-			config, err := host.GetMatchConfig()
+			rawCfg, err := host.GetMatchConfig()
 			require.NoError(t, err)
-			require.NotNil(t, config)
+			require.NotNil(t, rawCfg)
+			parsedConfig := rawCfg.(*config.AiTokenRateLimitConfig)
+			require.Equal(t, "ai-token-ip-limit", parsedConfig.RuleName)
+			require.Nil(t, parsedConfig.GlobalThreshold)
+			require.Equal(t, uint32(429), parsedConfig.RejectedCode)
+			require.Equal(t, "IP rate limit exceeded", parsedConfig.RejectedMsg)
+			require.NotNil(t, parsedConfig.RedisClient)
+			require.Len(t, parsedConfig.RuleItems, 1)
+			require.Equal(t, config.LimitByPerIpType, parsedConfig.RuleItems[0].LimitType)
+			require.Equal(t, "from-remote-addr", parsedConfig.RuleItems[0].Key)
+			require.Equal(t, config.RemoteAddrSourceType, parsedConfig.RuleItems[0].LimitByPerIp.SourceType)
+			require.Equal(t, "", parsedConfig.RuleItems[0].LimitByPerIp.HeaderName)
+			item := parsedConfig.RuleItems[0].ConfigItems[0]
+			require.Equal(t, config.IpNetType, item.ConfigType)
+			require.Equal(t, "192.168.1.0/24", item.Key)
+			require.NotNil(t, item.IpNet)
+			require.Equal(t, int64(300), item.Count)
+			require.Equal(t, int64(60), item.TimeWindow)
+			require.NotNil(t, parsedConfig.CounterMetrics)
+			require.Equal(t, 0, len(parsedConfig.CounterMetrics))
 		})
 
 		// 测试正则表达式限流配置解析
@@ -265,9 +426,112 @@ func TestParseConfig(t *testing.T) {
 			defer host.Reset()
 			require.Equal(t, types.OnPluginStartStatusOK, status)
 
-			config, err := host.GetMatchConfig()
+			rawCfg, err := host.GetMatchConfig()
 			require.NoError(t, err)
-			require.NotNil(t, config)
+			require.NotNil(t, rawCfg)
+			parsedConfig := rawCfg.(*config.AiTokenRateLimitConfig)
+			require.Equal(t, "ai-token-regexp-limit", parsedConfig.RuleName)
+			require.Nil(t, parsedConfig.GlobalThreshold)
+			require.Equal(t, uint32(429), parsedConfig.RejectedCode)
+			require.Equal(t, "User ID rate limit exceeded", parsedConfig.RejectedMsg)
+			require.NotNil(t, parsedConfig.RedisClient)
+			require.Len(t, parsedConfig.RuleItems, 1)
+			require.Equal(t, config.LimitByPerHeaderType, parsedConfig.RuleItems[0].LimitType)
+			require.Equal(t, "x-user-id", parsedConfig.RuleItems[0].Key)
+			item := parsedConfig.RuleItems[0].ConfigItems[0]
+			require.Equal(t, config.RegexpType, item.ConfigType)
+			require.Equal(t, "regexp:^user-\\d+$", item.Key)
+			require.NotNil(t, item.Regexp)
+			require.Equal(t, int64(150), item.Count)
+			require.Equal(t, int64(60), item.TimeWindow)
+			require.NotNil(t, parsedConfig.CounterMetrics)
+			require.Equal(t, 0, len(parsedConfig.CounterMetrics))
+		})
+
+		// 测试全局配置和路由配置混合解析
+		t.Run("global+route mixed threshold config", func(t *testing.T) {
+			host, status := test.NewTestHost(globalRouteMixedLimitConfig)
+			defer host.Reset()
+			require.Equal(t, types.OnPluginStartStatusOK, status)
+
+			cfg, err := host.GetMatchConfig()
+			require.NoError(t, err)
+			require.NotNil(t, cfg)
+
+			// 验证配置内容
+			parsedConfig := cfg.(*config.AiTokenRateLimitConfig)
+			require.Equal(t, "ai-token-global-limit", parsedConfig.RuleName)
+			require.NotNil(t, parsedConfig.GlobalThreshold)
+			require.Equal(t, int64(1000), parsedConfig.GlobalThreshold.Count)
+			require.Equal(t, int64(60), parsedConfig.GlobalThreshold.TimeWindow)
+			require.Equal(t, uint32(429), parsedConfig.RejectedCode)
+			require.Equal(t, "Too many AI token requests", parsedConfig.RejectedMsg)
+			require.NotNil(t, parsedConfig.RedisClient)
+			globalConfig := parsedConfig
+
+			err = host.SetRouteName("routeA")
+			require.NoError(t, err)
+
+			cfg, err = host.GetMatchConfig()
+			require.NoError(t, err)
+			require.NotNil(t, cfg)
+
+			// 验证配置内容
+			parsedConfig = cfg.(*config.AiTokenRateLimitConfig)
+			require.Equal(t, "routeA-ai-token-limit", parsedConfig.RuleName)
+			require.NotNil(t, parsedConfig.GlobalThreshold)
+			require.Equal(t, int64(2000), parsedConfig.GlobalThreshold.Count)
+			require.Equal(t, int64(60), parsedConfig.GlobalThreshold.TimeWindow)
+			require.Equal(t, uint32(430), parsedConfig.RejectedCode)
+			require.Equal(t, "Too many AI token requests for route A", parsedConfig.RejectedMsg)
+			require.NotNil(t, parsedConfig.RedisClient)
+			require.Equal(t, globalConfig.RedisClient, parsedConfig.RedisClient)
+			require.NotNil(t, parsedConfig.CounterMetrics)
+			require.Equal(t, 0, len(parsedConfig.CounterMetrics))
+			require.NotSame(t, globalConfig.CounterMetrics, parsedConfig.CounterMetrics)
+		})
+
+		// 测试全局配置和路由配置混合解析
+		t.Run("global+route mixed with redis threshold config", func(t *testing.T) {
+			host, status := test.NewTestHost(globalRouteMixedLimitWithRedisConfig)
+			defer host.Reset()
+			require.Equal(t, types.OnPluginStartStatusOK, status)
+
+			cfg, err := host.GetMatchConfig()
+			require.NoError(t, err)
+			require.NotNil(t, cfg)
+
+			// 验证配置内容
+			parsedConfig := cfg.(*config.AiTokenRateLimitConfig)
+			require.Equal(t, "ai-token-global-limit", parsedConfig.RuleName)
+			require.NotNil(t, parsedConfig.GlobalThreshold)
+			require.Equal(t, int64(1000), parsedConfig.GlobalThreshold.Count)
+			require.Equal(t, int64(60), parsedConfig.GlobalThreshold.TimeWindow)
+			require.Equal(t, uint32(429), parsedConfig.RejectedCode)
+			require.Equal(t, "Too many AI token requests", parsedConfig.RejectedMsg)
+			require.NotNil(t, parsedConfig.RedisClient)
+			globalConfig := parsedConfig
+
+			err = host.SetRouteName("routeA")
+			require.NoError(t, err)
+
+			cfg, err = host.GetMatchConfig()
+			require.NoError(t, err)
+			require.NotNil(t, cfg)
+
+			// 验证配置内容
+			parsedConfig = cfg.(*config.AiTokenRateLimitConfig)
+			require.Equal(t, "routeA-ai-token-limit", parsedConfig.RuleName)
+			require.NotNil(t, parsedConfig.GlobalThreshold)
+			require.Equal(t, int64(2000), parsedConfig.GlobalThreshold.Count)
+			require.Equal(t, int64(60), parsedConfig.GlobalThreshold.TimeWindow)
+			require.Equal(t, uint32(430), parsedConfig.RejectedCode)
+			require.Equal(t, "Too many AI token requests for route A", parsedConfig.RejectedMsg)
+			require.NotNil(t, parsedConfig.RedisClient)
+			require.NotEqual(t, globalConfig.RedisClient, parsedConfig.RedisClient)
+			require.NotNil(t, parsedConfig.CounterMetrics)
+			require.Equal(t, 0, len(parsedConfig.CounterMetrics))
+			require.NotSame(t, globalConfig.CounterMetrics, parsedConfig.CounterMetrics)
 		})
 	})
 }
