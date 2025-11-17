@@ -308,6 +308,15 @@ func (v *vertexProvider) buildChatCompletionResponse(ctx wrapper.HttpContext, re
 			},
 			FinishReason: util.Ptr(candidate.FinishReason),
 		}
+
+		for _, part := range candidate.Content.Parts {
+			if part.FunctionCall != nil {
+				if tc := v.buildToolCalls(&part); tc != nil {
+					choice.Message.ToolCalls = append(choice.Message.ToolCalls, *tc)
+				}
+			}
+		}
+
 		if len(candidate.Content.Parts) > 0 {
 			choice.Message.Content = candidate.Content.Parts[0].Text
 		} else {
@@ -316,6 +325,25 @@ func (v *vertexProvider) buildChatCompletionResponse(ctx wrapper.HttpContext, re
 		fullTextResponse.Choices = append(fullTextResponse.Choices, choice)
 	}
 	return &fullTextResponse
+}
+
+func (v *vertexProvider) buildToolCalls(part *vertexPart) *toolCall {
+	if part.FunctionCall == nil {
+		return nil
+	}
+	argsBytes, err := json.Marshal(part.FunctionCall.Args)
+	if err != nil {
+		log.Errorf("build toolCalls from vertex response failed: " + err.Error())
+		return nil
+	}
+	return &toolCall{
+		Id:   fmt.Sprintf("call_%s", uuid.New().String()),
+		Type: "function",
+		Function: functionCall{
+			Arguments: string(argsBytes),
+			Name:      part.FunctionCall.Name,
+		},
+	}
 }
 
 func (v *vertexProvider) onEmbeddingsResponseBody(ctx wrapper.HttpContext, body []byte) ([]byte, error) {
@@ -473,9 +501,10 @@ type vertexChatContent struct {
 }
 
 type vertexPart struct {
-	Text       string    `json:"text,omitempty"`
-	InlineData *blob     `json:"inlineData,omitempty"`
-	FileData   *fileData `json:"fileData,omitempty"`
+	Text         string              `json:"text,omitempty"`
+	InlineData   *blob               `json:"inlineData,omitempty"`
+	FileData     *fileData           `json:"fileData,omitempty"`
+	FunctionCall *vertexFunctionCall `json:"functionCall,omitempty"`
 }
 
 type blob struct {
@@ -486,6 +515,11 @@ type blob struct {
 type fileData struct {
 	MimeType string `json:"mimeType"`
 	FileUri  string `json:"fileUri"`
+}
+
+type vertexFunctionCall struct {
+	Name string                 `json:"name"`
+	Args map[string]interface{} `json:"args"`
 }
 
 type vertexSystemInstruction struct {
