@@ -15,9 +15,10 @@
 package main
 
 import (
-	"cluster-key-rate-limit/config"
 	"encoding/json"
 	"testing"
+
+	"cluster-key-rate-limit/config"
 
 	"github.com/higress-group/proxy-wasm-go-sdk/proxywasm/types"
 	"github.com/higress-group/wasm-go/pkg/test"
@@ -221,6 +222,73 @@ var regexpLimitConfig = func() json.RawMessage {
 	return data
 }()
 
+// 测试配置：全局路由混合限流配置
+var globalRouteMixedLimitConfig = func() json.RawMessage {
+	data, _ := json.Marshal(map[string]interface{}{
+		"rule_name": "global-limit-rule",
+		"global_threshold": map[string]interface{}{
+			"query_per_minute": 1000,
+		},
+		"redis": map[string]interface{}{
+			"service_name": "redis.static",
+			"service_port": 6379,
+			"timeout":      1000,
+		},
+		"show_limit_quota_header": true,
+		"rejected_code":           429,
+		"rejected_msg":            "Too many requests",
+		"_rules_": []map[string]interface{}{
+			{
+				"_match_route_": "routeA",
+				"rule_name":     "routeA-limit-rule",
+				"global_threshold": map[string]interface{}{
+					"query_per_minute": 2000,
+				},
+				"show_limit_quota_header": false,
+				"rejected_code":           430,
+				"rejected_msg":            "Too many requests for route A",
+			},
+		},
+	})
+	return data
+}()
+
+// 测试配置：全局路由混合限流配置，路由配置覆盖 Redis 配置
+var globalRouteMixedLimitWithRedisConfig = func() json.RawMessage {
+	data, _ := json.Marshal(map[string]interface{}{
+		"rule_name": "global-limit-rule",
+		"global_threshold": map[string]interface{}{
+			"query_per_minute": 1000,
+		},
+		"redis": map[string]interface{}{
+			"service_name": "redis.static",
+			"service_port": 6379,
+			"timeout":      1000,
+		},
+		"show_limit_quota_header": true,
+		"rejected_code":           429,
+		"rejected_msg":            "Too many requests",
+		"_rules_": []map[string]interface{}{
+			{
+				"_match_route_": "routeA",
+				"rule_name":     "routeA-limit-rule",
+				"global_threshold": map[string]interface{}{
+					"query_per_minute": 2000,
+				},
+				"show_limit_quota_header": false,
+				"rejected_code":           430,
+				"rejected_msg":            "Too many requests for route A",
+				"redis": map[string]interface{}{
+					"service_name": "redis-2.static",
+					"service_port": 16379,
+					"timeout":      2000,
+				},
+			},
+		},
+	})
+	return data
+}()
+
 func TestParseConfig(t *testing.T) {
 	test.RunGoTest(t, func(t *testing.T) {
 		// 测试全局限流配置解析
@@ -362,6 +430,90 @@ func TestParseConfig(t *testing.T) {
 			require.Len(t, parsedConfig.RuleItems[0].ConfigItems, 3)
 			require.Equal(t, config.RegexpType, parsedConfig.RuleItems[0].ConfigItems[0].ConfigType)
 			require.True(t, parsedConfig.ShowLimitQuotaHeader)
+		})
+
+		// 测试全局配置和路由配置混合解析
+		t.Run("global-route mixed limit config", func(t *testing.T) {
+			host, status := test.NewTestHost(globalRouteMixedLimitConfig)
+			defer host.Reset()
+			require.Equal(t, types.OnPluginStartStatusOK, status)
+
+			cfg, err := host.GetMatchConfig()
+			require.NoError(t, err)
+			require.NotNil(t, cfg)
+
+			// 验证配置内容
+			parsedConfig := cfg.(*config.ClusterKeyRateLimitConfig)
+			require.Equal(t, "global-limit-rule", parsedConfig.RuleName)
+			require.NotNil(t, parsedConfig.GlobalThreshold)
+			require.Equal(t, int64(1000), parsedConfig.GlobalThreshold.Count)
+			require.Equal(t, int64(60), parsedConfig.GlobalThreshold.TimeWindow)
+			require.True(t, parsedConfig.ShowLimitQuotaHeader)
+			require.Equal(t, uint32(429), parsedConfig.RejectedCode)
+			require.Equal(t, "Too many requests", parsedConfig.RejectedMsg)
+			require.NotNil(t, parsedConfig.RedisClient)
+			globalRedisClient := parsedConfig.RedisClient
+
+			err = host.SetRouteName("routeA")
+			require.NoError(t, err)
+
+			cfg, err = host.GetMatchConfig()
+			require.NoError(t, err)
+			require.NotNil(t, cfg)
+
+			// 验证配置内容
+			parsedConfig = cfg.(*config.ClusterKeyRateLimitConfig)
+			require.Equal(t, "routeA-limit-rule", parsedConfig.RuleName)
+			require.NotNil(t, parsedConfig.GlobalThreshold)
+			require.Equal(t, int64(2000), parsedConfig.GlobalThreshold.Count)
+			require.Equal(t, int64(60), parsedConfig.GlobalThreshold.TimeWindow)
+			require.False(t, parsedConfig.ShowLimitQuotaHeader)
+			require.Equal(t, uint32(430), parsedConfig.RejectedCode)
+			require.Equal(t, "Too many requests for route A", parsedConfig.RejectedMsg)
+			require.NotNil(t, parsedConfig.RedisClient)
+			require.Equal(t, globalRedisClient, parsedConfig.RedisClient)
+		})
+
+		// 测试全局配置和路由配置混合解析，同时路由配置覆盖了 Redis 配置
+		t.Run("global-route mixed with redis limit config", func(t *testing.T) {
+			host, status := test.NewTestHost(globalRouteMixedLimitWithRedisConfig)
+			defer host.Reset()
+			require.Equal(t, types.OnPluginStartStatusOK, status)
+
+			cfg, err := host.GetMatchConfig()
+			require.NoError(t, err)
+			require.NotNil(t, cfg)
+
+			// 验证配置内容
+			parsedConfig := cfg.(*config.ClusterKeyRateLimitConfig)
+			require.Equal(t, "global-limit-rule", parsedConfig.RuleName)
+			require.NotNil(t, parsedConfig.GlobalThreshold)
+			require.Equal(t, int64(1000), parsedConfig.GlobalThreshold.Count)
+			require.Equal(t, int64(60), parsedConfig.GlobalThreshold.TimeWindow)
+			require.True(t, parsedConfig.ShowLimitQuotaHeader)
+			require.Equal(t, uint32(429), parsedConfig.RejectedCode)
+			require.Equal(t, "Too many requests", parsedConfig.RejectedMsg)
+			require.NotNil(t, parsedConfig.RedisClient)
+			globalRedisClient := parsedConfig.RedisClient
+
+			err = host.SetRouteName("routeA")
+			require.NoError(t, err)
+
+			cfg, err = host.GetMatchConfig()
+			require.NoError(t, err)
+			require.NotNil(t, cfg)
+
+			// 验证配置内容
+			parsedConfig = cfg.(*config.ClusterKeyRateLimitConfig)
+			require.Equal(t, "routeA-limit-rule", parsedConfig.RuleName)
+			require.NotNil(t, parsedConfig.GlobalThreshold)
+			require.Equal(t, int64(2000), parsedConfig.GlobalThreshold.Count)
+			require.Equal(t, int64(60), parsedConfig.GlobalThreshold.TimeWindow)
+			require.False(t, parsedConfig.ShowLimitQuotaHeader)
+			require.Equal(t, uint32(430), parsedConfig.RejectedCode)
+			require.Equal(t, "Too many requests for route A", parsedConfig.RejectedMsg)
+			require.NotNil(t, parsedConfig.RedisClient)
+			require.NotEqual(t, globalRedisClient, parsedConfig.RedisClient)
 		})
 	})
 }

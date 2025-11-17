@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"cluster-key-rate-limit/util"
+
 	"github.com/higress-group/wasm-go/pkg/log"
 	"github.com/higress-group/wasm-go/pkg/wrapper"
 	"github.com/tidwall/gjson"
@@ -92,6 +93,16 @@ type LimitConfigItem struct {
 	TimeWindow int64               // 时间窗口大小
 }
 
+func IsRedisConfigured(json gjson.Result) bool {
+	redisConfig := json.Get("redis")
+	return redisConfig.Exists()
+}
+
+func IsRuleNameConfigured(json gjson.Result) bool {
+	ruleName := json.Get("rule_name")
+	return ruleName.Exists() && ruleName.String() != ""
+}
+
 func InitRedisClusterClient(json gjson.Result, config *ClusterKeyRateLimitConfig) error {
 	redisConfig := json.Get("redis")
 	if !redisConfig.Exists() {
@@ -132,6 +143,9 @@ func ParseClusterKeyRateLimitConfig(json gjson.Result, config *ClusterKeyRateLim
 	ruleName := json.Get("rule_name")
 	if !ruleName.Exists() {
 		return errors.New("missing rule_name in config")
+	}
+	if ruleName.String() == "" {
+		return errors.New("rule_name must not be empty")
 	}
 	config.RuleName = ruleName.String()
 
