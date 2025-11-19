@@ -70,6 +70,11 @@ const (
 	ResponseType           = "response_type"
 	ChatID                 = "chat_id"
 	ChatRound              = "chat_round"
+	RequestModelOriginal   = "request_model_original"
+	RequestModelFinal      = "request_model_final"
+	Question               = "question"
+	Answer                 = "answer"
+	Usage                  = "usage"
 
 	ResponseTypeNormal = "normal"
 	ResponseTypeStream = "stream"
@@ -86,6 +91,55 @@ const (
 	RuleFirst   = "first"
 	RuleReplace = "replace"
 	RuleAppend  = "append"
+)
+
+var (
+	builtInAttributes = []Attribute{
+		{
+			Key:         Question,
+			Value:       "messages.@reverse.0.content",
+			ValueSource: RequestBody,
+			ApplyToLog:  true,
+		},
+		{
+			Key:         Answer,
+			Value:       "choices.0.delta.content",
+			ValueSource: ResponseStreamingBody,
+			Rule:        RuleAppend,
+			ApplyToLog:  true,
+		},
+		{
+			Key:         Answer,
+			Value:       "choices.0.message.content",
+			ValueSource: ResponseBody,
+			ApplyToLog:  true,
+		},
+		{
+			Key:         Usage,
+			Value:       "usage",
+			ValueSource: ResponseStreamingBody,
+			Rule:        RuleReplace,
+			ApplyToLog:  true,
+		},
+		{
+			Key:         Usage,
+			Value:       "usage",
+			ValueSource: ResponseBody,
+			ApplyToLog:  true,
+		},
+		{
+			Key:         RequestModelOriginal,
+			Value:       "x-higress-llm-model",
+			ValueSource: RequestHeader,
+			ApplyToLog:  true,
+		},
+		{
+			Key:         RequestModelFinal,
+			Value:       "model",
+			ValueSource: RequestBody,
+			ApplyToLog:  true,
+		},
+	}
 )
 
 // TracingSpan is the tracing span configuration.
@@ -222,6 +276,7 @@ func parseConfig(configJson gjson.Result, config *AIStatisticsConfig) error {
 		}
 		config.attributes[i] = attribute
 	}
+	config.attributes = addBuiltInAttributes(config.attributes)
 	// Metric settings
 	config.counterMetrics = make(map[string]proxywasm.MetricCounter)
 
@@ -257,6 +312,29 @@ func parseConfig(configJson gjson.Result, config *AIStatisticsConfig) error {
 	}
 
 	return nil
+}
+
+func addBuiltInAttributes(attributes []Attribute) []Attribute {
+	for _, builtInAttr := range builtInAttributes {
+		if !hasAttribute(attributes, builtInAttr.Key, builtInAttr.ValueSource) {
+			attributes = append(attributes, builtInAttr)
+		} else {
+			log.Debugf("Skip adding built-in attribute %s from source %s as it already exists in config", builtInAttr.Key, builtInAttr.ValueSource)
+		}
+	}
+	return attributes
+}
+
+func hasAttribute(attributes []Attribute, key string, source string) bool {
+	if len(attributes) == 0 {
+		return false
+	}
+	for _, attribute := range attributes {
+		if attribute.Key == key && (source == "" || (strings.HasPrefix(attribute.ValueSource, "response_") && attribute.ValueSource == source)) {
+			return true
+		}
+	}
+	return false
 }
 
 func onHttpRequestHeaders(ctx wrapper.HttpContext, config AIStatisticsConfig) types.Action {
