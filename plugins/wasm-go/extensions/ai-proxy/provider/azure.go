@@ -6,12 +6,15 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/alibaba/higress/plugins/wasm-go/extensions/ai-proxy/util"
 	"github.com/higress-group/proxy-wasm-go-sdk/proxywasm/types"
 	"github.com/higress-group/wasm-go/pkg/log"
 	"github.com/higress-group/wasm-go/pkg/wrapper"
+	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 )
 
 type azureServiceUrlType int
@@ -29,6 +32,11 @@ const (
 	azureServiceUrlTypeDomainOnly
 )
 
+const (
+	requestFieldMaxTokens           = "max_tokens"
+	requestFieldMaxCompletionTokens = "max_completion_tokens"
+)
+
 var (
 	azureModelIrrelevantApis = map[ApiName]bool{
 		ApiNameModels:              true,
@@ -39,7 +47,20 @@ var (
 		ApiNameRetrieveFile:        true,
 		ApiNameRetrieveFileContent: true,
 	}
-	regexAzureModelWithPath = regexp.MustCompile("/openai/deployments/(.+?)(?:/(.*)|$)")
+	regexAzureModelWithPath    = regexp.MustCompile("/openai/deployments/(.+?)(?:/(.*)|$)")
+	azureRequestFieldBlacklist = []string{
+		"timeout",
+		"stream_timeout",
+		"fallback",
+		"thinking",
+		"enable_thinking",
+	}
+	azureUseMaxCompletionTokensModelKeywords = []string{
+		"o1",
+		"o3",
+		"o4",
+		"gpt-5",
+	}
 )
 
 // azureProvider is the provider for Azure OpenAI service.
@@ -162,7 +183,60 @@ func (m *azureProvider) TransformRequestBody(ctx wrapper.HttpContext, apiName Ap
 		}
 	}
 
+	// This must be called after the body is transformed, because it uses the model from the context filled by that call.
+	transformedBody, err = m.transformRequestFields(ctx, transformedBody)
+	if err != nil {
+		log.Errorf("azureProvider: transform request fields failed: %v", err)
+	}
+
 	return
+}
+
+func (m *azureProvider) transformRequestFields(ctx wrapper.HttpContext, body []byte) ([]byte, error) {
+	// Remove fields not supported by Azure OpenAI
+	for _, field := range azureRequestFieldBlacklist {
+		if transformedBody, err := sjson.DeleteBytes(body, field); err != nil {
+			return body, fmt.Errorf("azureProvider: failed to delete %s from request body, err: %v", field, err)
+		} else {
+			body = transformedBody
+		}
+	}
+
+	// Some newer models hosted by Azure uses max_completion_tokens instead of max_tokens,
+	// So we need to make the conversion here.
+	model := ""
+	if m.serviceUrlType != azureServiceUrlTypeWithDeployment && m.serviceUrlType != azureServiceUrlTypeFull {
+		model = ctx.GetStringContext(ctxKeyFinalRequestModel, "")
+		log.Debugf("azureProvider: final request model from context %s", model)
+	}
+	if model == "" {
+		log.Debugf("azureProvider: use default model %s", model)
+		model = m.defaultModel
+	}
+	model = strings.ToLower(model)
+	log.Debugf("azureProvider: transformRequestFields for model %s", model)
+	useMaxCompletionTokens := slices.ContainsFunc(azureUseMaxCompletionTokensModelKeywords, func(m string) bool {
+		return strings.Contains(model, m)
+	})
+	if useMaxCompletionTokens {
+		log.Debugf("azureProvider: model %s requires %s field instead of %s", model, requestFieldMaxCompletionTokens, requestFieldMaxTokens)
+		if maxTokens := gjson.GetBytes(body, requestFieldMaxTokens); maxTokens.Exists() {
+			log.Debugf("azureProvider: removing %s from request body for model %s", requestFieldMaxTokens, model)
+			if transformedBody, err := sjson.DeleteBytes(body, requestFieldMaxTokens); err != nil {
+				return body, fmt.Errorf("azureProvider: failed to delete %s in request body, err: %v", requestFieldMaxTokens, err)
+			} else {
+				body = transformedBody
+			}
+			log.Debugf("azureProvider: setting %s into request body for model %s: %s", requestFieldMaxCompletionTokens, model, maxTokens.Raw)
+			if transformedBody, err := sjson.SetRawBytes(body, requestFieldMaxCompletionTokens, []byte(maxTokens.Raw)); err != nil {
+				return body, fmt.Errorf("azureProvider: failed to set %s into request body, value: %s err: %v", requestFieldMaxTokens, maxTokens.Raw, err)
+			} else {
+				body = transformedBody
+			}
+		}
+	}
+
+	return body, nil
 }
 
 func (m *azureProvider) transformRequestPath(ctx wrapper.HttpContext, apiName ApiName) string {
