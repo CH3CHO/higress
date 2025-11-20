@@ -46,6 +46,7 @@ namespace {
 constexpr std::string_view SetDecoderBufferLimitKey =
     "set_decoder_buffer_limit";
 constexpr std::string_view DefaultMaxBodyBytes = "104857600";
+constexpr std::string_view AzureDeploymentPathKeyword = "/openai/deployments/";
 
 }  // namespace
 
@@ -172,9 +173,6 @@ FilterHeadersStatus PluginRootContext::onHeader(
 
 FilterDataStatus PluginRootContext::onBody(const ModelMapperConfigRule& rule,
                                            std::string_view body) {
-  const auto& exact_model_mapping = rule.exact_model_mapping_;
-  const auto& prefix_model_mapping = rule.prefix_model_mapping_;
-  const auto& default_model_mapping = rule.default_model_mapping_;
   const auto& model_key = rule.model_key_;
   auto body_json_opt = ::Wasm::Common::JsonParse(body);
   if (!body_json_opt) {
@@ -182,10 +180,69 @@ FilterDataStatus PluginRootContext::onBody(const ModelMapperConfigRule& rule,
     return FilterDataStatus::Continue;
   }
   auto body_json = body_json_opt.value();
-  std::string old_model;
-  if (body_json.contains(model_key)) {
+  auto path = getRequestHeader(Wasm::Common::Http::Header::Path);
+  bool use_azure_api = false;
+  std::string old_model = getModelFromAzureApiPath(path);
+  if (!old_model.empty()) {
+    use_azure_api = true;
+  } else if (body_json.contains(model_key)) {
+    // If model is extracted from Azure API path, override the model in body
     old_model = body_json[model_key];
   }
+  std::string model = doModelMapping(rule, old_model);
+  if (!model.empty() && model != old_model) {
+    if (use_azure_api) {
+      auto new_path = rewriteModelInModelApiPath(path, model);
+      if (new_path != path) {
+        replaceRequestHeader(Wasm::Common::Http::Header::Path, new_path);
+        LOG_DEBUG(absl::StrCat("Rewrote Azure request path, before: ", path, ", after: ", new_path));
+      } else {
+        LOG_WARN(absl::StrCat("Unexpected Azure model mapping result. Path remains the same: ", path));
+      }
+    }
+    body_json[model_key] = model;
+    setBuffer(WasmBufferType::HttpRequestBody, 0,
+              std::numeric_limits<size_t>::max(), body_json.dump());
+    LOG_DEBUG(
+        absl::StrCat("model mapped, before:", old_model, ", after:", model));
+  }
+  return FilterDataStatus::Continue;
+}
+
+std::string PluginRootContext::getModelFromAzureApiPath(const std::string_view& path) {
+  auto pos = path.find(AzureDeploymentPathKeyword);
+  if (pos == std::string_view::npos) {
+    return "";
+  }
+  pos += AzureDeploymentPathKeyword.size();
+  auto end_pos = path.find('/', pos);
+  if (end_pos == std::string_view::npos) {
+    end_pos = path.size();
+  }
+  auto deployment_name = path.substr(pos, end_pos - pos);
+  LOG_DEBUG(absl::StrCat("Use deployment name extracted from Azure API path: ", deployment_name));
+  return static_cast<std::string>(deployment_name);
+}
+
+std::string PluginRootContext::rewriteModelInModelApiPath(const std::string_view& path, const std::string& model) {
+  auto pos = path.find(AzureDeploymentPathKeyword);
+  if (pos == std::string_view::npos) {
+    LOG_WARN(absl::StrCat("Deployment keyword not found in Azure request path：", path));
+    return static_cast<std::string>(path);
+  }
+  pos += AzureDeploymentPathKeyword.size();
+  auto end_pos = path.find('/', pos);
+  if (end_pos == std::string_view::npos) {
+    end_pos = path.size();
+  }
+  return absl::StrCat(path.substr(0, pos), model, path.substr(end_pos));
+}
+
+std::string PluginRootContext::doModelMapping(const ModelMapperConfigRule& rule,
+                                              const std::string& old_model) {
+  const auto& exact_model_mapping = rule.exact_model_mapping_;
+  const auto& prefix_model_mapping = rule.prefix_model_mapping_;
+  const auto& default_model_mapping = rule.default_model_mapping_;
   std::string model =
       default_model_mapping.empty() ? old_model : default_model_mapping;
   if (auto it = exact_model_mapping.find(old_model);
@@ -199,14 +256,7 @@ FilterDataStatus PluginRootContext::onBody(const ModelMapperConfigRule& rule,
       }
     }
   }
-  if (!model.empty() && model != old_model) {
-    body_json[model_key] = model;
-    setBuffer(WasmBufferType::HttpRequestBody, 0,
-              std::numeric_limits<size_t>::max(), body_json.dump());
-    LOG_DEBUG(
-        absl::StrCat("model mapped, before:", old_model, ", after:", model));
-  }
-  return FilterDataStatus::Continue;
+  return model;
 }
 
 FilterHeadersStatus PluginContext::onRequestHeaders(uint32_t, bool) {

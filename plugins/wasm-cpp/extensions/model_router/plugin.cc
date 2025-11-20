@@ -47,6 +47,7 @@ namespace {
 constexpr std::string_view SetDecoderBufferLimitKey =
     "set_decoder_buffer_limit";
 constexpr std::string_view DefaultMaxBodyBytes = "104857600";
+constexpr std::string_view AzureDeploymentPathKeyword = "/openai/deployments/";
 
 }  // namespace
 
@@ -152,6 +153,9 @@ FilterHeadersStatus PluginRootContext::onHeader(
   if (!enable) {
     return FilterHeadersStatus::Continue;
   }
+  if (tryProcessAzureApiPath(rule, path)) {
+    return FilterHeadersStatus::Continue;
+  }
   auto content_type_ptr =
       getRequestHeader(Wasm::Common::Http::Header::ContentType);
   auto content_type_value = content_type_ptr->view();
@@ -194,8 +198,30 @@ FilterHeadersStatus PluginRootContext::onHeader(
   return FilterHeadersStatus::Continue;
 }
 
+bool PluginRootContext::tryProcessAzureApiPath(const ModelRouterConfigRule& rule, const std::string_view& path) {
+  auto pos = path.find(AzureDeploymentPathKeyword);
+  if (pos == std::string_view::npos) {
+    return false;
+  }
+  pos += AzureDeploymentPathKeyword.size();
+  auto end_pos = path.find('/', pos);
+  if (end_pos == std::string_view::npos) {
+    end_pos = path.size();
+  }
+  auto deployment_name = path.substr(pos, end_pos - pos);
+  if (deployment_name.empty()) {
+    return false;
+  }
+  LOG_DEBUG(absl::StrCat("Deployment name extracted from Azure API path: ", deployment_name));
+  if (!rule.model_to_header_.empty()) {
+    replaceRequestHeader(rule.model_to_header_, deployment_name);
+  }
+  // Azure deployment name does not contain provider info
+  return true;
+}
+
 FilterDataStatus PluginRootContext::onJsonBody(const ModelRouterConfigRule& rule,
-                                           std::string_view body) {
+                                               const std::string_view& body) {
   const auto& model_key = rule.model_key_;
   const auto& add_provider_header = rule.add_provider_header_;
   const auto& model_to_header = rule.model_to_header_;

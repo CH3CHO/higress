@@ -20,10 +20,11 @@ import (
 type azureServiceUrlType int
 
 const (
-	pathAzurePrefix           = "/openai"
-	pathAzureModelPlaceholder = "{model}"
-	pathAzureWithModelPrefix  = "/openai/deployments/" + pathAzureModelPlaceholder
-	queryAzureApiVersion      = "api-version"
+	pathAzurePrefix                      = "/openai"
+	pathAzureModelPlaceholder            = "{model}"
+	pathAzureLegacyWithDeploymentsPrefix = "/openai/deployments/"
+	pathAzureLegacyWithModelPrefix       = "/openai/deployments/" + pathAzureModelPlaceholder
+	queryAzureApiVersion                 = "api-version"
 )
 
 const (
@@ -78,7 +79,7 @@ func (m *azureProviderInitializer) DefaultCapabilities() map[string]string {
 		if azureModelIrrelevantApis[ApiName(k)] {
 			path = pathAzurePrefix + path
 		} else {
-			path = pathAzureWithModelPrefix + path
+			path = pathAzureLegacyWithModelPrefix + path
 		}
 		capabilities[k] = path
 		log.Debugf("azureProviderInitializer: capability %s -> %s", k, path)
@@ -92,7 +93,7 @@ func (m *azureProviderInitializer) ValidateConfig(config *ProviderConfig) error 
 	}
 	if azureServiceUrl, err := url.Parse(config.azureServiceUrl); err != nil {
 		return fmt.Errorf("invalid azureServiceUrl: %w", err)
-	} else if !azureServiceUrl.Query().Has(queryAzureApiVersion) {
+	} else if strings.HasPrefix(azureServiceUrl.RawPath, pathAzureLegacyWithDeploymentsPrefix) && !azureServiceUrl.Query().Has(queryAzureApiVersion) {
 		return fmt.Errorf("missing %s query parameter in azureServiceUrl: %s", queryAzureApiVersion, config.azureServiceUrl)
 	}
 	if config.apiTokens == nil || len(config.apiTokens) == 0 {

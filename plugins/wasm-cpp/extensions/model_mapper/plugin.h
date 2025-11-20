@@ -63,6 +63,9 @@ class PluginRootContext : public RootContext,
 
  private:
   bool parsePluginConfig(const json&, ModelMapperConfigRule&) override;
+  std::string doModelMapping(const ModelMapperConfigRule& rule, const std::string& old_model);
+  std::string getModelFromAzureApiPath(const std::string_view& path);
+  std::string rewriteModelInModelApiPath(const std::string_view& path, const std::string& model);
 };
 
 // Per-stream context.
