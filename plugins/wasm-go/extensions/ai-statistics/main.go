@@ -71,6 +71,9 @@ const (
 	ChatID                 = "chat_id"
 	ChatRound              = "chat_round"
 
+	ResponseTypeNormal = "normal"
+	ResponseTypeStream = "stream"
+
 	// Inner span attributes
 	ArmsSpanKind     = "gen_ai.span.kind"
 	ArmsModelName    = "gen_ai.model_name"
@@ -295,6 +298,11 @@ func onHttpRequestHeaders(ctx wrapper.HttpContext, config AIStatisticsConfig) ty
 	// Set user defined log & span attributes which type is request_header
 	setAttributeBySource(ctx, config, RequestHeader, nil)
 
+	// Ignore non-JSON request bodies for multi-modality compatibility
+	if contentType, _ := proxywasm.GetHttpRequestHeader("content-type"); !strings.Contains(contentType, "json") {
+		ctx.DontReadRequestBody()
+	}
+
 	return types.ActionContinue
 }
 
@@ -339,6 +347,14 @@ func onHttpRequestBody(ctx wrapper.HttpContext, config AIStatisticsConfig, body 
 	}
 	ctx.SetUserAttribute(ChatRound, userPromptCount)
 
+	responseType := ResponseTypeNormal
+	if stream := gjson.GetBytes(body, "stream"); stream.Exists() && stream.IsBool() {
+		if stream.Bool() {
+			responseType = ResponseTypeStream
+		}
+	}
+	setResponseType(ctx, responseType, true)
+
 	// Write log
 	_ = ctx.WriteUserAttributeToLogWithKey(wrapper.AILogKey)
 	return types.ActionContinue
@@ -382,7 +398,7 @@ func onHttpStreamingBody(ctx wrapper.HttpContext, config AIStatisticsConfig, dat
 		ctx.SetContext(CtxStreamingBodyBuffer, streamingBodyBuffer)
 	}
 
-	ctx.SetUserAttribute(ResponseType, "stream")
+	setResponseType(ctx, ResponseTypeStream, false)
 	if chatID := wrapper.GetValueFromBody(data, []string{
 		"id",
 		"response.id",
@@ -451,7 +467,7 @@ func onHttpResponseBody(ctx wrapper.HttpContext, config AIStatisticsConfig, body
 	responseEndTime := time.Now().UnixMilli()
 	ctx.SetUserAttribute(LLMServiceDuration, responseEndTime-requestStartTime)
 
-	ctx.SetUserAttribute(ResponseType, "normal")
+	setResponseType(ctx, ResponseTypeNormal, false)
 	if chatID := wrapper.GetValueFromBody(body, []string{
 		"id",
 		"response.id",
@@ -482,6 +498,12 @@ func onHttpResponseBody(ctx wrapper.HttpContext, config AIStatisticsConfig, body
 	writeMetric(ctx, config)
 
 	return types.ActionContinue
+}
+
+func setResponseType(ctx wrapper.HttpContext, responseType string, overwrite bool) {
+	if overwrite || ctx.GetUserAttribute(ResponseType) == nil {
+		ctx.SetUserAttribute(ResponseType, responseType)
+	}
 }
 
 // fetches the tracing span value from the specified source.
