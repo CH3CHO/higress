@@ -180,7 +180,7 @@ FilterDataStatus PluginRootContext::onBody(const ModelMapperConfigRule& rule,
     return FilterDataStatus::Continue;
   }
   auto body_json = body_json_opt.value();
-  auto path = getRequestHeader(Wasm::Common::Http::Header::Path);
+  auto path = getRequestHeader(Wasm::Common::Http::Header::Path)->toString();
   bool use_azure_api = false;
   std::string old_model = getModelFromAzureApiPath(path);
   if (!old_model.empty()) {
