@@ -247,6 +247,56 @@ TEST_F(ModelRouterTest, RouteLevelRewriteModelAndHeader) {
   EXPECT_EQ(context_->onRequestBody(request_json.length(), true), FilterDataStatus::Continue);
 }
 
+TEST_F(ModelRouterTest, AzurePathModelToHeader) {
+  std::string configuration = R"(
+{
+  "modelToHeader": "x-higress-llm-model"
+})";
+
+  config_.set(configuration);
+  EXPECT_TRUE(root_context_->configure(configuration.size()));
+
+  path_ = "/openai/deployments/gpt-3.5/chat/completions";
+  std::string request_json = R"({"model": "qwen-long"})";
+  EXPECT_CALL(*mock_context_,
+              setBuffer(testing::_, testing::_, testing::_, testing::_))
+      .Times(0);
+
+  EXPECT_CALL(
+      *mock_context_,
+      replaceHeaderMapValue(testing::_, std::string_view("x-higress-llm-model"),
+                            std::string_view("gpt-3.5")));
+
+  body_.set(request_json);
+  EXPECT_EQ(context_->onRequestHeaders(0, false),
+            FilterHeadersStatus::Continue);
+}
+
+TEST_F(ModelRouterTest, AzurePathModelToHeaderBadPath) {
+  std::string configuration = R"(
+{
+  "modelToHeader": "x-higress-llm-model"
+})";
+
+  config_.set(configuration);
+  EXPECT_TRUE(root_context_->configure(configuration.size()));
+
+  path_ = "/openai/deployments//chat/completions";
+  std::string request_json = R"({"model": "qwen-long"})";
+  EXPECT_CALL(*mock_context_,
+              setBuffer(testing::_, testing::_, testing::_, testing::_))
+      .Times(0);
+
+  EXPECT_CALL(
+      *mock_context_,
+      replaceHeaderMapValue(testing::_, std::string_view("x-higress-llm-model"),
+                            std::string_view("qwen-long")));
+
+  body_.set(request_json);
+  EXPECT_EQ(context_->onRequestHeaders(0, false),
+            FilterHeadersStatus::StopIteration);
+  EXPECT_EQ(context_->onRequestBody(request_json.length(), true), FilterDataStatus::Continue);
+}
 
 TEST_F(ModelRouterTest, RewriteModelAndHeaderMultipartFormData) {
   std::string configuration = R"({

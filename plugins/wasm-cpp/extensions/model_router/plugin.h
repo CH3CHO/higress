@@ -66,12 +66,13 @@ class PluginRootContext : public RootContext,
   ~PluginRootContext() {}
   bool onConfigure(size_t) override;
   FilterHeadersStatus onHeader(PluginContext& ctx, const ModelRouterConfigRule&);
-  FilterDataStatus onJsonBody(const ModelRouterConfigRule&, std::string_view);
+  FilterDataStatus onJsonBody(const ModelRouterConfigRule&, const std::string_view&);
   FilterDataStatus onMultipartBody(PluginContext& ctx, const ModelRouterConfigRule& rule, WasmDataPtr& body, bool end_stream);
   bool configure(size_t);
 
  private:
   bool parsePluginConfig(const json&, ModelRouterConfigRule&) override;
+  bool tryProcessAzureApiPath(const ModelRouterConfigRule& rule, const std::string_view& path);
 };
 
 // Per-stream context.

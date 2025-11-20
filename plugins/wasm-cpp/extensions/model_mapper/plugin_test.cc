@@ -296,6 +296,53 @@ TEST_F(ModelMapperTest, RouteLevelModelMappingTest) {
   EXPECT_EQ(context_->onRequestBody(20, true), FilterDataStatus::Continue);
 }
 
+TEST_F(ModelMapperTest, AzureApiModelMappingTest) {
+  std::string configuration = R"(
+{
+  "modelMapping": {
+     "*": "qwen-long",
+     "gpt-4*": "qwen-max",
+     "gpt-4o": "qwen-turbo",
+     "gpt-4o-mini": "qwen-plus",
+     "text-embedding-v1": ""
+  }
+})";
+
+  config_.set(configuration);
+  EXPECT_TRUE(root_context_->configure(configuration.size()));
+
+  path_ = "/openai/deployments/o1-mini/chat/completions";
+  std::string request_json = R"({"model": "gpt-4"})";
+  EXPECT_CALL(*mock_context_,
+              replaceHeaderMapValue(testing::_, std::string_view(Wasm::Common::Http::Header::Path),
+                                    std::string_view("/openai/deployments/qwen-long/chat/completions")));
+  EXPECT_CALL(*mock_context_,
+              setBuffer(testing::_, testing::_, testing::_, testing::_))
+      .WillOnce([&](WasmBufferType, size_t, size_t, std::string_view body) {
+        EXPECT_EQ(body, R"({"model":"qwen-long"})");
+        return WasmResult::Ok;
+      });
+
+  body_.set(request_json);
+  EXPECT_EQ(context_->onRequestHeaders(0, false),
+            FilterHeadersStatus::StopIteration);
+  EXPECT_EQ(context_->onRequestBody(20, true), FilterDataStatus::Continue);
+
+  path_ = "/openai/deployments//chat/completions";
+  request_json = R"({"model": "gpt-4"})";
+  EXPECT_CALL(*mock_context_,
+              setBuffer(testing::_, testing::_, testing::_, testing::_))
+      .WillOnce([&](WasmBufferType, size_t, size_t, std::string_view body) {
+        EXPECT_EQ(body, R"({"model":"qwen-max"})");
+        return WasmResult::Ok;
+      });
+
+  body_.set(request_json);
+  EXPECT_EQ(context_->onRequestHeaders(0, false),
+            FilterHeadersStatus::StopIteration);
+  EXPECT_EQ(context_->onRequestBody(20, true), FilterDataStatus::Continue);
+}
+
 }  // namespace model_mapper
 }  // namespace null_plugin
 }  // namespace proxy_wasm
