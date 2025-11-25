@@ -836,8 +836,12 @@ func ExtractStreamingEvents(ctx wrapper.HttpContext, chunk []byte) []StreamEvent
 		}
 
 		if lineStartIndex != -1 {
-			value := string(body[valueStartIndex:i])
-			currentEvent.SetValue(currentKey, value)
+			if valueStartIndex == -1 {
+				// Malformed line, skip it.
+			} else {
+				value := string(body[valueStartIndex:i])
+				currentEvent.SetValue(currentKey, value)
+			}
 		} else {
 			// Extra new line. The current event is complete.
 			events = append(events, *currentEvent)

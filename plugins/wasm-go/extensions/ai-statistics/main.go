@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,6 +14,7 @@ import (
 	"github.com/higress-group/wasm-go/pkg/tokenusage"
 	"github.com/higress-group/wasm-go/pkg/wrapper"
 	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 )
 
 func main() {}
@@ -33,18 +33,17 @@ func init() {
 
 const (
 	defaultMaxBodyBytes uint32 = 100 * 1024 * 1024
+
 	// Context consts
-	StatisticsRequestStartTime = "ai-statistics-request-start-time"
-	StatisticsFirstTokenTime   = "ai-statistics-first-token-time"
-	CtxGeneralAtrribute        = "attributes"
-	CtxLogAtrribute            = "logAttributes"
-	CtxStreamingBodyBuffer     = "streamingBodyBuffer"
-	RouteName                  = "route"
-	ClusterName                = "cluster"
-	APIName                    = "api"
-	ConsumerKey                = "x-mse-consumer"
-	RequestPath                = "request_path"
-	SkipProcessing             = "skip_processing"
+	StatisticsRequestStartTime     = "ai-statistics-request-start-time"
+	StatisticsFirstTokenTime       = "ai-statistics-first-token-time"
+	RouteName                      = "route"
+	ClusterName                    = "cluster"
+	APIName                        = "api"
+	ConsumerKey                    = "x-mse-consumer"
+	RequestPath                    = "request_path"
+	SkipProcessing                 = "skip_processing"
+	SkipStreamingBodyLogProcessing = "skip_streaming_body_log_processing"
 
 	// AI API Paths
 	PathOpenAIChatCompletions       = "/v1/chat/completions"
@@ -72,8 +71,6 @@ const (
 	ChatRound              = "chat_round"
 	RequestModelOriginal   = "request_model_original"
 	RequestModelFinal      = "request_model_final"
-	Question               = "question"
-	Answer                 = "answer"
 	Usage                  = "usage"
 
 	ResponseTypeNormal = "normal"
@@ -91,29 +88,13 @@ const (
 	RuleFirst   = "first"
 	RuleReplace = "replace"
 	RuleAppend  = "append"
+
+	defaultRequestBodyLengthLimit  = 10 * 1024 * 1024
+	defaultResponseBodyLengthLimit = 10 * 1024 * 1024
 )
 
 var (
 	builtInAttributes = []Attribute{
-		{
-			Key:         Question,
-			Value:       "messages.@reverse.0.content",
-			ValueSource: RequestBody,
-			ApplyToLog:  true,
-		},
-		{
-			Key:         Answer,
-			Value:       "choices.0.delta.content",
-			ValueSource: ResponseStreamingBody,
-			Rule:        RuleAppend,
-			ApplyToLog:  true,
-		},
-		{
-			Key:         Answer,
-			Value:       "choices.0.message.content",
-			ValueSource: ResponseBody,
-			ApplyToLog:  true,
-		},
 		{
 			Key:         Usage,
 			Value:       "usage",
@@ -140,6 +121,10 @@ var (
 			ApplyToLog:  true,
 		},
 	}
+
+	bodyToLongPlaceholder = "too-long"
+	redactedPlaceholder   = []byte("[REDACTED]")
+	bodyRedactingOptions  = &sjson.Options{Optimistic: true, ReplaceInPlace: false}
 )
 
 // TracingSpan is the tracing span configuration.
@@ -161,11 +146,13 @@ type AIStatisticsConfig struct {
 	counterMetrics map[string]proxywasm.MetricCounter
 	// Attributes to be recorded in log & span
 	attributes []Attribute
-	// If there exist attributes extracted from streaming body, chunks should be buffered
-	shouldBufferStreamingBody bool
 	// If disableOpenaiUsage is true, model/input_token/output_token logs will be skipped
 	disableOpenaiUsage bool
 	valueLengthLimit   int
+	// The max length of request body to be logged
+	requestBodyLengthLimit int
+	// The max length of response body to be logged
+	responseBodyLengthLimit int
 	// Path suffixes to enable the plugin on
 	enablePathSuffixes []string
 	// Content types to enable response body buffering
@@ -260,6 +247,16 @@ func parseConfig(configJson gjson.Result, config *AIStatisticsConfig) error {
 	} else {
 		config.valueLengthLimit = 4000
 	}
+	if requestBodyLengthLimit := configJson.Get("request_body_length_limit"); requestBodyLengthLimit.Exists() {
+		config.requestBodyLengthLimit = int(requestBodyLengthLimit.Int())
+	} else {
+		config.requestBodyLengthLimit = defaultRequestBodyLengthLimit
+	}
+	if responseBodyLengthLimit := configJson.Get("response_body_length_limit"); responseBodyLengthLimit.Exists() {
+		config.responseBodyLengthLimit = int(responseBodyLengthLimit.Int())
+	} else {
+		config.responseBodyLengthLimit = defaultResponseBodyLengthLimit
+	}
 	config.attributes = make([]Attribute, len(attributeConfigs))
 	for i, attributeConfig := range attributeConfigs {
 		attribute := Attribute{}
@@ -267,9 +264,6 @@ func parseConfig(configJson gjson.Result, config *AIStatisticsConfig) error {
 		if err != nil {
 			log.Errorf("parse config failed, %v", err)
 			return err
-		}
-		if attribute.ValueSource == ResponseStreamingBody {
-			config.shouldBufferStreamingBody = true
 		}
 		if attribute.Rule != "" && attribute.Rule != RuleFirst && attribute.Rule != RuleReplace && attribute.Rule != RuleAppend {
 			return errors.New("value of rule must be one of [nil, first, replace, append]")
@@ -390,6 +384,8 @@ func onHttpRequestBody(ctx wrapper.HttpContext, config AIStatisticsConfig, body 
 		return types.ActionContinue
 	}
 
+	ctx.SetUserAttribute(RequestBody, getRequestBodyToLog(body, &config))
+
 	// Set user defined log & span attributes.
 	setAttributeBySource(ctx, config, RequestBody, body)
 	// Set span attributes for ARMS.
@@ -438,19 +434,67 @@ func onHttpRequestBody(ctx wrapper.HttpContext, config AIStatisticsConfig, body 
 	return types.ActionContinue
 }
 
+func getRequestBodyToLog(body []byte, config *AIStatisticsConfig) string {
+	if len(body) <= config.requestBodyLengthLimit {
+		return string(body)
+	}
+	redactedBody := body
+	log.Debugf("request body length %d exceeds limit %d, start redacting", len(redactedBody), config.requestBodyLengthLimit)
+	for _, itemsKey := range []string{
+		"messages", // /chat/completions requests
+		"input",    // /embeddings requests. this field can be an array of strings or a single string. For now, we only redact when it's an array.
+	} {
+		itemsLength := int(gjson.GetBytes(redactedBody, itemsKey+".#").Int())
+		if itemsLength <= 0 {
+			continue
+		}
+		for i := itemsLength - 1; i >= 0; i-- {
+			itemPath := fmt.Sprintf("%s.%d", itemsKey, i)
+			log.Debugf("redacting request body at %s, current length %d", itemPath, len(redactedBody))
+			if newRedactedBody, err := sjson.SetBytesOptions(redactedBody, itemPath, redactedPlaceholder, bodyRedactingOptions); err != nil {
+				log.Errorf("failed to redact request body at %s: %v", itemPath, err)
+			} else {
+				redactedBody = newRedactedBody
+				log.Debugf("request body redacted at %s, new length %d", itemPath, len(redactedBody))
+				if len(redactedBody) <= config.requestBodyLengthLimit {
+					break
+				}
+			}
+		}
+	}
+	if len(redactedBody) <= config.requestBodyLengthLimit {
+		return string(redactedBody)
+	}
+	log.Debugf("request body length after redacting still exceeds limit, set to placeholder")
+	return bodyToLongPlaceholder
+}
+
 func onHttpResponseHeaders(ctx wrapper.HttpContext, config AIStatisticsConfig) types.Action {
 	contentType, _ := proxywasm.GetHttpResponseHeader("content-type")
 
-	if !isContentTypeEnabled(contentType, config.enableContentTypes) {
-		log.Debugf("ai-statistics: skipping response for content type %s (not in enabled content types)", contentType)
-		// Set skip processing flag and avoid reading response body
-		ctx.SetContext(SkipProcessing, true)
-		ctx.DontReadResponseBody()
-		return types.ActionContinue
-	}
+	// Comment by Trip.com: disable content type filtering for response body processing since we only support JSON and event-stream now.
+	//if !isContentTypeEnabled(contentType, config.enableContentTypes) {
+	//	log.Debugf("ai-statistics: skipping response for content type %s (not in enabled content types)", contentType)
+	//	// Set skip processing flag and avoid reading response body
+	//	ctx.SetContext(SkipProcessing, true)
+	//	ctx.DontReadResponseBody()
+	//	return types.ActionContinue
+	//}
 
-	if !strings.Contains(contentType, "text/event-stream") {
+	if strings.Contains(contentType, "application/json") {
+		// Non-streaming JSON response body will be processed in onHttpResponseBody
 		ctx.BufferResponseBody()
+	} else if strings.Contains(contentType, "text/event-stream") {
+		// Do nothing, streaming body will be processed in onHttpStreamingBody
+	} else {
+		if status, _ := proxywasm.GetHttpResponseHeader(":status"); status == "200" {
+			// For other content types, skip processing for successful responses
+			ctx.SetContext(SkipProcessing, true)
+			ctx.DontReadResponseBody()
+		} else {
+			// For error responses, buffer body for a full response body logging
+			ctx.BufferResponseBody()
+		}
 	}
 
 	// Set user defined log & span attributes.
@@ -463,17 +507,6 @@ func onHttpStreamingBody(ctx wrapper.HttpContext, config AIStatisticsConfig, dat
 	// Check if processing should be skipped
 	if ctx.GetBoolContext(SkipProcessing, false) {
 		return data
-	}
-
-	// Buffer stream body for record log & span attributes
-	if config.shouldBufferStreamingBody {
-		streamingBodyBuffer, ok := ctx.GetContext(CtxStreamingBodyBuffer).([]byte)
-		if !ok {
-			streamingBodyBuffer = data
-		} else {
-			streamingBodyBuffer = append(streamingBodyBuffer, data...)
-		}
-		ctx.SetContext(CtxStreamingBodyBuffer, streamingBodyBuffer)
 	}
 
 	setResponseType(ctx, ResponseTypeStream, false)
@@ -510,19 +543,13 @@ func onHttpStreamingBody(ctx wrapper.HttpContext, config AIStatisticsConfig, dat
 			setSpanAttribute(ArmsOutputToken, usage.OutputToken)
 		}
 	}
+
+	setAttributeBySource(ctx, config, ResponseStreamingBody, data)
+
 	// If the end of the stream is reached, record metrics/logs/spans.
 	if endOfStream {
 		responseEndTime := time.Now().UnixMilli()
 		ctx.SetUserAttribute(LLMServiceDuration, responseEndTime-requestStartTime)
-
-		// Set user defined log & span attributes.
-		if config.shouldBufferStreamingBody {
-			streamingBodyBuffer, ok := ctx.GetContext(CtxStreamingBodyBuffer).([]byte)
-			if !ok {
-				return data
-			}
-			setAttributeBySource(ctx, config, ResponseStreamingBody, streamingBodyBuffer)
-		}
 
 		// Write log
 		_ = ctx.WriteUserAttributeToLogWithKey(wrapper.AILogKey)
@@ -566,6 +593,8 @@ func onHttpResponseBody(ctx wrapper.HttpContext, config AIStatisticsConfig, body
 		}
 	}
 
+	ctx.SetUserAttribute(ResponseBody, getResponseBodyToLog(body, &config))
+
 	// Set user defined log & span attributes.
 	setAttributeBySource(ctx, config, ResponseBody, body)
 
@@ -578,6 +607,41 @@ func onHttpResponseBody(ctx wrapper.HttpContext, config AIStatisticsConfig, body
 	return types.ActionContinue
 }
 
+func getResponseBodyToLog(body []byte, config *AIStatisticsConfig) string {
+	if len(body) <= config.responseBodyLengthLimit {
+		return string(body)
+	}
+	redactedBody := body
+	log.Debugf("response body length %d exceeds limit %d, start redacting", len(redactedBody), config.responseBodyLengthLimit)
+	for _, itemsKey := range []string{
+		"choices", // /chat/completions responses
+		"data",    // /embeddings responses
+	} {
+		itemsLength := int(gjson.GetBytes(redactedBody, itemsKey+".#").Int())
+		if itemsLength <= 0 {
+			continue
+		}
+		for i := itemsLength - 1; i >= 0; i-- {
+			itemPath := fmt.Sprintf("%s.%d", itemsKey, i)
+			log.Debugf("redacting response body at %s, current length %d", itemPath, len(redactedBody))
+			if newRedactedBody, err := sjson.SetBytesOptions(redactedBody, itemPath, redactedPlaceholder, bodyRedactingOptions); err != nil {
+				log.Errorf("failed to redact response body at %s: %v", itemPath, err)
+			} else {
+				redactedBody = newRedactedBody
+				log.Debugf("response body redacted at %s, new length %d", itemPath, len(redactedBody))
+				if len(redactedBody) <= config.responseBodyLengthLimit {
+					break
+				}
+			}
+		}
+	}
+	if len(redactedBody) <= config.responseBodyLengthLimit {
+		return string(redactedBody)
+	}
+	log.Debugf("response body length after redacting still exceeds limit, set to placeholder")
+	return bodyToLongPlaceholder
+}
+
 func setResponseType(ctx wrapper.HttpContext, responseType string, overwrite bool) {
 	if overwrite || ctx.GetUserAttribute(ResponseType) == nil {
 		ctx.SetUserAttribute(ResponseType, responseType)
@@ -587,6 +651,14 @@ func setResponseType(ctx wrapper.HttpContext, responseType string, overwrite boo
 // fetches the tracing span value from the specified source.
 
 func setAttributeBySource(ctx wrapper.HttpContext, config AIStatisticsConfig, source string, body []byte) {
+	streamingEvents := make([]StreamEvent, 0)
+	if source == ResponseStreamingBody {
+		log.Debugf("parsing streaming body chunks for attribute extraction")
+		// get buffered streaming body chunks for one-time to reduce memory footprint.
+		streamingEvents = ExtractStreamingEvents(ctx, body)
+		combineStreamingEventsForLog(ctx, &config, streamingEvents)
+	}
+
 	for _, attribute := range config.attributes {
 		var key string
 		var value interface{}
@@ -602,7 +674,7 @@ func setAttributeBySource(ctx wrapper.HttpContext, config AIStatisticsConfig, so
 			case ResponseHeader:
 				value, _ = proxywasm.GetHttpResponseHeader(attribute.Value)
 			case ResponseStreamingBody:
-				value = extractStreamingBodyByJsonPath(body, attribute.Value, attribute.Rule)
+				value = extractStreamingBodyByJsonPath(streamingEvents, attribute.Value, attribute.Rule, ctx.GetUserAttribute(attribute.Value))
 			case ResponseBody:
 				value = gjson.GetBytes(body, attribute.Value).Value()
 			default:
@@ -638,20 +710,86 @@ func setAttributeBySource(ctx wrapper.HttpContext, config AIStatisticsConfig, so
 	}
 }
 
-func extractStreamingBodyByJsonPath(data []byte, jsonPath string, rule string) interface{} {
-	chunks := bytes.Split(bytes.TrimSpace(wrapper.UnifySSEChunk(data)), []byte("\n\n"))
+func combineStreamingEventsForLog(ctx wrapper.HttpContext, config *AIStatisticsConfig, events []StreamEvent) {
+	log.Debugf("adding %d streaming events to the full response body for log", len(events))
+	if events == nil || len(events) == 0 {
+		return
+	}
+
+	if ctx.GetContext(SkipStreamingBodyLogProcessing) != nil {
+		log.Debugf("skipping streaming body log processing as per context flag")
+		return
+	}
+
+	responseBody, _ := ctx.GetUserAttribute(ResponseBody).(string)
+
+	processedFields := make(map[string]bool)
+	for i, event := range events {
+		log.Debugf("processing streaming event %d: %s", i, event.Data)
+		dataJson := gjson.Parse(event.Data)
+		if !dataJson.Exists() || !dataJson.IsObject() {
+			log.Debugf("streaming event %d's data does not contain a valid JSON object", i)
+			continue
+		}
+		dataJson.ForEach(func(key, value gjson.Result) bool {
+			log.Debugf("processing key %s in streaming event %d", key.Str, i)
+			if key.Str == "choices" && value.IsArray() {
+				// TODO: Only support one choice for now
+				choice := value.Get("0")
+				currentContent := gjson.Get(responseBody, "choices.0.delta.content")
+				log.Debugf("current streaming delta choice content for log at key %s: %s", key.Str, currentContent.String())
+				if !currentContent.Exists() {
+					if newBody, err := sjson.SetRaw(responseBody, "choices", value.Raw); err == nil {
+						responseBody = newBody
+					} else {
+						log.Errorf("failed to init streaming delta choice content for log at key %s: %v", key.Str, err)
+					}
+				} else {
+					newContent := currentContent.String() + choice.Get("delta.content").String()
+					log.Debugf("combined streaming delta choice content for log at key %s: %s", key.Str, newContent)
+					if newBody, err := sjson.Set(responseBody, "choices.0.delta.content", newContent); err == nil {
+						responseBody = newBody
+					} else {
+						log.Errorf("failed to combine streaming delta choice content for log at key %s: %v", key.Str, err)
+					}
+				}
+			} else if !processedFields[key.Str] {
+				if newBody, err := sjson.SetRaw(responseBody, key.Str, value.Raw); err == nil {
+					responseBody = newBody
+					processedFields[key.Str] = true
+				} else {
+					log.Errorf("failed to combine streaming body for log at key %s: %v", key.Str, err)
+				}
+			}
+			return true
+		})
+		if len(responseBody) > config.responseBodyLengthLimit {
+			log.Debugf("combined response body length for log exceeds limit %d, stop processing further streaming events", config.responseBodyLengthLimit)
+			ctx.SetContext(SkipStreamingBodyLogProcessing, true)
+		} else {
+			ctx.SetUserAttribute(ResponseBody, responseBody)
+		}
+	}
+}
+
+func extractStreamingBodyByJsonPath(events []StreamEvent, jsonPath string, rule string, currentValue interface{}) interface{} {
+	if events == nil || len(events) == 0 {
+		return nil
+	}
 	var value interface{}
 	if rule == RuleFirst {
-		for _, chunk := range chunks {
-			jsonObj := gjson.GetBytes(chunk, jsonPath)
-			if jsonObj.Exists() {
-				value = jsonObj.Value()
-				break
+		if currentValue != nil {
+			for _, event := range events {
+				jsonObj := gjson.Get(event.Data, jsonPath)
+				if jsonObj.Exists() {
+					value = jsonObj.Value()
+					break
+				}
 			}
 		}
 	} else if rule == RuleReplace {
-		for _, chunk := range chunks {
-			jsonObj := gjson.GetBytes(chunk, jsonPath)
+		for _, event := range events {
+			jsonObj := gjson.Get(event.Data, jsonPath)
 			if jsonObj.Exists() {
 				value = jsonObj.Value()
 			}
@@ -659,8 +797,11 @@ func extractStreamingBodyByJsonPath(data []byte, jsonPath string, rule string) i
 	} else if rule == RuleAppend {
 		// extract llm response
 		var strValue string
-		for _, chunk := range chunks {
-			jsonObj := gjson.GetBytes(chunk, jsonPath)
+		if currentStrValue, isStr := currentValue.(string); isStr {
+			strValue = currentStrValue
+		}
+		for _, event := range events {
+			jsonObj := gjson.Get(event.Data, jsonPath)
 			if jsonObj.Exists() {
 				strValue += jsonObj.String()
 			}
