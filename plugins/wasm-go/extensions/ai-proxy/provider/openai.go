@@ -7,9 +7,11 @@ import (
 	"strings"
 
 	"github.com/alibaba/higress/plugins/wasm-go/extensions/ai-proxy/util"
+	"github.com/higress-group/proxy-wasm-go-sdk/proxywasm/types"
 	"github.com/higress-group/wasm-go/pkg/log"
 	"github.com/higress-group/wasm-go/pkg/wrapper"
-	"github.com/higress-group/proxy-wasm-go-sdk/proxywasm/types"
+	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 )
 
 // openaiProvider is the provider for OpenAI service.
@@ -139,6 +141,23 @@ func (m *openaiProvider) OnRequestBody(ctx wrapper.HttpContext, apiName ApiName,
 	if !m.config.needToProcessRequestBody(apiName) {
 		// We don't need to process the request body for other APIs.
 		return types.ActionContinue, nil
+	}
+	if apiName == ApiNameChatCompletion {
+		if stream := gjson.GetBytes(body, "stream"); stream.Exists() {
+			switch stream.Type {
+			case gjson.True, gjson.False:
+				// Do nothing
+				break
+			default:
+				// Invalid stream value, delete it from the request
+				log.Debugf("[ai-proxy] invalid stream value in chat completion request, removed it")
+				if transformedBody, err := sjson.DeleteBytes(body, "stream"); err != nil {
+					log.Debugf("[ai-proxy] failed to delete invalid stream value: %v", err)
+				} else {
+					body = transformedBody
+				}
+			}
+		}
 	}
 	return m.config.handleRequestBody(m, m.contextCache, ctx, apiName, body)
 }
