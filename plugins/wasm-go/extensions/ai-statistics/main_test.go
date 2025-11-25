@@ -646,7 +646,13 @@ func TestMetrics(t *testing.T) {
 			// 添加延迟，确保有足够的时间间隔来计算 llm_service_duration
 			time.Sleep(10 * time.Millisecond)
 
-			// 3. 处理响应体
+			// 3. 处理响应头（此步骤非常重要，必须通过正确的响应头来告知插件选择使用流式处理方式还是非流式处理方式）
+			host.CallOnHttpResponseHeaders([][2]string{
+				{":status", "200"},
+				{"content-type", "application/json; charset=utf-8"},
+			})
+
+			// 4. 处理响应体
 			responseBody := []byte(`{
 				"choices": [{"message": {"content": "Hello, how can I help you?"}}],
 				"usage": {"prompt_tokens": 5, "completion_tokens": 8, "total_tokens": 13},
@@ -654,10 +660,10 @@ func TestMetrics(t *testing.T) {
 			}`)
 			host.CallOnHttpResponseBody(responseBody)
 
-			// 4. 完成请求
+			// 5. 完成请求
 			host.CompleteHttp()
 
-			// 5. 验证指标值
+			// 6. 验证指标值
 			// 检查输入 token 指标
 			inputTokenMetric := "route.api-v1.upstream.cluster-1.model.gpt-3.5-turbo.consumer.user1.metric.input_token"
 			inputTokenValue, err := host.GetCounterMetric(inputTokenMetric)
