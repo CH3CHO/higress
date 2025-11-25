@@ -358,6 +358,55 @@ func RunOpenAIOnHttpRequestBodyTests(t *testing.T) {
 			require.True(t, hasOpenAILogs, "Should have OpenAI processing logs")
 		})
 
+		// 测试OpenAI请求体处理（聊天完成接口，异常的 stream 字段）
+		t.Run("openai chat completion request body with null stream field", func(t *testing.T) {
+			host, status := test.NewTestHost(basicOpenAIConfig)
+			defer host.Reset()
+			require.Equal(t, types.OnPluginStartStatusOK, status)
+
+			// 先设置请求头
+			host.CallOnHttpRequestHeaders([][2]string{
+				{":authority", "example.com"},
+				{":path", "/v1/chat/completions"},
+				{":method", "POST"},
+				{"Content-Type", "application/json"},
+			})
+
+			// 设置请求体
+			requestBody := `{"model":"gpt-3.5-turbo","stream":null,"messages":[{"role":"user","content":"test"}]}`
+			action := host.CallOnHttpRequestBody([]byte(requestBody))
+
+			require.Equal(t, types.ActionContinue, action)
+
+			// 验证请求体是否被正确处理
+			processedBody := host.GetRequestBody()
+			require.NotNil(t, processedBody)
+
+			// 验证模型名称是否被正确映射
+			require.Contains(t, string(processedBody), "gpt-3.5-turbo", "Original model name should be preserved or mapped")
+			require.NotContains(t, string(processedBody), "stream", "Invalid stream field should be removed")
+
+			// 检查是否有相关的处理日志
+			debugLogs := host.GetDebugLogs()
+			infoLogs := host.GetInfoLogs()
+
+			// 验证是否有OpenAI相关的处理日志
+			hasOpenAILogs := false
+			for _, log := range debugLogs {
+				if strings.Contains(log, "openai") {
+					hasOpenAILogs = true
+					break
+				}
+			}
+			for _, log := range infoLogs {
+				if strings.Contains(log, "openai") {
+					hasOpenAILogs = true
+					break
+				}
+			}
+			require.True(t, hasOpenAILogs, "Should have OpenAI processing logs")
+		})
+
 		// 测试OpenAI请求体处理（嵌入接口）
 		t.Run("openai embeddings request body", func(t *testing.T) {
 			host, status := test.NewTestHost(basicOpenAIConfig)
