@@ -1,17 +1,40 @@
 package provider
 
 import (
+	"fmt"
 	"net/http"
 	"path"
 	"strings"
 
 	"github.com/alibaba/higress/plugins/wasm-go/extensions/ai-proxy/util"
 	"github.com/higress-group/proxy-wasm-go-sdk/proxywasm/types"
+	"github.com/higress-group/wasm-go/pkg/log"
 	"github.com/higress-group/wasm-go/pkg/wrapper"
+	"github.com/tidwall/sjson"
 )
 
 const (
 	defaultVllmDomain = "vllm-service.cluster.local"
+)
+
+var (
+	vllmRequestFieldBlacklist = []string{
+		"timeout",
+		"stream_timeout",
+		"fallback",
+		"thinking",
+		"cache",
+		"max_retries",
+		"api_version",
+	}
+	vllmNullRequestFieldBlacklist = map[ApiName][]string{
+		// If a field in the list has null as its value,
+		// it shall be deleted from the request.
+		ApiNameCohereV1Rerank: {
+			"top_n",
+			"return_documents",
+		},
+	}
 )
 
 // isVllmDirectPath checks if the path is a known standard vLLM interface path.
@@ -133,9 +156,43 @@ func (m *vllmProvider) TransformRequestHeaders(ctx wrapper.HttpContext, apiName 
 	headers.Del("Content-Length")
 }
 
-func (m *vllmProvider) TransformRequestBody(ctx wrapper.HttpContext, apiName ApiName, body []byte) ([]byte, error) {
-	// For vLLM, we can use the default transformation which handles model mapping
-	return m.config.defaultTransformRequestBody(ctx, apiName, body)
+func (m *vllmProvider) TransformRequestBody(ctx wrapper.HttpContext, apiName ApiName, body []byte) (transformedBody []byte, err error) {
+	transformedBody = body
+	err = nil
+
+	transformedBody, err = m.config.defaultTransformRequestBody(ctx, apiName, transformedBody)
+	if err != nil {
+		return
+	}
+
+	transformedBody, err = m.transformRequestFields(apiName, transformedBody)
+	if err != nil {
+		log.Errorf("vllmProvider: transform request fields failed: %v", err)
+	}
+
+	return
+}
+
+func (m *vllmProvider) transformRequestFields(apiName ApiName, body []byte) ([]byte, error) {
+	// Expand extra_body field if exists before everything else
+	body = expandExtraBodyField(body)
+
+	// Remove fields not supported by vLLM
+	for _, field := range vllmRequestFieldBlacklist {
+		if transformedBody, err := sjson.DeleteBytes(body, field); err != nil {
+			return body, fmt.Errorf("vllmProvider: failed to delete %s from request body, err: %v", field, err)
+		} else {
+			body = transformedBody
+		}
+	}
+
+	if transformedBody, err := deleteNullValueFields(body, vllmNullRequestFieldBlacklist[apiName]); err != nil {
+		return body, fmt.Errorf("vllmProvider: failed to delete blacklisted request fields with null value from request body: %v", err)
+	} else {
+		body = transformedBody
+	}
+
+	return body, nil
 }
 
 func (m *vllmProvider) GetApiName(path string) ApiName {

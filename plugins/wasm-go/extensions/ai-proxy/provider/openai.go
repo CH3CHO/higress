@@ -2,6 +2,7 @@ package provider
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"path"
 	"strings"
@@ -10,7 +11,6 @@ import (
 	"github.com/higress-group/proxy-wasm-go-sdk/proxywasm/types"
 	"github.com/higress-group/wasm-go/pkg/log"
 	"github.com/higress-group/wasm-go/pkg/wrapper"
-	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
 
@@ -18,6 +18,28 @@ import (
 
 const (
 	defaultOpenaiDomain = "api.openai.com"
+)
+
+var (
+	openaiRequestFieldBlacklist = []string{
+		"timeout",
+		"stream_timeout",
+		"fallback",
+		"thinking",
+		"cache",
+		"max_retries",
+		"api_version",
+	}
+	openaiNullRequestFieldBlacklist = map[ApiName][]string{
+		// If a field in the list has null as its value,
+		// it shall be deleted from the request.
+		ApiNameChatCompletion: {
+			"stream",
+		},
+		ApiNameEmbeddings: {
+			"encoding_format",
+		},
+	}
 )
 
 type openaiProviderInitializer struct{}
@@ -142,35 +164,54 @@ func (m *openaiProvider) OnRequestBody(ctx wrapper.HttpContext, apiName ApiName,
 		// We don't need to process the request body for other APIs.
 		return types.ActionContinue, nil
 	}
-	if apiName == ApiNameChatCompletion {
-		if stream := gjson.GetBytes(body, "stream"); stream.Exists() {
-			switch stream.Type {
-			case gjson.True, gjson.False:
-				// Do nothing
-				break
-			default:
-				// Invalid stream value, delete it from the request
-				log.Debugf("[ai-proxy] invalid stream value in chat completion request, removed it")
-				if transformedBody, err := sjson.DeleteBytes(body, "stream"); err != nil {
-					log.Debugf("[ai-proxy] failed to delete invalid stream value: %v", err)
-				} else {
-					body = transformedBody
-				}
-			}
-		}
-	}
 	return m.config.handleRequestBody(m, m.contextCache, ctx, apiName, body)
 }
 
-func (m *openaiProvider) TransformRequestBody(ctx wrapper.HttpContext, apiName ApiName, body []byte) ([]byte, error) {
+func (m *openaiProvider) TransformRequestBody(ctx wrapper.HttpContext, apiName ApiName, body []byte) (transformedBody []byte, err error) {
+	transformedBody = body
+	err = nil
+
 	if m.config.responseJsonSchema != nil {
 		request := &chatCompletionRequest{}
-		if err := decodeChatCompletionRequest(body, request); err != nil {
+		if err := decodeChatCompletionRequest(transformedBody, request); err != nil {
 			return nil, err
 		}
 		log.Debugf("[ai-proxy] set response format to %s", m.config.responseJsonSchema)
 		request.ResponseFormat = m.config.responseJsonSchema
 		body, _ = json.Marshal(request)
 	}
-	return m.config.defaultTransformRequestBody(ctx, apiName, body)
+
+	transformedBody, err = m.config.defaultTransformRequestBody(ctx, apiName, transformedBody)
+	if err != nil {
+		return
+	}
+
+	transformedBody, err = m.transformRequestFields(apiName, transformedBody)
+	if err != nil {
+		log.Errorf("azureProvider: transform request fields failed: %v", err)
+	}
+
+	return
+}
+
+func (m *openaiProvider) transformRequestFields(apiName ApiName, body []byte) ([]byte, error) {
+	// Expand extra_body field if exists before everything else
+	body = expandExtraBodyField(body)
+
+	// Remove fields not supported by OpenAI
+	for _, field := range openaiRequestFieldBlacklist {
+		if transformedBody, err := sjson.DeleteBytes(body, field); err != nil {
+			return body, fmt.Errorf("openaiProvider: failed to delete %s from request body, err: %v", field, err)
+		} else {
+			body = transformedBody
+		}
+	}
+
+	if transformedBody, err := deleteNullValueFields(body, openaiNullRequestFieldBlacklist[apiName]); err != nil {
+		return body, fmt.Errorf("openaiProvider: failed to delete blacklisted request fields with null value from request body: %v", err)
+	} else {
+		body = transformedBody
+	}
+
+	return body, nil
 }
