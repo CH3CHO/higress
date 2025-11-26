@@ -90,7 +90,7 @@ func deleteNullValueFields(body []byte, fields []string) ([]byte, error) {
 	}
 	for _, field := range fields {
 		if result := gjson.GetBytes(body, field); result.Exists() && result.Type == gjson.Null {
-			// Invalid stream value, delete it from the request
+			// null value is not allowed for the given field, delete it from the request
 			log.Debugf("[ai-proxy] null value found in field %s, removed it", field)
 			if transformedBody, err := sjson.DeleteBytes(body, field); err != nil {
 				return body, fmt.Errorf("[ai-proxy] failed to delete %s field with null value: %v", field, err)

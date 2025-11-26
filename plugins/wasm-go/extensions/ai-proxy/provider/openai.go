@@ -188,7 +188,7 @@ func (m *openaiProvider) TransformRequestBody(ctx wrapper.HttpContext, apiName A
 
 	transformedBody, err = m.transformRequestFields(apiName, transformedBody)
 	if err != nil {
-		log.Errorf("azureProvider: transform request fields failed: %v", err)
+		log.Errorf("openaiProvider: transform request fields failed: %v", err)
 	}
 
 	return
