@@ -108,6 +108,13 @@ var (
 	azureResponseFormatSupportedModelKeywords = []string{
 		"4o",
 	}
+	azureNullRequestFieldBlacklist = map[ApiName][]string{
+		// If a field in the list has null as its value,
+		// it shall be deleted from the request.
+		ApiNameEmbeddings: {
+			"encoding_format",
+		},
+	}
 )
 
 // azureProvider is the provider for Azure OpenAI service.
@@ -257,7 +264,7 @@ func (m *azureProvider) transformRequestFields(ctx wrapper.HttpContext, apiName 
 	}()
 
 	// Expand extra_body field if exists before everything else
-	body = m.expandExtraBodyField(body)
+	body = expandExtraBodyField(body)
 
 	// Remove fields not supported by Azure OpenAI
 	for _, field := range azureRequestFieldBlacklist {
@@ -266,6 +273,12 @@ func (m *azureProvider) transformRequestFields(ctx wrapper.HttpContext, apiName 
 		} else {
 			body = transformedBody
 		}
+	}
+
+	if transformedBody, err := deleteNullValueFields(body, azureNullRequestFieldBlacklist[apiName]); err != nil {
+		return body, fmt.Errorf("azureProvider: failed to delete blacklisted request fields with null value from request body: %v", err)
+	} else {
+		body = transformedBody
 	}
 
 	// Some newer models hosted by Azure uses max_completion_tokens instead of max_tokens,
@@ -299,34 +312,6 @@ func (m *azureProvider) transformRequestFields(ctx wrapper.HttpContext, apiName 
 	}
 
 	return body, nil
-}
-
-func (m *azureProvider) expandExtraBodyField(body []byte) []byte {
-	extraBody := gjson.GetBytes(body, requestFieldExtraBody)
-	if !extraBody.Exists() {
-		return body
-	}
-	log.Debugf("azureProvider: expanding %s field into request body", requestFieldExtraBody)
-	if extraBody.Type != gjson.JSON {
-		log.Warnf("azureProvider: %s field is not a JSON object, skipping expansion", requestFieldExtraBody)
-		return body
-	}
-	if cleanedBody, err := sjson.DeleteBytes(body, requestFieldExtraBody); err != nil {
-		log.Warnf("azureProvider: failed to delete %s in request body, err: %v", requestFieldExtraBody, err)
-		return body
-	} else {
-		body = cleanedBody
-	}
-	extraBody.ForEach(func(key, value gjson.Result) bool {
-		log.Debugf("azureProvider: moving field %s into request body", key.String())
-		if transformedBody, err := sjson.SetRawBytes(body, key.String(), []byte(value.Raw)); err != nil {
-			log.Warnf("azureProvider: failed to set %s into request body, value: %s err: %v", key.String(), value.Raw, err)
-		} else {
-			body = transformedBody
-		}
-		return true
-	})
-	return body
 }
 
 func (m *azureProvider) transformChatCompletionRequestFields(ctx wrapper.HttpContext, model string, body []byte) (_ []byte, needReadResponseBody bool, err error) {
