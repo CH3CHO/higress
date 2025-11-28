@@ -109,7 +109,7 @@ func init() {
 func addPathSuffixWithoutV1() {
 	var extraPathSuffixToApiName []pair[string, provider.ApiName]
 	for _, p := range pathSuffixToApiName {
-		if strings.HasPrefix(string(p.value), "openai/") && strings.HasPrefix(p.key, "/v1/") {
+		if strings.HasPrefix(p.key, "/v1/") {
 			// Add the same suffix without /v1
 			extraPathSuffixToApiName = append(extraPathSuffixToApiName, pair[string, provider.ApiName]{key: p.key[3:], value: p.value})
 		}
