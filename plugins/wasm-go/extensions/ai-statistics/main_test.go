@@ -987,3 +987,72 @@ func TestCompleteFlow(t *testing.T) {
 		})
 	})
 }
+
+func TestExtractStreamingBodyByJsonPath(t *testing.T) {
+	type testCase struct {
+		name     string
+		events   []StreamEvent
+		jsonPath string
+		rule     string
+		current  interface{}
+		expect   interface{}
+	}
+
+	events := []StreamEvent{
+		{Data: `{"val": "first"}`},
+		{Data: `{"val": "second"}`},
+		{Data: `{"val": "third"}`},
+		{Data: `{"val": null}`},
+		{Data: `{"another-val": "new"}`},
+	}
+
+	tests := []testCase{
+		{
+			name:     "RuleFirst with nil currentValue",
+			events:   events,
+			jsonPath: "val",
+			rule:     RuleFirst,
+			current:  nil,
+			expect:   "first",
+		},
+		{
+			name:     "RuleFirst with non-nil currentValue",
+			events:   events,
+			jsonPath: "val",
+			rule:     RuleFirst,
+			current:  "existing",
+			expect:   "existing",
+		},
+		{
+			name:     "RuleReplace (should get last non-null)",
+			events:   events,
+			jsonPath: "val",
+			rule:     RuleReplace,
+			current:  "existing",
+			expect:   "third",
+		},
+		{
+			name:     "RuleAppend",
+			events:   events,
+			jsonPath: "val",
+			rule:     RuleAppend,
+			current:  "",
+			expect:   "firstsecondthird",
+		},
+		{
+			name:     "Empty events returns currentValue",
+			events:   nil,
+			jsonPath: "val",
+			rule:     RuleReplace,
+			current:  "existing",
+			expect:   "existing",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := extractStreamingBodyByJsonPath(tc.events, tc.jsonPath, tc.rule, tc.current)
+			require.Equal(t, tc.expect, got)
+		})
+	}
+}
