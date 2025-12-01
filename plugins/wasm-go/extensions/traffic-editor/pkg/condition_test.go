@@ -1,6 +1,7 @@
 package pkg
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/tidwall/gjson"
@@ -213,5 +214,67 @@ func TestCondition_GetTypeAndRefs(t *testing.T) {
 	refs := cond.GetRefs()
 	if len(refs) != 1 || refs[0].Type != "request_header" || refs[0].Name != "x-test" {
 		t.Error("GetRefs should return correct ref")
+	}
+}
+
+// --- percentCondition tests ---
+func TestPercentCondition_AlwaysPass(t *testing.T) {
+	json := gjson.Parse(`{"type":"percent","percent":100}`)
+	cond, err := CreateCondition(json)
+	if err != nil {
+		t.Fatalf("CreateCondition failed: %v", err)
+	}
+	ctx := NewEditorContext()
+	for i := 0; i < 100; i++ {
+		if !cond.Evaluate(ctx) {
+			t.Error("percentCondition with 100% should always pass")
+		}
+	}
+}
+
+func TestPercentCondition_NeverPass(t *testing.T) {
+	json := gjson.Parse(`{"type":"percent","percent":0}`)
+	cond, err := CreateCondition(json)
+	if err != nil {
+		t.Fatalf("CreateCondition failed: %v", err)
+	}
+	ctx := NewEditorContext()
+	for i := 0; i < 100; i++ {
+		if cond.Evaluate(ctx) {
+			t.Error("percentCondition with 0% should never pass")
+		}
+	}
+}
+
+func TestPercentCondition_AboutHalfPass(t *testing.T) {
+	json := gjson.Parse(`{"type":"percent","percent":50}`)
+	cond, err := CreateCondition(json)
+	if err != nil {
+		t.Fatalf("CreateCondition failed: %v", err)
+	}
+	ctx := NewEditorContext()
+	pass := 0
+	tries := 1000
+	for i := 0; i < tries; i++ {
+		if cond.Evaluate(ctx) {
+			pass++
+		}
+	}
+	fmt.Printf("Tries: %d Passed: %d\n", tries, pass)
+	if pass < 400 || pass > 600 {
+		t.Errorf("percentCondition with 50%% should pass about half, got %d/%d", pass, tries)
+	}
+}
+
+func TestPercentCondition_InvalidConfig(t *testing.T) {
+	json := gjson.Parse(`{"type":"percent","percent":-1}`)
+	_, err := CreateCondition(json)
+	if err == nil {
+		t.Error("percentCondition should fail for percent < 0")
+	}
+	json = gjson.Parse(`{"type":"percent","percent":101}`)
+	_, err = CreateCondition(json)
+	if err == nil {
+		t.Error("percentCondition should fail for percent > 100")
 	}
 }
