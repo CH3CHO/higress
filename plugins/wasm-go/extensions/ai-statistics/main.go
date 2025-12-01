@@ -674,7 +674,7 @@ func setAttributeBySource(ctx wrapper.HttpContext, config AIStatisticsConfig, so
 			case ResponseHeader:
 				value, _ = proxywasm.GetHttpResponseHeader(attribute.Value)
 			case ResponseStreamingBody:
-				value = extractStreamingBodyByJsonPath(streamingEvents, attribute.Value, attribute.Rule, ctx.GetUserAttribute(attribute.Value))
+				value = extractStreamingBodyByJsonPath(streamingEvents, attribute.Value, attribute.Rule, ctx.GetUserAttribute(key))
 			case ResponseBody:
 				value = gjson.GetBytes(body, attribute.Value).Value()
 			default:
@@ -756,7 +756,10 @@ func combineStreamingEventsForLog(ctx wrapper.HttpContext, config *AIStatisticsC
 			} else if !processedFields[key.Str] {
 				if newBody, err := sjson.SetRaw(responseBody, key.Str, value.Raw); err == nil {
 					responseBody = newBody
-					processedFields[key.Str] = true
+					if value.Type != gjson.Null {
+						// only mark non-null fields as processed to allow it to be updated later
+						processedFields[key.Str] = true
+					}
 				} else {
 					log.Errorf("failed to combine streaming body for log at key %s: %v", key.Str, err)
 				}
@@ -774,11 +777,14 @@ func combineStreamingEventsForLog(ctx wrapper.HttpContext, config *AIStatisticsC
 
 func extractStreamingBodyByJsonPath(events []StreamEvent, jsonPath string, rule string, currentValue interface{}) interface{} {
 	if events == nil || len(events) == 0 {
-		return nil
+		// no events found, return current value directly
+		return currentValue
 	}
-	var value interface{}
+	// always start with current value
+	value := currentValue
 	if rule == RuleFirst {
-		if currentValue != nil {
+		if currentValue == nil {
+			// only extract when current value is nil
 			for _, event := range events {
 				jsonObj := gjson.Get(event.Data, jsonPath)
 				if jsonObj.Exists() {
@@ -788,10 +794,13 @@ func extractStreamingBodyByJsonPath(events []StreamEvent, jsonPath string, rule 
 			}
 		}
 	} else if rule == RuleReplace {
-		for _, event := range events {
+		for i := len(events) - 1; i >= 0; i-- {
+			event := events[i]
 			jsonObj := gjson.Get(event.Data, jsonPath)
-			if jsonObj.Exists() {
+			// use the first non-null value from the end
+			if jsonObj.Exists() && jsonObj.Type != gjson.Null {
 				value = jsonObj.Value()
+				break
 			}
 		}
 	} else if rule == RuleAppend {
