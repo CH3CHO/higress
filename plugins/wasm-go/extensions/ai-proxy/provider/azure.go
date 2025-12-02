@@ -99,6 +99,9 @@ var (
 		"o4",
 		"gpt-5",
 	}
+	azureReasoningEffortUnsupportedModelKeywords = []string{
+		"gpt-5-chat",
+	}
 	azureTemperature1OnlyModelKeywords = []string{ // Models that only support temperature=1
 		"o1",
 		"o3",
@@ -336,7 +339,7 @@ func (m *azureProvider) transformChatCompletionRequestFields(ctx wrapper.HttpCon
 		}
 	}
 
-	if !containsKeywordInModel(model, azureReasoningEffortSupportedModelKeywords) {
+	if !containsKeywordInModel(model, azureReasoningEffortSupportedModelKeywords) || containsKeywordInModel(model, azureReasoningEffortUnsupportedModelKeywords) {
 		log.Debugf("azureProvider: model %s doesn't support %s", model, requestFieldReasoningEffort)
 		if transformedBody, err := sjson.DeleteBytes(body, requestFieldReasoningEffort); err != nil {
 			return body, needReadResponseBody, fmt.Errorf("azureProvider: failed to delete %s in request body, err: %v", requestFieldReasoningEffort, err)
