@@ -74,6 +74,7 @@ class KeyAuthTest : public ::testing::Test {
                                               testing::_, testing::_))
         .WillByDefault([&](WasmHeaderMapType, std::string_view header,
                            std::string_view* result) {
+          header = absl::AsciiStrToLower(header);
           if (header == ":authority") {
             *result = authority_;
           }
@@ -82,6 +83,9 @@ class KeyAuthTest : public ::testing::Test {
           }
           if (header == "x-api-key") {
             *result = key_header_;
+          }
+          if (header == "authorization") {
+            *result = authorization_header_;
           }
           return WasmResult::Ok;
         });
@@ -113,6 +117,7 @@ class KeyAuthTest : public ::testing::Test {
   std::string authority_;
   std::string route_name_;
   std::string key_header_;
+  std::string authorization_header_;
 };
 
 TEST_F(KeyAuthTest, InQuery) {
@@ -170,14 +175,19 @@ TEST_F(KeyAuthTest, InQueryWithConsumer) {
 
   route_name_ = "test";
   path_ = "/test?hello=1&apiKey=abc";
+  EXPECT_CALL(*mock_context_,
+              addHeaderMapValue(testing::_, std::string_view("X-Mse-Consumer"),
+                                std::string_view("consumer1")));
   EXPECT_EQ(context_->onRequestHeaders(0, false),
             FilterHeadersStatus::Continue);
 
   path_ = "/test?hello=123";
+  EXPECT_CALL(*mock_context_, addHeaderMapValue(testing::_, testing::_, testing::_)).Times(0);
   EXPECT_EQ(context_->onRequestHeaders(0, false),
             FilterHeadersStatus::StopIteration);
 
   path_ = "/test?hello=123&apiKey=123";
+  EXPECT_CALL(*mock_context_, addHeaderMapValue(testing::_, testing::_, testing::_)).Times(0);
   EXPECT_EQ(context_->onRequestHeaders(0, false),
             FilterHeadersStatus::StopIteration);
 }
@@ -458,6 +468,104 @@ TEST_F(KeyAuthTest, NoGlobalKeySetting) {
   path_ = "/test?c2key=def";
   EXPECT_EQ(context_->onRequestHeaders(0, false),
             FilterHeadersStatus::Continue);
+}
+
+TEST_F(KeyAuthTest, AuthorizationTestBasic) {
+  std::string configuration = R"(
+{
+  "global_auth": false,
+  "consumers": [
+    {
+      "name": "c1",
+      "credentials":["Bearer sk-111111"],
+      "keys": ["Authorization"],
+      "in_header": true,
+      "in_query": false
+    },
+    {
+      "name": "c2",
+      "credentials":["Bearer sk-222222"],
+      "keys": ["Authorization"],
+      "in_header": true,
+      "in_query": false
+    }
+  ],
+  "_rules_": [
+    {
+      "_match_route_": ["test"],
+      "allow": ["c2"]
+    }
+  ]
+})";
+  BufferBase buffer;
+  buffer.set(configuration);
+  EXPECT_CALL(*mock_context_, getBuffer(WasmBufferType::PluginConfiguration))
+      .WillOnce([&buffer](WasmBufferType) { return &buffer; });
+  EXPECT_TRUE(root_context_->configure(configuration.size()));
+
+  route_name_ = "test";
+  path_ = "/test";
+
+  authorization_header_ = "Bearer sk-111111";
+  EXPECT_CALL(*mock_context_,
+              addHeaderMapValue(testing::_, std::string_view("X-Mse-Consumer"),
+                                std::string_view("c1")));
+  EXPECT_EQ(context_->onRequestHeaders(0, false),
+            FilterHeadersStatus::StopIteration);
+
+  authorization_header_ = "Bearer sk-222222";
+  EXPECT_CALL(*mock_context_,
+              addHeaderMapValue(testing::_, std::string_view("X-Mse-Consumer"),
+                                std::string_view("c2")));
+  EXPECT_EQ(context_->onRequestHeaders(0, false),
+            FilterHeadersStatus::Continue);
+
+  authorization_header_ = "Bearer Bearer sk-222222";
+  EXPECT_CALL(*mock_context_,
+              addHeaderMapValue(testing::_, std::string_view("X-Mse-Consumer"),
+                                std::string_view("c2")));
+  EXPECT_EQ(context_->onRequestHeaders(0, false),
+            FilterHeadersStatus::Continue);
+
+  authorization_header_ = "bearer sk-111111";
+  EXPECT_CALL(*mock_context_,
+              addHeaderMapValue(testing::_, std::string_view("X-Mse-Consumer"),
+                                std::string_view("c1")));
+  EXPECT_EQ(context_->onRequestHeaders(0, false),
+            FilterHeadersStatus::StopIteration);
+
+  authorization_header_ = "bearer bearer sk-111111";
+  EXPECT_CALL(*mock_context_,
+              addHeaderMapValue(testing::_, std::string_view("X-Mse-Consumer"),
+                                std::string_view("c1")));
+  EXPECT_EQ(context_->onRequestHeaders(0, false),
+            FilterHeadersStatus::StopIteration);
+
+  authorization_header_ = "Basic sk-111111";
+  EXPECT_CALL(*mock_context_,
+              addHeaderMapValue(testing::_, std::string_view("X-Mse-Consumer"),
+                                std::string_view("c1")));
+  EXPECT_EQ(context_->onRequestHeaders(0, false),
+            FilterHeadersStatus::StopIteration);
+
+  authorization_header_ = "Basic Basic sk-222222";
+  EXPECT_CALL(*mock_context_,
+              addHeaderMapValue(testing::_, std::string_view("X-Mse-Consumer"),
+                                std::string_view("c2")));
+  EXPECT_EQ(context_->onRequestHeaders(0, false),
+            FilterHeadersStatus::Continue);
+
+  authorization_header_ = "sk-222222";
+  EXPECT_CALL(*mock_context_,
+              addHeaderMapValue(testing::_, std::string_view("X-Mse-Consumer"),
+                                std::string_view("c2")));
+  EXPECT_EQ(context_->onRequestHeaders(0, false),
+            FilterHeadersStatus::Continue);
+//
+//  authorization_header_ = "basic basic sk-222222";
+//  EXPECT_CALL(*mock_context_, addHeaderMapValue(testing::_, testing::_, testing::_)).Times(0);
+//  EXPECT_EQ(context_->onRequestHeaders(0, false),
+//            FilterHeadersStatus::Continue);
 }
 
 }  // namespace key_auth

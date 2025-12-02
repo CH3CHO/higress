@@ -43,6 +43,7 @@ static RegisterContextFactory register_KeyAuth(CONTEXT_FACTORY(PluginContext),
 namespace {
 
 const std::string OriginalAuthKey("X-HI-ORIGINAL-AUTH");
+const std::string AuthorizationKey("authorization"); // Must be in its lowercase form for comparison
 const std::string Wildcard("*");
 
 void deniedInvalidCredentials(const std::string& realm) {
@@ -295,9 +296,10 @@ bool PluginRootContext::checkPlugin(
     const KeyAuthConfigRule& rule,
     const std::optional<std::unordered_set<std::string>>& allow_set) {
   // LOG_DEBUG(rule.debugString("check phase"));
+  std::map<std::string, std::string> credential_cache;
   if (rule.consumers.empty()) {
     for (const auto& key : rule.keys) {
-      auto credential = extractCredential(rule.in_header, rule.in_query, key);
+      auto credential = extractCredential(credential_cache, rule.in_header, rule.in_query, key);
       if (credential.empty()) {
         LOG_DEBUG("empty credential for key: " + key);
         continue;
@@ -332,7 +334,7 @@ bool PluginRootContext::checkPlugin(
       bool in_header = consumer.in_header.value_or(rule.in_header);
 
       for (const auto& key : keys_to_check) {
-        auto credential = extractCredential(in_header, in_query, key);
+        auto credential = extractCredential(credential_cache, in_header, in_query, key);
         if (credential.empty()) {
           LOG_DEBUG("empty credential for key: " + key);
           continue;
@@ -377,24 +379,60 @@ bool PluginRootContext::checkPlugin(
   return false;
 }
 
-std::string PluginRootContext::extractCredential(bool in_header, bool in_query,
+std::string PluginRootContext::extractCredential(std::map<std::string, std::string>& credential_cache,
+                                                 bool in_header, bool in_query,
                                                  const std::string& key) {
+  auto cache_key = generateCredentialCacheKey(in_header, in_query, key);
+  auto cache_it = credential_cache.find(cache_key);
+  if (cache_it != credential_cache.end()) {
+    return cache_it->second;
+  }
+  std::string credential;
   if (in_header) {
     auto header = getRequestHeader(key);
     if (header->size() != 0) {
-      return header->toString();
+      credential = header->toString();
+      if (absl::AsciiStrToLower(key) == AuthorizationKey) {
+        credential = normalizeBearerToken(credential);
+      }
     }
   }
-  if (in_query) {
+  if (credential.empty() && in_query) {
     auto request_path_header = getRequestHeader(":path");
     auto path = request_path_header->view();
     auto params = Wasm::Common::Http::parseAndDecodeQueryString(path);
     auto it = params.find(key);
     if (it != params.end()) {
-      return it->second;
+      credential = it->second;
     }
   }
-  return "";
+  credential_cache.emplace(std::make_pair(cache_key, credential));
+  return credential;
+}
+
+std::string PluginRootContext::generateCredentialCacheKey(bool in_header, bool in_query,
+                                                          const std::string& key) {
+  return absl::StrCat(in_header ? "1" : "0", "_", in_query ? "1" : "0", "_", in_header ? absl::AsciiStrToLower(key) :key);
+}
+
+std::string PluginRootContext::normalizeBearerToken(const std::string& token) {
+    constexpr std::string_view prefixes[] = {"Bearer ", "bearer ", "Basic "};
+    std::string_view token_view = token;
+    int found = -1;
+    for (int i = 0; i < 4; ++i) {
+        if (token_view.size() >= prefixes[i].size() &&
+            std::string(token_view.substr(0, prefixes[i].size())) == std::string(prefixes[i])) {
+            found = i;
+            break;
+        }
+    }
+    if (found != -1) {
+        while (token_view.size() >= prefixes[found].size() &&
+               std::string(token_view.substr(0, prefixes[found].size())) == std::string(prefixes[found])) {
+            token_view.remove_prefix(prefixes[found].size());
+        }
+    }
+    return absl::StrCat("Bearer ", token_view);
 }
 
 bool PluginRootContext::onConfigure(size_t size) {
