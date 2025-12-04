@@ -298,6 +298,13 @@ func (m *azureProvider) transformRequestFields(ctx wrapper.HttpContext, apiName 
 	model = strings.ToLower(model)
 
 	switch apiName {
+	case ApiNameCompletion:
+		if transformedBody, needReadResponseBodyLocal, err := m.transformCompletionsRequestFields(ctx, model, body); err != nil {
+			return body, fmt.Errorf("azureProvider: transform completion request fields failed: %v", err)
+		} else {
+			needReadResponseBody = needReadResponseBodyLocal
+			return transformedBody, nil
+		}
 	case ApiNameChatCompletion:
 		if transformedBody, needReadResponseBodyLocal, err := m.transformChatCompletionRequestFields(ctx, model, body); err != nil {
 			return body, fmt.Errorf("azureProvider: transform chat completion request fields failed: %v", err)
@@ -315,6 +322,10 @@ func (m *azureProvider) transformRequestFields(ctx wrapper.HttpContext, apiName 
 	}
 
 	return body, nil
+}
+
+func (m *azureProvider) transformCompletionsRequestFields(ctx wrapper.HttpContext, model string, body []byte) (_ []byte, needReadResponseBody bool, err error) {
+	return transformCompletionsRequestFields(ctx, body)
 }
 
 func (m *azureProvider) transformChatCompletionRequestFields(ctx wrapper.HttpContext, model string, body []byte) (_ []byte, needReadResponseBody bool, err error) {
@@ -410,7 +421,13 @@ func (m *azureProvider) transformRequestPath(ctx wrapper.HttpContext, apiName Ap
 	}
 
 	log.Debugf("azureProvider: original request path: %s", originalPath)
-	path := util.MapRequestPathByCapability(string(apiName), originalPath, m.config.capabilities)
+	effectiveApiName := apiName
+	if effectiveApiName == ApiNameCompletion {
+		// Azure OpenAI doesn't have a separate completion API,
+		// so we need to convert it to chat completion API.
+		effectiveApiName = ApiNameChatCompletion
+	}
+	path := util.MapRequestPathByCapability(string(effectiveApiName), originalPath, m.config.capabilities)
 	log.Debugf("azureProvider: path: %s", path)
 	if strings.Contains(path, pathAzureModelPlaceholder) {
 		log.Debugf("azureProvider: path contains placeholder: %s", path)
@@ -503,8 +520,17 @@ func (m *azureProvider) TransformRequestHeaders(ctx wrapper.HttpContext, apiName
 	}
 }
 
+func (m *azureProvider) OnStreamingEvent(ctx wrapper.HttpContext, name ApiName, event StreamEvent) ([]StreamEvent, error) {
+	if name == ApiNameCompletion {
+		return handleCompletionsStreamingEvent(ctx, event)
+	}
+	return nil, nil
+}
+
 func (m *azureProvider) TransformResponseBody(ctx wrapper.HttpContext, apiName ApiName, body []byte) ([]byte, error) {
 	switch apiName {
+	case ApiNameCompletion:
+		return transformCompletionsResponseFields(ctx, body)
 	case ApiNameChatCompletion:
 		return m.transformChatCompletionResponseFields(ctx, body)
 	case ApiNameEmbeddings:
