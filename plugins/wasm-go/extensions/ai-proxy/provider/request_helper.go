@@ -129,3 +129,24 @@ func expandExtraBodyField(body []byte) []byte {
 	})
 	return body
 }
+
+func complementChatCompletionsMessageRole(body []byte) ([]byte, error) {
+	messageCount := int(gjson.GetBytes(body, "messages.#").Int())
+	if messageCount == 0 {
+		return body, nil
+	}
+	for i := 0; i < messageCount; i++ {
+		// Check if the role field exists and isn't empty in the message
+		rolePath := fmt.Sprintf("messages.%d.role", i)
+		if role := gjson.GetBytes(body, rolePath); !role.Exists() || role.String() == "" {
+			// If the role field is missing or empty, set it to "assistant"
+			log.Debugf("complementing missing role field in response body at path %s", rolePath)
+			if updatedBody, err := sjson.SetBytes(body, rolePath, roleAssistant); err != nil {
+				return body, fmt.Errorf("failed to set role field in response body: %v", err)
+			} else {
+				body = updatedBody
+			}
+		}
+	}
+	return body, nil
+}

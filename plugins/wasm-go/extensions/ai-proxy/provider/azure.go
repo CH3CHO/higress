@@ -387,6 +387,12 @@ func (m *azureProvider) transformChatCompletionRequestFields(ctx wrapper.HttpCon
 		log.Debugf("azureProvider: model %s and api-version %s supports response_format parameter natively", model, m.apiVersion)
 	}
 
+	if transformedBody, err := complementChatCompletionsMessageRole(body); err != nil {
+		return body, needReadResponseBody, fmt.Errorf("azureProvider: complement chat completions message role failed: %v", err)
+	} else {
+		body = transformedBody
+	}
+
 	return body, needReadResponseBody, nil
 }
 

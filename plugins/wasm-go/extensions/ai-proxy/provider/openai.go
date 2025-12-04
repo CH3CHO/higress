@@ -254,6 +254,12 @@ func (m *openaiProvider) transformRequestFields(ctx wrapper.HttpContext, apiName
 			needReadResponseBody = needReadResponseBodyLocal
 			return transformedBody, nil
 		}
+	case ApiNameChatCompletion:
+		if transformedBody, err := m.transformChatCompletionsRequestFields(ctx, body); err != nil {
+			return body, fmt.Errorf("azureProvider: transform chat completion request fields failed: %v", err)
+		} else {
+			return transformedBody, nil
+		}
 	}
 
 	return body, nil
@@ -270,6 +276,15 @@ func (m *openaiProvider) TransformResponseBody(ctx wrapper.HttpContext, apiName 
 	switch apiName {
 	case ApiNameCompletion:
 		return transformCompletionsResponseFields(ctx, body)
+	}
+	return body, nil
+}
+
+func (m *openaiProvider) transformChatCompletionsRequestFields(ctx wrapper.HttpContext, body []byte) ([]byte, error) {
+	if transformedBody, err := complementChatCompletionsMessageRole(body); err != nil {
+		return body, fmt.Errorf("openaiProvider: complement chat completions message role failed: %v", err)
+	} else {
+		body = transformedBody
 	}
 	return body, nil
 }
