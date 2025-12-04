@@ -110,8 +110,12 @@ class PluginRootContext : public RootContext,
 
  private:
   bool parsePluginConfig(const json&, KeyAuthConfigRule&) override;
-  std::string extractCredential(bool in_header, bool in_query,
+  std::string extractCredential(std::map<std::string, std::string>& credential_cache,
+                                bool in_header, bool in_query,
                                 const std::string& key);
+  std::string generateCredentialCacheKey(bool in_header, bool in_query,
+                                         const std::string& key);
+  std::string normalizeBearerToken(const std::string& bearer_token);
 };
 
 // Per-stream context.
