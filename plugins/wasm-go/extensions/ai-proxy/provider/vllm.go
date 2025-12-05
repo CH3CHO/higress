@@ -22,6 +22,7 @@ var (
 		"timeout",
 		"stream_timeout",
 		"fallback",
+		"fallbacks",
 		"thinking",
 		"cache",
 		"max_retries",
