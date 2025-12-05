@@ -45,6 +45,12 @@ namespace {
 const std::string OriginalAuthKey("X-HI-ORIGINAL-AUTH");
 const std::string AuthorizationKey("authorization"); // Must be in its lowercase form for comparison
 const std::string Wildcard("*");
+const std::vector<std::string> BackupAuthenticationHeaders = {
+    "API-Key", // azure_authorization
+    "x-api-key", // anthropic_authorization
+    "x-goog-api-key", // google_ai_studio_authorization
+    "Ocp-Apim-Subscription-Key" // azure_apim_authorization
+};
 
 void deniedInvalidCredentials(const std::string& realm) {
   sendLocalResponse(401, "Request denied by Key Auth check. Invalid API key", "",
@@ -392,8 +398,19 @@ std::string PluginRootContext::extractCredential(std::map<std::string, std::stri
     auto header = getRequestHeader(key);
     if (header->size() != 0) {
       credential = header->toString();
-      if (absl::AsciiStrToLower(key) == AuthorizationKey) {
+    }
+    if (absl::AsciiStrToLower(key) == AuthorizationKey) {
+      if (!credential.empty()) {
         credential = normalizeBearerToken(credential);
+      } else {
+        // try backup headers
+        for (const auto& backup_key : BackupAuthenticationHeaders) {
+          auto backup_header = getRequestHeader(backup_key);
+          if (backup_header->size() != 0) {
+            credential = normalizeBearerToken(backup_header->toString());
+            break;
+          }
+        }
       }
     }
   }
