@@ -74,18 +74,18 @@ class KeyAuthTest : public ::testing::Test {
                                               testing::_, testing::_))
         .WillByDefault([&](WasmHeaderMapType, std::string_view header,
                            std::string_view* result) {
-          header = absl::AsciiStrToLower(header);
-          if (header == ":authority") {
+          auto lowered_header = absl::AsciiStrToLower(header);
+          if (lowered_header == ":authority") {
             *result = authority_;
           }
-          if (header == ":path") {
+          if (lowered_header == ":path") {
             *result = path_;
           }
-          if (header == "x-api-key") {
+          // and we don't want to modify the original test cases that use "x-api-key" directly
+          if (lowered_header == absl::AsciiStrToLower(authorization_header_key_)) {
+            *result = authorization_header_value_;
+          } else if (header == "x-api-key") {
             *result = key_header_;
-          }
-          if (header == "authorization") {
-            *result = authorization_header_;
           }
           return WasmResult::Ok;
         });
@@ -117,7 +117,8 @@ class KeyAuthTest : public ::testing::Test {
   std::string authority_;
   std::string route_name_;
   std::string key_header_;
-  std::string authorization_header_;
+  std::string authorization_header_key_;
+  std::string authorization_header_value_;
 };
 
 TEST_F(KeyAuthTest, InQuery) {
@@ -470,7 +471,7 @@ TEST_F(KeyAuthTest, NoGlobalKeySetting) {
             FilterHeadersStatus::Continue);
 }
 
-TEST_F(KeyAuthTest, AuthorizationTestBasic) {
+TEST_F(KeyAuthTest, AuthorizationTest) {
   std::string configuration = R"(
 {
   "global_auth": false,
@@ -506,66 +507,48 @@ TEST_F(KeyAuthTest, AuthorizationTestBasic) {
   route_name_ = "test";
   path_ = "/test";
 
-  authorization_header_ = "Bearer sk-111111";
-  EXPECT_CALL(*mock_context_,
-              addHeaderMapValue(testing::_, std::string_view("X-Mse-Consumer"),
-                                std::string_view("c1")));
-  EXPECT_EQ(context_->onRequestHeaders(0, false),
-            FilterHeadersStatus::StopIteration);
+  const std::vector<std::string> authentication_headers = {
+      "Authorization", // default
+      "API-Key", // azure_authorization
+      "x-api-key", // anthropic_authorization
+      "x-goog-api-key", // google_ai_studio_authorization
+      "Ocp-Apim-Subscription-Key" // azure_apim_authorization
+  };
+  const std::vector<std::string> token_prefixes = {
+      ""
+      "Bearer ",
+      "bearer ",
+      "Basic "
+  };
+  key_header_ = ""; // Make sure no interference from x-api-key header
+  for (const auto& prefix : token_prefixes) {
+    // Test with different prefixes, empty prefix case is covered as well
+    for (auto prefix_count = 1; prefix_count < 5; ++prefix_count) {
+      std::string effective_prefix;
+      for (int i = 0; i < prefix_count; ++i) {
+        effective_prefix += prefix;
+      }
+      for (const auto& header_key : authentication_headers) {
+        authorization_header_key_ = header_key;
 
-  authorization_header_ = "Bearer sk-222222";
-  EXPECT_CALL(*mock_context_,
-              addHeaderMapValue(testing::_, std::string_view("X-Mse-Consumer"),
-                                std::string_view("c2")));
-  EXPECT_EQ(context_->onRequestHeaders(0, false),
-            FilterHeadersStatus::Continue);
+        authorization_header_value_ = absl::StrCat(effective_prefix, "sk-111111");
+        LOG_DEBUG(absl::StrCat("Testing with header: ", authorization_header_key_, ", value: ", authorization_header_value_));
+        EXPECT_CALL(*mock_context_,
+                    addHeaderMapValue(testing::_, std::string_view("X-Mse-Consumer"),
+                                      std::string_view("c1")));
+        EXPECT_EQ(context_->onRequestHeaders(0, false),
+                  FilterHeadersStatus::StopIteration);
 
-  authorization_header_ = "Bearer Bearer sk-222222";
-  EXPECT_CALL(*mock_context_,
-              addHeaderMapValue(testing::_, std::string_view("X-Mse-Consumer"),
-                                std::string_view("c2")));
-  EXPECT_EQ(context_->onRequestHeaders(0, false),
-            FilterHeadersStatus::Continue);
-
-  authorization_header_ = "bearer sk-111111";
-  EXPECT_CALL(*mock_context_,
-              addHeaderMapValue(testing::_, std::string_view("X-Mse-Consumer"),
-                                std::string_view("c1")));
-  EXPECT_EQ(context_->onRequestHeaders(0, false),
-            FilterHeadersStatus::StopIteration);
-
-  authorization_header_ = "bearer bearer sk-111111";
-  EXPECT_CALL(*mock_context_,
-              addHeaderMapValue(testing::_, std::string_view("X-Mse-Consumer"),
-                                std::string_view("c1")));
-  EXPECT_EQ(context_->onRequestHeaders(0, false),
-            FilterHeadersStatus::StopIteration);
-
-  authorization_header_ = "Basic sk-111111";
-  EXPECT_CALL(*mock_context_,
-              addHeaderMapValue(testing::_, std::string_view("X-Mse-Consumer"),
-                                std::string_view("c1")));
-  EXPECT_EQ(context_->onRequestHeaders(0, false),
-            FilterHeadersStatus::StopIteration);
-
-  authorization_header_ = "Basic Basic sk-222222";
-  EXPECT_CALL(*mock_context_,
-              addHeaderMapValue(testing::_, std::string_view("X-Mse-Consumer"),
-                                std::string_view("c2")));
-  EXPECT_EQ(context_->onRequestHeaders(0, false),
-            FilterHeadersStatus::Continue);
-
-  authorization_header_ = "sk-222222";
-  EXPECT_CALL(*mock_context_,
-              addHeaderMapValue(testing::_, std::string_view("X-Mse-Consumer"),
-                                std::string_view("c2")));
-  EXPECT_EQ(context_->onRequestHeaders(0, false),
-            FilterHeadersStatus::Continue);
-//
-//  authorization_header_ = "basic basic sk-222222";
-//  EXPECT_CALL(*mock_context_, addHeaderMapValue(testing::_, testing::_, testing::_)).Times(0);
-//  EXPECT_EQ(context_->onRequestHeaders(0, false),
-//            FilterHeadersStatus::Continue);
+        authorization_header_value_ = absl::StrCat(effective_prefix, "sk-222222");
+        LOG_DEBUG(absl::StrCat("Testing with header: ", authorization_header_key_, ", value: ", authorization_header_value_));
+        EXPECT_CALL(*mock_context_,
+                    addHeaderMapValue(testing::_, std::string_view("X-Mse-Consumer"),
+                                      std::string_view("c2")));
+        EXPECT_EQ(context_->onRequestHeaders(0, false),
+                  FilterHeadersStatus::Continue);
+      }
+    }
+  }
 }
 
 }  // namespace key_auth
