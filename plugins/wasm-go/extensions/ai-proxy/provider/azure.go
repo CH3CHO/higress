@@ -75,6 +75,7 @@ var (
 		"timeout",
 		"stream_timeout",
 		"fallback",
+		"fallbacks",
 		"thinking",
 		"enable_thinking",
 		"cache",
@@ -87,11 +88,14 @@ var (
 		"base_url",
 		"default_headers",
 	}
-	azureUseMaxCompletionTokensModelKeywords = []string{
+	azureMaxCompletionTokensModelKeywordWhitelist = []string{
 		"o1",
 		"o3",
 		"o4",
 		"gpt-5",
+	}
+	azureMaxCompletionTokensModelKeywordBlacklist = []string{
+		"gpt-5.1",
 	}
 	azureReasoningEffortSupportedModelKeywords = []string{
 		"o1",
@@ -101,6 +105,7 @@ var (
 	}
 	azureReasoningEffortUnsupportedModelKeywords = []string{
 		"gpt-5-chat",
+		"gpt-5.1-chat",
 	}
 	azureTemperature1OnlyModelKeywords = []string{ // Models that only support temperature=1
 		"o1",
@@ -110,6 +115,7 @@ var (
 	}
 	azureResponseFormatSupportedModelKeywords = []string{
 		"4o",
+		"gpt-5.1",
 	}
 	azureNullRequestFieldBlacklist = map[ApiName][]string{
 		// If a field in the list has null as its value,
@@ -332,7 +338,7 @@ func (m *azureProvider) transformChatCompletionRequestFields(ctx wrapper.HttpCon
 	needReadResponseBody = false
 
 	log.Debugf("azureProvider: transformRequestFields for model %s", model)
-	if containsKeywordInModel(model, azureUseMaxCompletionTokensModelKeywords) {
+	if containsKeywordInModel(model, azureMaxCompletionTokensModelKeywordWhitelist) && !containsKeywordInModel(model, azureMaxCompletionTokensModelKeywordBlacklist) {
 		log.Debugf("azureProvider: model %s requires %s field instead of %s", model, requestFieldMaxCompletionTokens, requestFieldMaxTokens)
 		if maxTokens := gjson.GetBytes(body, requestFieldMaxTokens); maxTokens.Exists() {
 			log.Debugf("azureProvider: removing %s from request body for model %s", requestFieldMaxTokens, model)
