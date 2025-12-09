@@ -87,6 +87,19 @@ var (
 		"organization",
 		"base_url",
 		"default_headers",
+		"metadata",
+	}
+	azureOSeriesModelKeywords = []string{
+		"o1",
+		"o3",
+		"o4",
+	}
+	azureOSeriesModelRequestFieldBlacklist = []string{
+		"logprobs",
+		"top_p",
+		"presence_penalty",
+		"frequency_penalty",
+		"top_logprobs",
 	}
 	azureMaxCompletionTokensModelKeywordWhitelist = []string{
 		"o1",
@@ -303,6 +316,17 @@ func (m *azureProvider) transformRequestFields(ctx wrapper.HttpContext, apiName 
 	}
 	model = strings.ToLower(model)
 
+	// Special keyword blacklist for O-series models
+	if containsKeywordInModel(model, azureOSeriesModelKeywords) {
+		for _, field := range azureOSeriesModelRequestFieldBlacklist {
+			if transformedBody, err := sjson.DeleteBytes(body, field); err != nil {
+				return body, fmt.Errorf("azureProvider: failed to delete %s from request body, err: %v", field, err)
+			} else {
+				body = transformedBody
+			}
+		}
+	}
+
 	switch apiName {
 	case ApiNameCompletion:
 		if transformedBody, needReadResponseBodyLocal, err := m.transformCompletionsRequestFields(ctx, model, body); err != nil {
@@ -393,8 +417,8 @@ func (m *azureProvider) transformChatCompletionRequestFields(ctx wrapper.HttpCon
 		log.Debugf("azureProvider: model %s and api-version %s supports response_format parameter natively", model, m.apiVersion)
 	}
 
-	if transformedBody, err := complementChatCompletionsMessageRole(body); err != nil {
-		return body, needReadResponseBody, fmt.Errorf("azureProvider: complement chat completions message role failed: %v", err)
+	if transformedBody, err := normalizeChatCompletionsRequest(body); err != nil {
+		return body, needReadResponseBody, fmt.Errorf("azureProvider: normalize chat completions request failed: %v", err)
 	} else {
 		body = transformedBody
 	}
@@ -478,10 +502,24 @@ func (m *azureProvider) isResponseFormatSupported(model string) bool {
 
 func (m *azureProvider) transformResponseFormatParam(body []byte) ([]byte, error) {
 	responseFormat := gjson.GetBytes(body, requestFieldResponseFormat)
-	if !responseFormat.Exists() || !responseFormat.IsObject() {
-		log.Debugf("azureProvider: " + requestFieldResponseFormat + " not found or not an object, skipping transformation")
+	if !responseFormat.Exists() {
+		log.Debugf("azureProvider: " + requestFieldResponseFormat + " not found, skipping transformation")
 		return body, nil
 	}
+
+	// Remove the response_format field from the request body first before any further processing
+	// because it's not supported by the target LLM service.
+	if transformedBody, err := sjson.DeleteBytes(body, requestFieldResponseFormat); err != nil {
+		return body, fmt.Errorf("azureProvider: failed to delete "+requestFieldResponseFormat+" in request body, err: %v", err)
+	} else {
+		body = transformedBody
+	}
+
+	if !responseFormat.IsObject() {
+		log.Debugf("azureProvider: " + requestFieldResponseFormat + " is not an object, skipping transformation")
+		return body, nil
+	}
+
 	responseSchema := responseFormat.Get("response_schema")
 	if !responseSchema.Exists() {
 		responseSchema = responseFormat.Get("json_schema.schema")
@@ -502,12 +540,6 @@ func (m *azureProvider) transformResponseFormatParam(body []byte) ([]byte, error
 
 	if transformedBody, err := sjson.SetRawBytes(body, requestFieldToolChoice, []byte(responseFormatToolChoice)); err != nil {
 		return body, fmt.Errorf("azureProvider: failed to set "+requestFieldToolChoice+" in request body, err: %v", err)
-	} else {
-		body = transformedBody
-	}
-
-	if transformedBody, err := sjson.DeleteBytes(body, requestFieldResponseFormat); err != nil {
-		return body, fmt.Errorf("azureProvider: failed to delete "+requestFieldResponseFormat+" in request body, err: %v", err)
 	} else {
 		body = transformedBody
 	}

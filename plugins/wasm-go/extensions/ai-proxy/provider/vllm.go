@@ -27,6 +27,7 @@ var (
 		"cache",
 		"max_retries",
 		"api_version",
+		"metadata",
 	}
 	vllmNullRequestFieldBlacklist = map[ApiName][]string{
 		// If a field in the list has null as its value,
@@ -225,6 +226,7 @@ func (m *vllmProvider) TransformResponseHeaders(ctx wrapper.HttpContext, apiName
 func (m *vllmProvider) TransformResponseBody(ctx wrapper.HttpContext, apiName ApiName, body []byte) ([]byte, error) {
 	// For now, just return the body as-is
 	// This can be extended to handle vLLM-specific response transformations
+	// TODO: Align the logic with OpenAI provider if needed, although vLLM is only used to call rerank API only.
 	return body, nil
 }
 

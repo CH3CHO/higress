@@ -31,6 +31,7 @@ var (
 		"cache",
 		"max_retries",
 		"api_version",
+		"metadata",
 	}
 	openaiNullRequestFieldBlacklist = map[ApiName][]string{
 		// If a field in the list has null as its value,
@@ -282,11 +283,12 @@ func (m *openaiProvider) TransformResponseBody(ctx wrapper.HttpContext, apiName 
 }
 
 func (m *openaiProvider) transformChatCompletionsRequestFields(ctx wrapper.HttpContext, body []byte) ([]byte, error) {
-	if transformedBody, err := complementChatCompletionsMessageRole(body); err != nil {
-		return body, fmt.Errorf("openaiProvider: complement chat completions message role failed: %v", err)
+	if transformedBody, err := normalizeChatCompletionsRequest(body); err != nil {
+		return body, fmt.Errorf("openaiProvider: normalize chat completions request failed: %v", err)
 	} else {
 		body = transformedBody
 	}
+
 	return body, nil
 }
 

@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"reflect"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
 )
 
 func TestDeleteNullValueFields(t *testing.T) {
@@ -104,6 +106,115 @@ func TestExpandExtraBodyField(t *testing.T) {
 			if !reflect.DeepEqual(gotMap, wantMap) {
 				t.Errorf("%s: got %s, want %s", c.name, got, c.want)
 			}
+		})
+	}
+}
+
+func TestNormalizeChatCompletionsMessages(t *testing.T) {
+	cases := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{
+			name:  "empty messages",
+			input: `{"messages":[]}`,
+			want:  `{"messages":[]}`,
+		},
+		{
+			name:  "role missing",
+			input: `{"messages":[{"content":"hi"}]}`,
+			want:  `{"messages":[{"content":"hi","role":"assistant"}]}`,
+		},
+		{
+			name:  "role empty",
+			input: `{"messages":[{"role":"","content":"hi"}]}`,
+			want:  `{"messages":[{"role":"assistant","content":"hi"}]}`,
+		},
+		{
+			name:  "role present",
+			input: `{"messages":[{"role":"user","content":"hi"}]}`,
+			want:  `{"messages":[{"role":"user","content":"hi"}]}`,
+		},
+		{
+			name:  "fix image_url string",
+			input: `{"messages":[{"role":"user","content":[{"image_url":"http://a.com"}]}]}`,
+			want:  `{"messages":[{"role":"user","content":[{"image_url":{"url":"http://a.com"}}]}]}`,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got, err := normalizeChatCompletionsMessages([]byte(c.input))
+			if err != nil {
+				t.Errorf("%s: unexpected error: %v", c.name, err)
+			}
+			assert.JSONEq(t, string(got), c.want)
+		})
+	}
+}
+
+func TestComplementChatCompletionsMessageRole(t *testing.T) {
+	cases := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{
+			name:  "role missing",
+			input: `{"messages":[{"content":"hi"}]}`,
+			want:  `{"messages":[{"content":"hi","role":"assistant"}]}`,
+		},
+		{
+			name:  "role empty",
+			input: `{"messages":[{"role":"","content":"hi"}]}`,
+			want:  `{"messages":[{"role":"assistant","content":"hi"}]}`,
+		},
+		{
+			name:  "role present",
+			input: `{"messages":[{"role":"user","content":"hi"}]}`,
+			want:  `{"messages":[{"role":"user","content":"hi"}]}`,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got, err := complementChatCompletionsMessageRole([]byte(c.input), 0)
+			if err != nil {
+				t.Errorf("%s: unexpected error: %v", c.name, err)
+			}
+			assert.JSONEq(t, string(got), c.want)
+		})
+	}
+}
+
+func TestFixChatCompletionsImageUrlValues(t *testing.T) {
+	cases := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{
+			name:  "image_url string",
+			input: `{"messages":[{"content":[{"image_url":"http://a.com"}]}]}`,
+			want:  `{"messages":[{"content":[{"image_url":{"url":"http://a.com"}}]}]}`,
+		},
+		{
+			name:  "image_url object",
+			input: `{"messages":[{"content":[{"image_url":{"url":"http://a.com"}}]}]}`,
+			want:  `{"messages":[{"content":[{"image_url":{"url":"http://a.com"}}]}]}`,
+		},
+		{
+			name:  "no image_url",
+			input: `{"messages":[{"content":[{"text":"hi"}]}]}`,
+			want:  `{"messages":[{"content":[{"text":"hi"}]}]}`,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got, err := fixChatCompletionsImageUrlValues([]byte(c.input), 0)
+			if err != nil {
+				t.Errorf("%s: unexpected error: %v", c.name, err)
+			}
+			assert.JSONEq(t, string(got), c.want)
 		})
 	}
 }

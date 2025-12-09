@@ -130,19 +130,60 @@ func expandExtraBodyField(body []byte) []byte {
 	return body
 }
 
-func complementChatCompletionsMessageRole(body []byte) ([]byte, error) {
+func normalizeChatCompletionsRequest(body []byte) ([]byte, error) {
+	if transformedBody, err := normalizeChatCompletionsMessages(body); err != nil {
+		return body, fmt.Errorf("failed to normalize chat completions messages: %v", err)
+	} else {
+		return transformedBody, nil
+	}
+}
+
+func normalizeChatCompletionsMessages(body []byte) ([]byte, error) {
 	messageCount := int(gjson.GetBytes(body, "messages.#").Int())
 	if messageCount == 0 {
 		return body, nil
 	}
 	for i := 0; i < messageCount; i++ {
-		// Check if the role field exists and isn't empty in the message
-		rolePath := fmt.Sprintf("messages.%d.role", i)
-		if role := gjson.GetBytes(body, rolePath); !role.Exists() || role.String() == "" {
-			// If the role field is missing or empty, set it to "assistant"
-			log.Debugf("complementing missing role field in response body at path %s", rolePath)
-			if updatedBody, err := sjson.SetBytes(body, rolePath, roleAssistant); err != nil {
-				return body, fmt.Errorf("failed to set role field in response body: %v", err)
+		if updatedBody, err := complementChatCompletionsMessageRole(body, i); err != nil {
+			return body, fmt.Errorf("failed to complement role field in message %d: %v", i, err)
+		} else {
+			body = updatedBody
+		}
+		if updatedBody, err := fixChatCompletionsImageUrlValues(body, i); err != nil {
+			return body, fmt.Errorf("failed to fix image url values in message %d: %v", i, err)
+		} else {
+			body = updatedBody
+		}
+	}
+	return body, nil
+}
+
+func complementChatCompletionsMessageRole(body []byte, messageIndex int) ([]byte, error) {
+	// Check if the role field exists and isn't empty in the message
+	rolePath := fmt.Sprintf("messages.%d.role", messageIndex)
+	if role := gjson.GetBytes(body, rolePath); !role.Exists() || role.String() == "" {
+		// If the role field is missing or empty, set it to "assistant"
+		log.Debugf("complementing missing role field in response body at path %s", rolePath)
+		if updatedBody, err := sjson.SetBytes(body, rolePath, roleAssistant); err != nil {
+			return body, fmt.Errorf("failed to set role field in response body: %v", err)
+		} else {
+			body = updatedBody
+		}
+	}
+	return body, nil
+}
+
+func fixChatCompletionsImageUrlValues(body []byte, messageIndex int) ([]byte, error) {
+	contentCount := int(gjson.GetBytes(body, fmt.Sprintf("messages.%d.content.#", messageIndex)).Int())
+	if contentCount == 0 {
+		return body, nil
+	}
+	for contentIndex := 0; contentIndex < contentCount; contentIndex++ {
+		imageUrlPath := fmt.Sprintf("messages.%d.content.%d.image_url", messageIndex, contentIndex)
+		if imageUrl := gjson.GetBytes(body, imageUrlPath); imageUrl.Exists() && imageUrl.Type == gjson.String {
+			log.Debugf("convert image_url at path %s from string to object", imageUrlPath)
+			if updatedBody, err := sjson.SetBytes(body, imageUrlPath+".url", imageUrl.Str); err != nil {
+				return body, fmt.Errorf("failed to set %s field in response body: %v", imageUrlPath, err)
 			} else {
 				body = updatedBody
 			}
