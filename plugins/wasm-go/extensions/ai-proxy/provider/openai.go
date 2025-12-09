@@ -293,41 +293,15 @@ func (m *openaiProvider) transformChatCompletionsRequestFields(ctx wrapper.HttpC
 func transformCompletionsRequestFields(ctx wrapper.HttpContext, body []byte) (_ []byte, needReadResponseBody bool, err error) {
 	var transformedBody []byte
 	if prompt := gjson.GetBytes(body, "prompt"); prompt.Exists() {
-		var messages []byte
-		if prompt.IsArray() {
-			items := prompt.Array()
-			if len(items) == 0 {
-				return body, needReadResponseBody, errors.New("empty prompt array")
-			}
-			firstItem := items[0]
-			if firstItem.Type == gjson.String {
-				var builder strings.Builder
-				for _, item := range items {
-					if builder.Len() == 0 {
-						builder.WriteString("[")
-					} else {
-						builder.WriteString(",")
-					}
-					builder.WriteString("{\"role\":\"user\",\"content\":")
-					builder.WriteString(item.Raw)
-					builder.WriteString("}")
-				}
-				builder.WriteString("]")
-				messages = []byte(builder.String())
-			} else if firstItem.IsArray() {
-				messages = []byte(fmt.Sprintf("[{\"role\":\"user\",\"content\":%s}]", firstItem.Raw))
-			} else {
-				return body, needReadResponseBody, fmt.Errorf("unsupported prompt item type: %s", firstItem.Type.String())
-			}
-		} else if prompt.Type == gjson.String {
-			messages = []byte(fmt.Sprintf("[{\"role\":\"user\",\"content\":%s}]", prompt.Raw))
-		} else {
-			return body, needReadResponseBody, fmt.Errorf("unsupported prompt type: %s", prompt.Type.String())
+		messages, err := translatePromptToMessages(prompt)
+		if err != nil {
+			return body, needReadResponseBody, fmt.Errorf("failed to translate prompt to messages: %v", err)
 		}
 		if transformedBody, err = sjson.SetRawBytes(transformedBody, "messages", messages); err != nil {
 			return body, needReadResponseBody, fmt.Errorf("failed to set messages in completion request body, err: %v", err)
 		}
 	}
+
 	for field := range completionsRequestFieldWhitelist {
 		if value := gjson.GetBytes(body, field); value.Exists() {
 			if transformedBody, err = sjson.SetRawBytes(transformedBody, field, []byte(value.Raw)); err != nil {
@@ -339,6 +313,42 @@ func transformCompletionsRequestFields(ctx wrapper.HttpContext, body []byte) (_ 
 		transformedBody, _ = sjson.SetBytes(transformedBody, "stream_options.include_usage", true)
 	}
 	return transformedBody, true, nil
+}
+
+func translatePromptToMessages(prompt gjson.Result) ([]byte, error) {
+	var messages []byte
+	if prompt.IsArray() {
+		items := prompt.Array()
+		if len(items) == 0 {
+			return nil, errors.New("empty prompt array")
+		}
+		firstItem := items[0]
+		if firstItem.Type == gjson.String {
+			var builder strings.Builder
+			for _, item := range items {
+				if builder.Len() == 0 {
+					builder.WriteString("[")
+				} else {
+					builder.WriteString(",")
+				}
+				builder.WriteString("{\"role\":\"user\",\"content\":")
+				builder.WriteString(item.Raw)
+				builder.WriteString("}")
+			}
+			builder.WriteString("]")
+			messages = []byte(builder.String())
+		} else if firstItem.IsArray() {
+			messages = []byte(fmt.Sprintf("[{\"role\":\"user\",\"content\":%s}]", firstItem.Raw))
+		} else {
+			return nil, fmt.Errorf("unsupported prompt item type: %s", firstItem.Type.String())
+		}
+	} else if prompt.Type == gjson.String {
+		messages = []byte(fmt.Sprintf("[{\"role\":\"user\",\"content\":%s}]", prompt.Raw))
+	} else {
+		return nil, fmt.Errorf("unsupported prompt type: %s", prompt.Type.String())
+	}
+
+	return messages, nil
 }
 
 func transformCompletionsResponseFields(ctx wrapper.HttpContext, body []byte) ([]byte, error) {
