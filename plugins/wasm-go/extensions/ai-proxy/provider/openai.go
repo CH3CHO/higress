@@ -294,6 +294,13 @@ func (m *openaiProvider) transformChatCompletionsRequestFields(ctx wrapper.HttpC
 
 func transformCompletionsRequestFields(ctx wrapper.HttpContext, body []byte) (_ []byte, needReadResponseBody bool, err error) {
 	var transformedBody []byte
+	for field := range completionsRequestFieldWhitelist {
+		if value := gjson.GetBytes(body, field); value.Exists() {
+			if transformedBody, err = sjson.SetRawBytes(transformedBody, field, []byte(value.Raw)); err != nil {
+				return body, needReadResponseBody, fmt.Errorf("failed to set %s in completion request body, err: %v", field, err)
+			}
+		}
+	}
 	if prompt := gjson.GetBytes(body, "prompt"); prompt.Exists() {
 		messages, err := translatePromptToMessages(prompt)
 		if err != nil {
@@ -302,17 +309,6 @@ func transformCompletionsRequestFields(ctx wrapper.HttpContext, body []byte) (_ 
 		if transformedBody, err = sjson.SetRawBytes(transformedBody, "messages", messages); err != nil {
 			return body, needReadResponseBody, fmt.Errorf("failed to set messages in completion request body, err: %v", err)
 		}
-	}
-
-	for field := range completionsRequestFieldWhitelist {
-		if value := gjson.GetBytes(body, field); value.Exists() {
-			if transformedBody, err = sjson.SetRawBytes(transformedBody, field, []byte(value.Raw)); err != nil {
-				return body, needReadResponseBody, fmt.Errorf("failed to set %s in completion request body, err: %v", field, err)
-			}
-		}
-	}
-	if stream := gjson.GetBytes(body, "stream"); stream.Exists() && stream.Type == gjson.True {
-		transformedBody, _ = sjson.SetBytes(transformedBody, "stream_options.include_usage", true)
 	}
 	return transformedBody, true, nil
 }
