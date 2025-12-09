@@ -27,9 +27,10 @@ const (
 
 	defaultMaxBodyBytes uint32 = 100 * 1024 * 1024
 
-	ctxOriginalPath = "original_path"
-	ctxOriginalHost = "original_host"
-	ctxOriginalAuth = "original_auth"
+	ctxOriginalPath       = "original_path"
+	ctxOriginalHost       = "original_host"
+	ctxOriginalAuth       = "original_auth"
+	ctxStreamIncludeUsage = "original_stream_include_usage"
 )
 
 type pair[K, V any] struct {
@@ -301,7 +302,7 @@ func onHttpRequestBody(ctx wrapper.HttpContext, pluginConfig config.PluginConfig
 		}
 		// 仅 /v1/chat/completions 和 /v1/completions 接口支持 stream_options 参数
 		if providerConfig.IsOpenAIProtocol() && (apiName == provider.ApiNameChatCompletion || apiName == provider.ApiNameCompletion) {
-			newBody = normalizeOpenAiRequestBody(newBody)
+			newBody = normalizeOpenAiRequestBody(ctx, newBody)
 		}
 		log.Debugf("[onHttpRequestBody] newBody=%s", newBody)
 		body = newBody
@@ -552,10 +553,14 @@ func convertResponseBodyToClaude(ctx wrapper.HttpContext, body []byte) ([]byte, 
 	return convertedBody, nil
 }
 
-func normalizeOpenAiRequestBody(body []byte) []byte {
+func normalizeOpenAiRequestBody(ctx wrapper.HttpContext, body []byte) []byte {
 	var err error
 	// Default setting include_usage.
-	if gjson.GetBytes(body, "stream").Bool() && (!gjson.GetBytes(body, "stream_options").Exists() || !gjson.GetBytes(body, "stream_options.include_usage").Exists()) {
+	if gjson.GetBytes(body, "stream").Bool() {
+		// Always set stream_options.include_usage to true so we can get token usage from LLM.
+		// But keep the original value just in case we need it for response processing.
+		includeUsage := gjson.GetBytes(body, "stream_options.include_usage").Bool()
+		ctx.SetContext(ctxStreamIncludeUsage, includeUsage)
 		body, err = sjson.SetBytes(body, "stream_options.include_usage", true)
 		if err != nil {
 			log.Errorf("set include_usage failed, err:%s", err)
