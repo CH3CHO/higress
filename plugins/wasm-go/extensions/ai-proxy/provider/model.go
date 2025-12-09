@@ -354,15 +354,25 @@ func (m *chatMessage) ParseContent() []chatMessageContent {
 					})
 				}
 			case contentTypeImageUrl:
-				if subObj, ok := contentMap[contentTypeImageUrl].(map[string]any); ok {
+				if imageUrlInterface, ok := contentMap[contentTypeImageUrl]; !ok {
+					continue
+				} else if imageUrlObj, ok := imageUrlInterface.(map[string]any); ok {
 					msg := chatMessageContent{
 						Type: contentTypeImageUrl,
 						ImageUrl: &chatMessageContentImageUrl{
-							Url: subObj["url"].(string),
+							Url: imageUrlObj["url"].(string),
 						},
 					}
-					if detail, ok := subObj["detail"].(string); ok {
+					if detail, ok := imageUrlObj["detail"].(string); ok {
 						msg.ImageUrl.Detail = detail
+					}
+					contentList = append(contentList, msg)
+				} else if imageUrlString, ok := imageUrlInterface.(string); ok {
+					msg := chatMessageContent{
+						Type: contentTypeImageUrl,
+						ImageUrl: &chatMessageContentImageUrl{
+							Url: imageUrlString,
+						},
 					}
 					contentList = append(contentList, msg)
 				}
