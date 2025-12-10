@@ -24,9 +24,10 @@ func init() {
 		"ai-statistics",
 		wrapper.ParseConfig(parseConfig),
 		wrapper.ProcessRequestHeaders(onHttpRequestHeaders),
+		wrapper.ProcessStreamingRequestBody(onHttpStreamingRequestBody),
 		wrapper.ProcessRequestBody(onHttpRequestBody),
 		wrapper.ProcessResponseHeaders(onHttpResponseHeaders),
-		wrapper.ProcessStreamingResponseBody(onHttpStreamingBody),
+		wrapper.ProcessStreamingResponseBody(onHttpStreamingResponseBody),
 		wrapper.ProcessResponseBody(onHttpResponseBody),
 		wrapper.WithRebuildAfterRequests[AIStatisticsConfig](1000),
 	)
@@ -36,15 +37,16 @@ const (
 	defaultMaxBodyBytes uint32 = 100 * 1024 * 1024
 
 	// Context consts
-	StatisticsRequestStartTime     = "ai-statistics-request-start-time"
-	StatisticsFirstTokenTime       = "ai-statistics-first-token-time"
-	RouteName                      = "route"
-	ClusterName                    = "cluster"
-	APIName                        = "api"
-	ConsumerKey                    = "x-mse-consumer"
-	RequestPath                    = "request_path"
-	SkipProcessing                 = "skip_processing"
-	SkipStreamingBodyLogProcessing = "skip_streaming_body_log_processing"
+	StatisticsRequestStartTime             = "ai-statistics-request-start-time"
+	StatisticsFirstTokenTime               = "ai-statistics-first-token-time"
+	RouteName                              = "route"
+	ClusterName                            = "cluster"
+	APIName                                = "api"
+	ConsumerKey                            = "x-mse-consumer"
+	RequestPath                            = "request_path"
+	SkipProcessing                         = "skip_processing"
+	SkipStreamingRequestBodyLogProcessing  = "skip_streaming_request_body_log_processing"
+	SkipStreamingResponseBodyLogProcessing = "skip_streaming_response_body_log_processing"
 
 	// AI API Paths
 	PathOpenAIChatCompletions       = "/v1/chat/completions"
@@ -371,12 +373,60 @@ func onHttpRequestHeaders(ctx wrapper.HttpContext, config AIStatisticsConfig) ty
 	// Set user defined log & span attributes which type is request_header
 	setAttributeBySource(ctx, config, RequestHeader, nil)
 
-	// Ignore non-JSON request bodies for multi-modality compatibility
-	if contentType, _ := proxywasm.GetHttpRequestHeader("content-type"); !strings.Contains(contentType, "json") {
-		ctx.DontReadRequestBody()
+	if wrapper.HasRequestBody() {
+		if contentType, _ := proxywasm.GetHttpRequestHeader("content-type"); strings.Contains(contentType, "json") {
+			// For non-JSON content types, we don't buffer the body here.
+			// Just process it in onHttpStreamingRequestBody.
+			ctx.BufferRequestBody()
+		}
+		// Delay the header flushing to the next filter and buffer the body for once.
+		// Because if we don't do this, following plugins may just return an error when processing the header,
+		// causing us unable to log the request body at all.
+		return types.HeaderStopIteration
 	}
 
 	return types.ActionContinue
+}
+
+func onHttpStreamingRequestBody(ctx wrapper.HttpContext, config AIStatisticsConfig, chunk []byte, isLastChunk bool) (modifiedChunk []byte) {
+	log.Debugf("processing streaming request body, len(chunk)=%d isLastChunk=%t", len(chunk), isLastChunk)
+	// We don't modify chunk data here. Just log it.
+	modifiedChunk = chunk
+
+	// Check if processing should be skipped
+	if ctx.GetBoolContext(SkipProcessing, false) {
+		return
+	}
+	if ctx.GetBoolContext(SkipStreamingRequestBodyLogProcessing, false) {
+		return
+	}
+
+	cachedRequestBody := ctx.GetByteSliceContext(RequestBody, nil)
+	if cachedRequestBody == nil {
+		cachedRequestBody = chunk
+	} else if len(cachedRequestBody)+len(chunk) < config.requestBodyLengthLimit {
+		cachedRequestBody = append(cachedRequestBody, chunk...)
+	} else {
+		bytesToBeAdded := config.requestBodyLengthLimit - len(cachedRequestBody)
+		if bytesToBeAdded > 0 {
+			cachedRequestBody = append(cachedRequestBody, chunk[:bytesToBeAdded]...)
+		}
+		ctx.SetContext(SkipStreamingRequestBodyLogProcessing, true)
+	}
+	ctx.SetContext(RequestBody, cachedRequestBody)
+
+	// Both header and received body will be passed to the following filter in the chain after return.
+	// If following plugins may just return an error when processing the header or the first chunk of body,
+	// breaking the filter chain, we won't be able to log the request body at all.
+	// So we perform the logging here when processing both the first chunk and the last chunk,
+	// especially for route_not_found cases.
+	isFirstChunk := ctx.GetUserAttribute(RequestBody) == nil
+	if isFirstChunk || isLastChunk {
+		ctx.SetUserAttribute(RequestBody, string(cachedRequestBody))
+		_ = ctx.WriteUserAttributeToLogWithKey(wrapper.AILogKey)
+	}
+
+	return
 }
 
 func onHttpRequestBody(ctx wrapper.HttpContext, config AIStatisticsConfig, body []byte) types.Action {
@@ -486,7 +536,7 @@ func onHttpResponseHeaders(ctx wrapper.HttpContext, config AIStatisticsConfig) t
 		// Non-streaming JSON response body will be processed in onHttpResponseBody
 		ctx.BufferResponseBody()
 	} else if strings.Contains(contentType, "text/event-stream") {
-		// Do nothing, streaming body will be processed in onHttpStreamingBody
+		// Do nothing, streaming body will be processed in onHttpStreamingResponseBody
 	} else {
 		if status, _ := proxywasm.GetHttpResponseHeader(":status"); status == "200" {
 			// For other content types, skip processing for successful responses
@@ -504,7 +554,7 @@ func onHttpResponseHeaders(ctx wrapper.HttpContext, config AIStatisticsConfig) t
 	return types.ActionContinue
 }
 
-func onHttpStreamingBody(ctx wrapper.HttpContext, config AIStatisticsConfig, data []byte, endOfStream bool) []byte {
+func onHttpStreamingResponseBody(ctx wrapper.HttpContext, config AIStatisticsConfig, data []byte, endOfStream bool) []byte {
 	// Check if processing should be skipped
 	if ctx.GetBoolContext(SkipProcessing, false) {
 		return data
@@ -717,8 +767,8 @@ func combineStreamingEventsForLog(ctx wrapper.HttpContext, config *AIStatisticsC
 		return
 	}
 
-	if ctx.GetContext(SkipStreamingBodyLogProcessing) != nil {
-		log.Debugf("skipping streaming body log processing as per context flag")
+	if ctx.GetContext(SkipStreamingResponseBodyLogProcessing) != nil {
+		log.Debugf("skipping streaming response body log processing as per context flag")
 		return
 	}
 
@@ -769,7 +819,7 @@ func combineStreamingEventsForLog(ctx wrapper.HttpContext, config *AIStatisticsC
 		})
 		if len(responseBody) > config.responseBodyLengthLimit {
 			log.Debugf("combined response body length for log exceeds limit %d, stop processing further streaming events", config.responseBodyLengthLimit)
-			ctx.SetContext(SkipStreamingBodyLogProcessing, true)
+			ctx.SetContext(SkipStreamingResponseBodyLogProcessing, true)
 		} else {
 			ctx.SetUserAttribute(ResponseBody, responseBody)
 		}
