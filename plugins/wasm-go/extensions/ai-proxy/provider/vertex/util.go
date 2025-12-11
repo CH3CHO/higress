@@ -227,7 +227,7 @@ func getMapID(m map[string]interface{}) uintptr {
 	return reflect.ValueOf(m).Pointer()
 }
 
-// getValidSchemaFields returns the set of valid schema fields supported by Vertex AI.
+// validSchemaFields are the set of valid schema fields supported by Vertex AI.
 // This is equivalent to Python's `set(get_type_hints(Schema).keys())`.
 //
 // Based on the Schema TypedDict definition in vertex_ai.py:
