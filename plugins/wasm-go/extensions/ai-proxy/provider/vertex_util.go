@@ -526,52 +526,57 @@ func setVertexExtraFieldsToResponse(respBytes []byte,
 
 	var err error
 
-	// Add grounding metadata if present
-	if len(groundingMetadataList) > 0 {
-		groundingMetadataBytes, marshalErr := json.Marshal(groundingMetadataList)
-		if marshalErr != nil {
-			return nil, fmt.Errorf("failed to marshal grounding metadata: %v", marshalErr)
-		}
-		respBytes, err = sjson.SetRawBytes(respBytes, "vertex_ai_grounding_metadata", groundingMetadataBytes)
-		if err != nil {
-			return nil, fmt.Errorf("failed to set grounding metadata: %v", err)
-		}
+	if groundingMetadataList == nil {
+		groundingMetadataList = make([]*vertex.GroundingMetadata, 0)
+	}
+	if urlContextMetadataList == nil {
+		urlContextMetadataList = make([]*vertex.URLContextMetadata, 0)
+	}
+	if safetyRatingsList == nil {
+		safetyRatingsList = make([][]*vertex.SafetyRatings, 0)
+	}
+	if citationMetadataList == nil {
+		citationMetadataList = make([]*vertex.CitationMetadata, 0)
 	}
 
-	// Add URL context metadata if present
-	if len(urlContextMetadataList) > 0 {
-		urlContextMetadataBytes, marshalErr := json.Marshal(urlContextMetadataList)
-		if marshalErr != nil {
-			return nil, fmt.Errorf("failed to marshal URL context metadata: %v", marshalErr)
-		}
-		respBytes, err = sjson.SetRawBytes(respBytes, "vertex_ai_url_context_metadata", urlContextMetadataBytes)
-		if err != nil {
-			return nil, fmt.Errorf("failed to set URL context metadata: %v", err)
-		}
+	// Add grounding metadata
+	groundingMetadataBytes, marshalErr := json.Marshal(groundingMetadataList)
+	if marshalErr != nil {
+		return nil, fmt.Errorf("failed to marshal grounding metadata: %v", marshalErr)
+	}
+	respBytes, err = sjson.SetRawBytes(respBytes, "vertex_ai_grounding_metadata", groundingMetadataBytes)
+	if err != nil {
+		return nil, fmt.Errorf("failed to set grounding metadata: %v", err)
 	}
 
-	// Add safety ratings if present
-	if len(safetyRatingsList) > 0 {
-		safetyRatingsBytes, marshalErr := json.Marshal(safetyRatingsList)
-		if marshalErr != nil {
-			return nil, fmt.Errorf("failed to marshal safety ratings: %v", marshalErr)
-		}
-		respBytes, err = sjson.SetRawBytes(respBytes, "vertex_ai_safety_results", safetyRatingsBytes)
-		if err != nil {
-			return nil, fmt.Errorf("failed to set safety ratings: %v", err)
-		}
+	// Add URL context metadata
+	urlContextMetadataBytes, marshalErr := json.Marshal(urlContextMetadataList)
+	if marshalErr != nil {
+		return nil, fmt.Errorf("failed to marshal URL context metadata: %v", marshalErr)
+	}
+	respBytes, err = sjson.SetRawBytes(respBytes, "vertex_ai_url_context_metadata", urlContextMetadataBytes)
+	if err != nil {
+		return nil, fmt.Errorf("failed to set URL context metadata: %v", err)
 	}
 
-	// Add citation metadata if present
-	if len(citationMetadataList) > 0 {
-		citationMetadataBytes, marshalErr := json.Marshal(citationMetadataList)
-		if marshalErr != nil {
-			return nil, fmt.Errorf("failed to marshal citation metadata: %v", marshalErr)
-		}
-		respBytes, err = sjson.SetRawBytes(respBytes, "vertex_ai_citation_metadata", citationMetadataBytes)
-		if err != nil {
-			return nil, fmt.Errorf("failed to set citation metadata: %v", err)
-		}
+	// Add safety ratings
+	safetyRatingsBytes, marshalErr := json.Marshal(safetyRatingsList)
+	if marshalErr != nil {
+		return nil, fmt.Errorf("failed to marshal safety ratings: %v", marshalErr)
+	}
+	respBytes, err = sjson.SetRawBytes(respBytes, "vertex_ai_safety_results", safetyRatingsBytes)
+	if err != nil {
+		return nil, fmt.Errorf("failed to set safety ratings: %v", err)
+	}
+
+	// Add citation metadata
+	citationMetadataBytes, marshalErr := json.Marshal(citationMetadataList)
+	if marshalErr != nil {
+		return nil, fmt.Errorf("failed to marshal citation metadata: %v", marshalErr)
+	}
+	respBytes, err = sjson.SetRawBytes(respBytes, "vertex_ai_citation_metadata", citationMetadataBytes)
+	if err != nil {
+		return nil, fmt.Errorf("failed to set citation metadata: %v", err)
 	}
 
 	return respBytes, nil
