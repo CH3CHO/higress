@@ -169,6 +169,7 @@ type completionTokensDetails struct {
 	RejectedPredictionTokens int `json:"rejected_prediction_tokens,omitempty"`
 	TextTokens               int `json:"text_tokens,omitempty"`
 	AudioTokens              int `json:"audio_tokens,omitempty"`
+	ImageTokens              int `json:"image_tokens,omitempty"`
 }
 
 type promptTokensDetails struct {
@@ -266,6 +267,7 @@ type chatMessageContentFile struct {
 	FileData string `json:"file_data,omitempty"`
 	FileId   string `json:"file_id,omitempty"`
 	FileName string `json:"file_name,omitempty"`
+	Format   string `json:"format,omitempty"`
 }
 
 type chatMessageContentImageUrl struct {
@@ -388,13 +390,22 @@ func (m *chatMessage) ParseContent() []chatMessageContent {
 				}
 			case contentTypeFile:
 				if subObj, ok := contentMap[contentTypeFile].(map[string]any); ok {
+					file := &chatMessageContentFile{}
+					if fileId, ok := subObj["file_id"].(string); ok {
+						file.FileId = fileId
+					}
+					if fileName, ok := subObj["file_name"].(string); ok {
+						file.FileName = fileName
+					}
+					if fileData, ok := subObj["file_data"].(string); ok {
+						file.FileData = fileData
+					}
+					if format, ok := subObj["format"].(string); ok {
+						file.Format = format
+					}
 					contentList = append(contentList, chatMessageContent{
 						Type: contentTypeFile,
-						File: &chatMessageContentFile{
-							FileId: subObj["file_id"].(string),
-							// FileName: subObj["file_name"].(string),
-							// FileData: subObj["file_data"].(string),
-						},
+						File: file,
 					})
 				}
 			}
@@ -409,12 +420,16 @@ type toolCall struct {
 	Id       string       `json:"id,omitempty"`
 	Type     string       `json:"type"`
 	Function functionCall `json:"function"`
+
+	ProviderSpecificFields map[string]interface{} `json:"provider_specific_fields,omitempty"`
 }
 
 type functionCall struct {
 	Id        string `json:"id,omitempty"`
 	Name      string `json:"name"`
 	Arguments string `json:"arguments"`
+
+	ProviderSpecificFields map[string]interface{} `json:"provider_specific_fields,omitempty"`
 }
 
 func (m *functionCall) IsEmpty() bool {

@@ -14,18 +14,22 @@ import (
 	"strings"
 	"time"
 
-	"github.com/alibaba/higress/plugins/wasm-go/extensions/ai-proxy/util"
 	"github.com/google/uuid"
 	"github.com/higress-group/proxy-wasm-go-sdk/proxywasm"
 	"github.com/higress-group/proxy-wasm-go-sdk/proxywasm/types"
 	"github.com/higress-group/wasm-go/pkg/log"
 	"github.com/higress-group/wasm-go/pkg/wrapper"
 	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
+
+	"github.com/alibaba/higress/plugins/wasm-go/extensions/ai-proxy/provider/vertex"
+	"github.com/alibaba/higress/plugins/wasm-go/extensions/ai-proxy/util"
 )
 
 const (
-	vertexAuthDomain = "oauth2.googleapis.com"
-	vertexDomain     = "{REGION}-aiplatform.googleapis.com"
+	vertexAuthDomain   = "oauth2.googleapis.com"
+	vertexDomain       = "{REGION}-aiplatform.googleapis.com"
+	vertexGlobalDomain = "aiplatform.googleapis.com"
 	// /v1/projects/{PROJECT_ID}/locations/{REGION}/publishers/google/models/{MODEL_ID}:{ACTION}
 	vertexPathTemplate               = "/v1/projects/%s/locations/%s/publishers/google/models/%s:%s"
 	vertexChatCompletionAction       = "generateContent"
@@ -34,8 +38,7 @@ const (
 )
 
 const (
-	vertexModalityText  = "TEXT"
-	vertexModalityAudio = "AUDIO"
+	ctxStreamIncludeUsage = "original_stream_include_usage"
 )
 
 type vertexProviderInitializer struct{}
@@ -56,19 +59,22 @@ func (v *vertexProviderInitializer) ValidateConfig(config *ProviderConfig) error
 func (v *vertexProviderInitializer) DefaultCapabilities() map[string]string {
 	return map[string]string{
 		string(ApiNameChatCompletion): vertexPathTemplate,
+		string(ApiNameCompletion):     vertexPathTemplate,
 		string(ApiNameEmbeddings):     vertexPathTemplate,
 	}
 }
 
 func (v *vertexProviderInitializer) CreateProvider(config ProviderConfig) (Provider, error) {
 	config.setDefaultCapabilities(v.DefaultCapabilities())
+	dnsCluster := wrapper.DnsCluster{
+		Domain:      vertexAuthDomain,
+		ServiceName: config.vertexAuthServiceName,
+		Port:        443,
+	}
+	log.Infof("[vertex]: use dns cluster %s for auth", dnsCluster.ClusterName())
 	return &vertexProvider{
-		config: config,
-		client: wrapper.NewClusterClient(wrapper.DnsCluster{
-			Domain:      vertexAuthDomain,
-			ServiceName: config.vertexAuthServiceName,
-			Port:        443,
-		}),
+		config:       config,
+		client:       wrapper.NewClusterClient(dnsCluster),
 		contextCache: createContextCache(&config),
 	}, nil
 }
@@ -99,7 +105,12 @@ func (v *vertexProvider) OnRequestHeaders(ctx wrapper.HttpContext, apiName ApiNa
 }
 
 func (v *vertexProvider) TransformRequestHeaders(ctx wrapper.HttpContext, apiName ApiName, headers http.Header) {
-	vertexRegionDomain := strings.Replace(vertexDomain, "{REGION}", v.config.vertexRegion, 1)
+	var vertexRegionDomain string
+	if v.config.vertexRegion == "global" {
+		vertexRegionDomain = vertexGlobalDomain
+	} else {
+		vertexRegionDomain = strings.Replace(vertexDomain, "{REGION}", v.config.vertexRegion, 1)
+	}
 	util.OverwriteRequestHostHeader(headers, vertexRegionDomain)
 }
 
@@ -126,6 +137,7 @@ func (v *vertexProvider) getToken() (cached bool, err error) {
 		return false, err
 	}
 
+	log.Debugf("[vertex]: created JWT token successfully: %s...", jwtToken[:20])
 	err = v.getAccessToken(jwtToken)
 	if err != nil {
 		log.Errorf("[vertex]: unable to get access token: %v", err)
@@ -160,7 +172,20 @@ func (v *vertexProvider) OnRequestBody(ctx wrapper.HttpContext, apiName ApiName,
 }
 
 func (v *vertexProvider) TransformRequestBodyHeaders(ctx wrapper.HttpContext, apiName ApiName, body []byte, headers http.Header) ([]byte, error) {
-	if apiName == ApiNameChatCompletion {
+	if apiName == ApiNameCompletion {
+		if prompt := gjson.GetBytes(body, "prompt"); prompt.Exists() {
+			messages, err := translatePromptToMessages(prompt)
+			if err != nil {
+				return nil, errors.New("[vertex]: failed to translate prompt to messages: " + err.Error())
+			}
+			if body, err = sjson.SetRawBytes(body, "messages", messages); err != nil {
+				return nil, errors.New("[vertex]: failed to set messages field: " + err.Error())
+			}
+			log.Debugf("[vertex]: translated prompt to messages successfully, new body: %s", body)
+		}
+	}
+
+	if apiName == ApiNameChatCompletion || apiName == ApiNameCompletion {
 		return v.onChatCompletionRequestBody(ctx, body, headers)
 	} else {
 		return v.onEmbeddingsRequestBody(ctx, body, headers)
@@ -168,16 +193,29 @@ func (v *vertexProvider) TransformRequestBodyHeaders(ctx wrapper.HttpContext, ap
 }
 
 func (v *vertexProvider) onChatCompletionRequestBody(ctx wrapper.HttpContext, body []byte, headers http.Header) ([]byte, error) {
+	extendedParams, err := extractVertexExtendedParams(body)
+	if err != nil {
+		return nil, err
+	}
+
 	request := &chatCompletionRequest{}
-	err := v.config.parseRequestAndMapModel(ctx, request, body)
+	err = v.config.parseRequestAndMapModel(ctx, request, body)
 	if err != nil {
 		return nil, err
 	}
 	path := v.getRequestPath(ApiNameChatCompletion, request.Model, request.Stream)
+	log.Debugf("[vertex]: request path: %s", path)
 	util.OverwriteRequestPathHeader(headers, path)
 
-	vertexRequest := v.buildVertexChatRequest(request)
-	return json.Marshal(vertexRequest)
+	vertexRequest, err := v.buildVertexChatRequest(request, extendedParams)
+	if err != nil {
+		log.Errorf("[vertex]: unable to build valid vertex request: %v", err)
+		return nil, err
+	}
+
+	vertexRequestBodyBytes, err := json.Marshal(vertexRequest)
+	log.Debugf("[vertex]: request body after transform: %s", vertexRequestBodyBytes)
+	return vertexRequestBodyBytes, err
 }
 
 func (v *vertexProvider) onEmbeddingsRequestBody(ctx wrapper.HttpContext, body []byte, headers http.Header) ([]byte, error) {
@@ -192,43 +230,69 @@ func (v *vertexProvider) onEmbeddingsRequestBody(ctx wrapper.HttpContext, body [
 	return json.Marshal(vertexRequest)
 }
 
-func (v *vertexProvider) OnStreamingResponseBody(ctx wrapper.HttpContext, name ApiName, chunk []byte, isLastChunk bool) ([]byte, error) {
-	log.Infof("[vertexProvider] receive chunk body: %s", string(chunk))
-	if isLastChunk || len(chunk) == 0 {
+func (v *vertexProvider) OnStreamingEvent(ctx wrapper.HttpContext, name ApiName, event StreamEvent) ([]StreamEvent, error) {
+	log.Infof("[vertexProvider] receive stream event: %+v", event)
+	if name != ApiNameChatCompletion && name != ApiNameCompletion {
 		return nil, nil
 	}
-	if name != ApiNameChatCompletion {
-		return chunk, nil
+
+	var out []StreamEvent
+
+	var vertexResp vertexChatResponse
+	if err := json.Unmarshal([]byte(event.Data), &vertexResp); err != nil {
+		return nil, fmt.Errorf("unable to unmarshal vertex response: %v", err)
 	}
-	responseBuilder := &strings.Builder{}
-	lines := strings.Split(string(chunk), "\n")
-	for _, data := range lines {
-		if len(data) < 6 {
-			// ignore blank line or wrong format
-			continue
-		}
-		data = data[6:]
-		var vertexResp vertexChatResponse
-		if err := json.Unmarshal([]byte(data), &vertexResp); err != nil {
-			log.Errorf("unable to unmarshal vertex response: %v", err)
-			continue
-		}
-		response := v.buildChatCompletionStreamResponse(ctx, &vertexResp)
-		responseBody, err := json.Marshal(response)
+
+	includeUsage := streamOptionsIncludeUsageFromContext(ctx)
+
+	responses, isLastChunk := v.buildChatCompletionStreamResponse(ctx, &vertexResp)
+	for _, response := range responses {
+		responseBodyBytes, err := json.Marshal(response)
 		if err != nil {
-			log.Errorf("unable to marshal response: %v", err)
-			return nil, err
+			return nil, fmt.Errorf("unable to marshal transformed vertex response: %w", err)
 		}
-		v.appendResponse(responseBuilder, string(responseBody))
+
+		if includeUsage {
+			modifiedBody, err := sjson.SetBytes(responseBodyBytes, "stream_options.include_usage", true)
+			if err != nil {
+				return nil, err
+			}
+			responseBodyBytes = modifiedBody
+		}
+
+		event.Data = string(responseBodyBytes) // modified event data in place
+
+		if name == ApiNameCompletion {
+			transformedEvents, err := handleCompletionsStreamingEvent(ctx, event)
+			if err != nil {
+				return nil, fmt.Errorf("failed to transform completions streaming event: %w", err)
+			}
+			out = append(out, transformedEvents...)
+		} else {
+			out = append(out, event)
+		}
 	}
-	modifiedResponseChunk := responseBuilder.String()
-	log.Debugf("=== modified response chunk: %s", modifiedResponseChunk)
-	return []byte(modifiedResponseChunk), nil
+
+	// vertex does not send a separate data: [DONE] message, so we need to add it ourselves
+	if isLastChunk && !event.IsEndData() {
+		out = append(out, StreamEvent{
+			Data: streamEndDataValue,
+		})
+	}
+
+	return out, nil
 }
 
 func (v *vertexProvider) TransformResponseBody(ctx wrapper.HttpContext, apiName ApiName, body []byte) ([]byte, error) {
 	if apiName == ApiNameChatCompletion {
 		return v.onChatCompletionResponseBody(ctx, body)
+	} else if apiName == ApiNameCompletion {
+		bodyBytes, err := v.onChatCompletionResponseBody(ctx, body)
+		if err != nil {
+			return nil, err
+		}
+		// transform to completion response format
+		return transformCompletionsResponseFields(ctx, bodyBytes)
 	} else {
 		return v.onEmbeddingsResponseBody(ctx, body)
 	}
@@ -239,112 +303,134 @@ func (v *vertexProvider) onChatCompletionResponseBody(ctx wrapper.HttpContext, b
 	if err := json.Unmarshal(body, vertexResponse); err != nil {
 		return nil, fmt.Errorf("unable to unmarshal vertex chat response: %v", err)
 	}
-	response := v.buildChatCompletionResponse(ctx, vertexResponse)
-	return json.Marshal(response)
-}
-
-func toNormalizedUsage(usageMetadata vertexUsageMetadata) *usage {
-	out := &usage{
-		PromptTokens: usageMetadata.PromptTokenCount,
-		TotalTokens:  usageMetadata.TotalTokenCount,
-		TrafficType:  usageMetadata.TrafficType,
-	}
-
-	// Prefer responseTokenCount over candidatesTokenCount for completion_tokens
-	if usageMetadata.ResponseTokenCount > 0 {
-		out.CompletionTokens = usageMetadata.ResponseTokenCount
+	vertexResponseBytes, err := json.Marshal(vertexResponse) // TODO delete
+	if err != nil {
+		log.Errorf("unable to marshal vertex response: %v", err)
 	} else {
-		out.CompletionTokens = usageMetadata.CandidatesTokenCount
+		log.Debugf("vertex response: %s", vertexResponseBytes)
+	}
+	response, groundingMetadataList, urlContextMetadataList, safetyRatingsList, citationMetadataList := v.buildChatCompletionResponse(ctx, vertexResponse)
+	respBytes, err := json.Marshal(response)
+	if err != nil {
+		return nil, err
 	}
 
-	// Map to completion_tokens_details
-	if usageMetadata.ThoughtsTokenCount > 0 || len(usageMetadata.ResponseTokensDetails) > 0 {
-		out.CompletionTokensDetails = &completionTokensDetails{
-			ReasoningTokens: usageMetadata.ThoughtsTokenCount,
-		}
-		// Extract text and audio tokens from responseTokensDetails
-		for _, detail := range usageMetadata.ResponseTokensDetails {
-			switch detail.Modality {
-			case "TEXT":
-				out.CompletionTokensDetails.TextTokens = detail.TokenCount
-			case "AUDIO":
-				out.CompletionTokensDetails.AudioTokens = detail.TokenCount
-			}
-		}
+	// Add vertex-specific fields to response
+	respBytes, err = setVertexExtraFieldsToResponse(respBytes, groundingMetadataList, urlContextMetadataList, safetyRatingsList, citationMetadataList)
+	if err != nil {
+		return nil, err
 	}
 
-	// Map to prompt_tokens_details
-	if usageMetadata.CachedContentTokenCount > 0 || len(usageMetadata.PromptTokensDetails) > 0 {
-		out.PromptTokensDetails = &promptTokensDetails{
-			CachedTokens: usageMetadata.CachedContentTokenCount,
-		}
-		// Extract text and audio tokens from promptTokensDetails
-		for _, detail := range usageMetadata.PromptTokensDetails {
-			switch strings.ToUpper(detail.Modality) {
-			case vertexModalityText:
-				out.PromptTokensDetails.TextTokens = detail.TokenCount
-			case vertexModalityAudio:
-				out.PromptTokensDetails.AudioTokens = detail.TokenCount
-			}
-		}
-	}
-
-	return out
+	return respBytes, nil
 }
 
-func (v *vertexProvider) buildChatCompletionResponse(ctx wrapper.HttpContext, response *vertexChatResponse) *chatCompletionResponse {
-	fullTextResponse := chatCompletionResponse{
+func (v *vertexProvider) buildChatCompletionResponse(ctx wrapper.HttpContext, response *vertexChatResponse) (*chatCompletionResponse,
+	[]*vertex.GroundingMetadata, []*vertex.URLContextMetadata, [][]*vertex.SafetyRatings, []*vertex.CitationMetadata) {
+
+	if response.PromptFeedback != nil && response.PromptFeedback["blockReason"] != "" {
+		return handleVertexBlockedResponse(ctx, response), nil, nil, nil, nil
+	}
+
+	out := chatCompletionResponse{
 		Id:      response.ResponseId,
 		Object:  objectChatCompletion,
 		Created: time.Now().UnixMilli() / 1000,
 		Model:   ctx.GetStringContext(ctxKeyFinalRequestModel, ""),
 		Choices: make([]chatCompletionChoice, 0, len(response.Candidates)),
-		Usage:   toNormalizedUsage(response.UsageMetadata),
+		Usage:   calculateVertexUsage(response.UsageMetadata),
 	}
+
+	var groundingMetadataList []*vertex.GroundingMetadata
+	var urlContextMetadataList []*vertex.URLContextMetadata
+	var safetyRatingsList [][]*vertex.SafetyRatings
+	var citationMetadataList []*vertex.CitationMetadata
+
 	for _, candidate := range response.Candidates {
-		choice := chatCompletionChoice{
-			Index: candidate.Index,
-			Message: &chatMessage{
-				Role: roleAssistant,
-			},
-			FinishReason: util.Ptr(candidate.FinishReason),
+		if candidate.Content == nil {
+			continue
 		}
+		choice := buildChatCompletionChoice(candidate)
+		out.Choices = append(out.Choices, *choice)
 
-		for _, part := range candidate.Content.Parts {
-			if part.FunctionCall != nil {
-				if tc := v.buildToolCalls(&part); tc != nil {
-					choice.Message.ToolCalls = append(choice.Message.ToolCalls, *tc)
-				}
-			}
+		if candidate.GroundingMetadata != nil {
+			groundingMetadataList = append(groundingMetadataList, candidate.GroundingMetadata)
 		}
-
-		if len(candidate.Content.Parts) > 0 {
-			choice.Message.Content = candidate.Content.Parts[0].Text
-		} else {
-			choice.Message.Content = ""
+		if candidate.UrlContextMetadata != nil {
+			urlContextMetadataList = append(urlContextMetadataList, candidate.UrlContextMetadata)
 		}
-		fullTextResponse.Choices = append(fullTextResponse.Choices, choice)
+		if candidate.SafetyRatings != nil {
+			safetyRatingsList = append(safetyRatingsList, candidate.SafetyRatings)
+		}
+		if candidate.CitationMetadata != nil {
+			citationMetadataList = append(citationMetadataList, candidate.CitationMetadata)
+		}
 	}
-	return &fullTextResponse
+	return &out, groundingMetadataList, urlContextMetadataList, safetyRatingsList, citationMetadataList
 }
 
-func (v *vertexProvider) buildToolCalls(part *vertexPart) *toolCall {
-	if part.FunctionCall == nil {
-		return nil
+func buildChatCompletionChoice(candidate *vertex.Candidate) *chatCompletionChoice {
+	choice := &chatCompletionChoice{
+		Index: candidate.Index,
+		Message: &chatMessage{
+			Role: roleAssistant,
+		},
 	}
-	argsBytes, err := json.Marshal(part.FunctionCall.Args)
+
+	if candidate.FinishReason != "" {
+		choice.FinishReason = util.Ptr(util.MapFinishReason(candidate.FinishReason))
+	}
+
+	parts := candidate.Content.Parts
+	for _, part := range parts {
+		if part.FunctionCall != nil {
+			if tc := buildToolCall(part); tc != nil {
+				choice.Message.ToolCalls = append(choice.Message.ToolCalls, *tc)
+			}
+		}
+	}
+
+	content, reasoningContent := getAssistantContentMessage(parts)
+	choice.Message.Content = content
+	if reasoningContent != "" {
+		choice.Message.ReasoningContent = reasoningContent
+	}
+
+	choice.Logprobs = transformVertexLogprobs(candidate.LogprobsResult)
+
+	return choice
+}
+
+func buildToolCall(part *vertex.Part) *toolCall {
+	fc := part.FunctionCall
+	argsBytes, err := json.Marshal(fc.Args)
 	if err != nil {
-		log.Errorf("build toolCalls from vertex response failed: " + err.Error())
+		log.Errorf("convert vertex function call: marshal args failed: %v", err)
 		return nil
 	}
-	return &toolCall{
+	out := &toolCall{
 		Id:   fmt.Sprintf("call_%s", uuid.New().String()),
 		Type: "function",
 		Function: functionCall{
 			Arguments: string(argsBytes),
-			Name:      part.FunctionCall.Name,
+			Name:      fc.Name,
 		},
 	}
+
+	// Extract thoughtSignature from Gemini response (for Gemini 3 models)
+	// thoughtSignature can be in functionCall or at the part level
+	thoughtSignature := part.FunctionCall.ThoughtSignature
+	if thoughtSignature == "" {
+		// Check if thoughtSignature is at the part level
+		thoughtSignature = part.ThoughtSignature
+	}
+	if thoughtSignature != "" {
+		if out.ProviderSpecificFields == nil {
+			out.ProviderSpecificFields = make(map[string]interface{})
+		}
+		out.ProviderSpecificFields["thought_signature"] = thoughtSignature
+	}
+
+	return out
 }
 
 func (v *vertexProvider) onEmbeddingsResponseBody(ctx wrapper.HttpContext, body []byte) ([]byte, error) {
@@ -377,20 +463,127 @@ func (v *vertexProvider) buildEmbeddingsResponse(ctx wrapper.HttpContext, vertex
 	return &response
 }
 
-func (v *vertexProvider) buildChatCompletionStreamResponse(ctx wrapper.HttpContext, vertexResp *vertexChatResponse) *chatCompletionResponse {
-	var choice chatCompletionChoice
-	if len(vertexResp.Candidates) > 0 && len(vertexResp.Candidates[0].Content.Parts) > 0 {
-		choice.Delta = &chatMessage{Content: vertexResp.Candidates[0].Content.Parts[0].Text}
+func (v *vertexProvider) buildChatCompletionStreamResponse(ctx wrapper.HttpContext,
+	vertexResp *vertexChatResponse) ([]*chatCompletionResponse, bool) {
+	var chunk *vertex.Candidate
+	isLastChunk := false
+	if len(vertexResp.Candidates) > 0 {
+		chunk = vertexResp.Candidates[0]
+		isLastChunk = chunk.FinishReason != ""
 	}
-	streamResponse := chatCompletionResponse{
-		Id:      vertexResp.ResponseId,
-		Object:  objectChatCompletionChunk,
-		Created: time.Now().UnixMilli() / 1000,
-		Model:   ctx.GetStringContext(ctxKeyFinalRequestModel, ""),
-		Choices: []chatCompletionChoice{choice},
-		Usage:   toNormalizedUsage(vertexResp.UsageMetadata),
+
+	var reasoningContent string
+	var text string
+	var tc *toolCall
+	var finishReason string
+
+	if chunk != nil && chunk.Content != nil && len(chunk.Content.Parts) > 0 {
+		part := chunk.Content.Parts[0]
+		if part.Text != "" {
+			if part.Thought {
+				reasoningContent = part.Text
+			} else {
+				text = part.Text
+			}
+		} else if part.FunctionCall != nil {
+			tc = buildToolCall(part)
+		}
 	}
-	return &streamResponse
+
+	if chunk != nil && chunk.FinishReason != "" {
+		finishReason = util.MapFinishReason(chunk.FinishReason)
+	}
+
+	var toolCalls []toolCall
+	if tc != nil {
+		toolCalls = append(toolCalls, *tc)
+	}
+
+	var out []*chatCompletionResponse
+	if !isLastChunk {
+		choice := chatCompletionChoice{
+			Index: 0,
+			Delta: &chatMessage{
+				Role:             roleAssistant,
+				Content:          text,
+				ReasoningContent: reasoningContent,
+				ToolCalls:        toolCalls,
+			},
+			FinishReason: &finishReason,
+		}
+
+		out = append(out, &chatCompletionResponse{
+			Id:      vertexResp.ResponseId,
+			Object:  objectChatCompletionChunk,
+			Created: time.Now().UnixMilli() / 1000,
+			Model:   ctx.GetStringContext(ctxKeyFinalRequestModel, ""),
+			Choices: []chatCompletionChoice{choice},
+		})
+	} else {
+		// for last chunk, split into three messages:
+		// one with content only, one with finish reason only, and one with usage only
+
+		if text != "" || reasoningContent != "" {
+			choiceWithContentOnly := chatCompletionChoice{
+				Index: 0,
+				Delta: &chatMessage{
+					Role:             roleAssistant,
+					Content:          text,
+					ReasoningContent: reasoningContent,
+					ToolCalls:        toolCalls,
+				},
+				FinishReason: nil,
+			}
+			out = append(out, &chatCompletionResponse{
+				Id:      vertexResp.ResponseId,
+				Object:  objectChatCompletionChunk,
+				Created: time.Now().UnixMilli() / 1000,
+				Model:   ctx.GetStringContext(ctxKeyFinalRequestModel, ""),
+				Choices: []chatCompletionChoice{choiceWithContentOnly},
+			})
+		}
+
+		choiceWithFinishReasonOnly := chatCompletionChoice{
+			Index:        0,
+			Delta:        &chatMessage{}, // Align with the format returned by litellm
+			FinishReason: &finishReason,
+		}
+		out = append(out, &chatCompletionResponse{
+			Id:      vertexResp.ResponseId,
+			Object:  objectChatCompletionChunk,
+			Created: time.Now().UnixMilli() / 1000,
+			Model:   ctx.GetStringContext(ctxKeyFinalRequestModel, ""),
+			Choices: []chatCompletionChoice{choiceWithFinishReasonOnly},
+		})
+
+		usageMetadata := vertexResp.UsageMetadata
+		if usageMetadata != nil && usageMetadata.TotalTokenCount > 0 {
+			finalUsage := &usage{
+				PromptTokens:     usageMetadata.PromptTokenCount,
+				CompletionTokens: usageMetadata.CandidatesTokenCount,
+				TotalTokens:      usageMetadata.TotalTokenCount,
+				CompletionTokensDetails: &completionTokensDetails{
+					ReasoningTokens: usageMetadata.ThoughtsTokenCount,
+				},
+			}
+
+			out = append(out, &chatCompletionResponse{
+				Id:      vertexResp.ResponseId,
+				Object:  objectChatCompletionChunk,
+				Created: time.Now().UnixMilli() / 1000,
+				Model:   ctx.GetStringContext(ctxKeyFinalRequestModel, ""),
+				Choices: []chatCompletionChoice{ // Align with the format returned by litellm
+					{
+						Index: 0,
+						Delta: &chatMessage{},
+					},
+				},
+				Usage: finalUsage,
+			})
+		}
+	}
+
+	return out, isLastChunk
 }
 
 func (v *vertexProvider) appendResponse(responseBuilder *strings.Builder, responseBody string) {
@@ -409,69 +602,49 @@ func (v *vertexProvider) getRequestPath(apiName ApiName, modelId string, stream 
 	return fmt.Sprintf(vertexPathTemplate, v.config.vertexProjectId, v.config.vertexRegion, modelId, action)
 }
 
-func (v *vertexProvider) buildVertexChatRequest(request *chatCompletionRequest) *vertexChatRequest {
-	safetySettings := make([]vertexChatSafetySetting, 0)
+func (v *vertexProvider) buildVertexChatRequest(request *chatCompletionRequest, extendedParams *vertexExtendedParams) (*vertexChatRequest, error) {
+	toolConfig, err := mapToolChoiceValues(request.ToolChoice)
+	if err != nil {
+		return nil, fmt.Errorf("unable to build vertex request: %w", err)
+	}
+	safetySettings := make([]*vertex.SafetySettingsConfig, 0)
 	for category, threshold := range v.config.geminiSafetySetting {
-		safetySettings = append(safetySettings, vertexChatSafetySetting{
+		safetySettings = append(safetySettings, &vertex.SafetySettingsConfig{
 			Category:  category,
 			Threshold: threshold,
 		})
 	}
-	vertexRequest := vertexChatRequest{
-		Contents:       make([]vertexChatContent, 0),
-		SafetySettings: safetySettings,
-		GenerationConfig: vertexChatGenerationConfig{
-			Temperature:     request.Temperature,
-			TopP:            request.TopP,
-			MaxOutputTokens: request.MaxTokens,
-		},
-	}
-	if request.Tools != nil {
-		functions := make([]function, 0, len(request.Tools))
-		for _, tool := range request.Tools {
-			functions = append(functions, tool.Function)
-		}
-		vertexRequest.Tools = []vertexTool{
-			{
-				FunctionDeclarations: functions,
-			},
-		}
-	}
-	shouldAddDummyModelMessage := false
-	for _, message := range request.Messages {
-		content := vertexChatContent{
-			Role: message.Role,
-			Parts: []vertexPart{
-				{
-					Text: message.StringContent(),
-				},
-			},
-		}
 
-		// there's no assistant role in vertex and API shall vomit if role is not user or model
-		if content.Role == roleAssistant {
-			content.Role = "model"
-		} else if content.Role == roleSystem { // converting system prompt to prompt from user for the same reason
-			content.Role = roleUser
-			shouldAddDummyModelMessage = true
-		}
-		vertexRequest.Contents = append(vertexRequest.Contents, content)
-
-		// if a system message is the last message, we need to add a dummy model message to make vertex happy
-		if shouldAddDummyModelMessage {
-			vertexRequest.Contents = append(vertexRequest.Contents, vertexChatContent{
-				Role: "model",
-				Parts: []vertexPart{
-					{
-						Text: "Okay",
-					},
-				},
-			})
-			shouldAddDummyModelMessage = false
-		}
+	generationConfig, err := buildVertexReqGenerationConfig(request, extendedParams)
+	if err != nil {
+		return nil, fmt.Errorf("unable to build vertex request: %w", err)
 	}
 
-	return &vertexRequest
+	tools, err := buildVertexReqTools(extendedParams.tools, extendedParams.functions)
+	if err != nil {
+		return nil, fmt.Errorf("unable to build vertex request: %w", err)
+	}
+
+	contents, err := transformMessagesToVertexContents(request.Messages)
+	if err != nil {
+		return nil, fmt.Errorf("unable to build vertex request: %w", err)
+	}
+
+	vertexRequest := &vertexChatRequest{
+		Contents:          contents,
+		SafetySettings:    safetySettings,
+		GenerationConfig:  generationConfig,
+		Tools:             tools,
+		ToolConfig:        toolConfig,
+		SystemInstruction: buildVertexReqSystemInstruction(request),
+	}
+	if extendedParams.CachedContent != "" {
+		vertexRequest.CachedContent = extendedParams.CachedContent
+	}
+	if len(extendedParams.SafetySettings) > 0 {
+		vertexRequest.SafetySettings = extendedParams.SafetySettings
+	}
+	return vertexRequest, nil
 }
 
 func (v *vertexProvider) buildEmbeddingRequest(request *embeddingsRequest) *vertexEmbeddingRequest {
@@ -486,63 +659,14 @@ func (v *vertexProvider) buildEmbeddingRequest(request *embeddingsRequest) *vert
 }
 
 type vertexChatRequest struct {
-	CachedContent     string                     `json:"cachedContent,omitempty"`
-	Contents          []vertexChatContent        `json:"contents"`
-	SystemInstruction *vertexSystemInstruction   `json:"systemInstruction,omitempty"`
-	Tools             []vertexTool               `json:"tools,omitempty"`
-	SafetySettings    []vertexChatSafetySetting  `json:"safetySettings,omitempty"`
-	GenerationConfig  vertexChatGenerationConfig `json:"generationConfig,omitempty"`
-	Labels            map[string]string          `json:"labels,omitempty"`
-}
-
-type vertexChatContent struct {
-	// The producer of the content. Must be either 'user' or 'model'.
-	Role  string       `json:"role,omitempty"`
-	Parts []vertexPart `json:"parts"`
-}
-
-type vertexPart struct {
-	Text         string              `json:"text,omitempty"`
-	InlineData   *blob               `json:"inlineData,omitempty"`
-	FileData     *fileData           `json:"fileData,omitempty"`
-	FunctionCall *vertexFunctionCall `json:"functionCall,omitempty"`
-}
-
-type blob struct {
-	MimeType string `json:"mimeType"`
-	Data     string `json:"data"`
-}
-
-type fileData struct {
-	MimeType string `json:"mimeType"`
-	FileUri  string `json:"fileUri"`
-}
-
-type vertexFunctionCall struct {
-	Name string                 `json:"name"`
-	Args map[string]interface{} `json:"args"`
-}
-
-type vertexSystemInstruction struct {
-	Role  string       `json:"role"`
-	Parts []vertexPart `json:"parts"`
-}
-
-type vertexTool struct {
-	FunctionDeclarations any `json:"functionDeclarations"`
-}
-
-type vertexChatSafetySetting struct {
-	Category  string `json:"category"`
-	Threshold string `json:"threshold"`
-}
-
-type vertexChatGenerationConfig struct {
-	Temperature     float64 `json:"temperature,omitempty"`
-	TopP            float64 `json:"topP,omitempty"`
-	TopK            int     `json:"topK,omitempty"`
-	CandidateCount  int     `json:"candidateCount,omitempty"`
-	MaxOutputTokens int     `json:"maxOutputTokens,omitempty"`
+	CachedContent     string                         `json:"cachedContent,omitempty"`
+	Contents          []*vertex.Content              `json:"contents"`
+	SystemInstruction *vertex.SystemInstruction      `json:"systemInstruction,omitempty"`
+	Tools             []*vertex.Tools                `json:"tools,omitempty"`
+	ToolConfig        *vertex.ToolConfig             `json:"toolConfig,omitempty"`
+	SafetySettings    []*vertex.SafetySettingsConfig `json:"safetySettings,omitempty"`
+	GenerationConfig  *vertex.GenerationConfig       `json:"generationConfig,omitempty"`
+	Labels            map[string]string              `json:"labels,omitempty"`
 }
 
 type vertexEmbeddingRequest struct {
@@ -561,43 +685,10 @@ type vertexEmbeddingParams struct {
 }
 
 type vertexChatResponse struct {
-	Candidates     []vertexChatCandidate    `json:"candidates"`
-	ResponseId     string                   `json:"responseId,omitempty"`
-	PromptFeedback vertexChatPromptFeedback `json:"promptFeedback"`
-	UsageMetadata  vertexUsageMetadata      `json:"usageMetadata"`
-}
-
-type vertexChatCandidate struct {
-	Content       vertexChatContent        `json:"content"`
-	FinishReason  string                   `json:"finishReason"`
-	Index         int                      `json:"index"`
-	SafetyRatings []vertexChatSafetyRating `json:"safetyRatings"`
-}
-
-type vertexChatSafetyRating struct {
-	Category    string `json:"category"`
-	Probability string `json:"probability"`
-}
-
-type vertexChatPromptFeedback struct {
-	SafetyRatings []vertexChatSafetyRating `json:"safetyRatings"`
-}
-
-type vertexUsageMetadata struct {
-	PromptTokenCount        int                        `json:"promptTokenCount,omitempty"`
-	CandidatesTokenCount    int                        `json:"candidatesTokenCount,omitempty"`
-	TotalTokenCount         int                        `json:"totalTokenCount,omitempty"`
-	ThoughtsTokenCount      int                        `json:"thoughtsTokenCount,omitempty"`
-	CachedContentTokenCount int                        `json:"cachedContentTokenCount,omitempty"`
-	ResponseTokenCount      int                        `json:"responseTokenCount,omitempty"`
-	PromptTokensDetails     []vertexModalityTokenCount `json:"promptTokensDetails,omitempty"`
-	ResponseTokensDetails   []vertexModalityTokenCount `json:"responseTokensDetails,omitempty"`
-	TrafficType             string                     `json:"trafficType,omitempty"`
-}
-
-type vertexModalityTokenCount struct {
-	Modality   string `json:"modality,omitempty"`
-	TokenCount int    `json:"tokenCount,omitempty"`
+	Candidates     []*vertex.Candidate   `json:"candidates"`
+	ResponseId     string                `json:"responseId,omitempty"`
+	PromptFeedback map[string]any        `json:"promptFeedback,omitempty"`
+	UsageMetadata  *vertex.UsageMetadata `json:"usageMetadata,omitempty"`
 }
 
 type vertexEmbeddingResponse struct {
@@ -627,6 +718,7 @@ func createJWT(key *ServiceAccountKey) (string, error) {
 	// 解析 PEM 格式的 RSA 私钥
 	block, _ := pem.Decode([]byte(key.PrivateKey))
 	if block == nil {
+		log.Errorf("[createJWT] failed to decode PEM block: %+v", key.PrivateKey)
 		return "", fmt.Errorf("invalid PEM block")
 	}
 	parsedKey, err := x509.ParsePKCS8PrivateKey(block.Bytes)
@@ -756,4 +848,9 @@ func setCachedAccessToken(key string, accessToken string, expireTime int64) erro
 	}
 
 	return proxywasm.SetSharedData(key, data, cas)
+}
+
+func streamOptionsIncludeUsageFromContext(ctx wrapper.HttpContext) bool {
+	includeUsage, ok := ctx.GetContext(ctxStreamIncludeUsage).(bool)
+	return ok && includeUsage
 }
