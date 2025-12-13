@@ -136,11 +136,43 @@ bool PluginRootContext::configure(size_t configuration_size) {
   return true;
 }
 
+void PluginRootContext::incrementRequestCount() {
+  request_count_++;
+  if (request_count_ >= REBUILD_THRESHOLD) {
+    LOG_DEBUG("Request count reached threshold, triggering rebuild");
+    setFilterState("wasm_need_rebuild", "true");
+    request_count_ = 0;  // Reset counter after setting rebuild flag
+  }
+}
+
 FilterHeadersStatus PluginRootContext::onHeader(
     PluginContext& ctx,
     const ModelRouterConfigRule& rule) {
   // Default to bypass mode
   ctx.mode_ = MODE_BYPASS;
+
+  // Increment request count and check for rebuild
+  incrementRequestCount();
+
+  // Check memory threshold and trigger rebuild if needed
+  std::string value;
+  if (getValue({"plugin_vm_memory"}, &value)) {
+    // The value is stored as binary uint64_t, convert to string for logging
+    if (value.size() == sizeof(uint64_t)) {
+      uint64_t memory_size;
+      memcpy(&memory_size, value.data(), sizeof(uint64_t));
+      LOG_DEBUG(absl::StrCat("vm memory size is ", memory_size));
+      if (memory_size >= MEMORY_THRESHOLD_BYTES) {
+        LOG_INFO(absl::StrCat("Memory threshold reached (", memory_size, " >= ",
+                              MEMORY_THRESHOLD_BYTES, "), triggering rebuild"));
+        setFilterState("wasm_need_rebuild", "true");
+      }
+    } else {
+      LOG_ERROR("invalid memory size format");
+    }
+  } else {
+    LOG_ERROR("get vm memory size failed");
+  }
 
   auto path = getRequestHeader(Wasm::Common::Http::Header::Path)->toString();
   auto params_pos = path.find('?');
