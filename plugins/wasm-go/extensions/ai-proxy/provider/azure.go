@@ -168,7 +168,7 @@ func (m *azureProviderInitializer) ValidateConfig(config *ProviderConfig) error 
 	}
 	if azureServiceUrl, err := url.Parse(config.azureServiceUrl); err != nil {
 		return fmt.Errorf("invalid azureServiceUrl: %w", err)
-	} else if strings.HasPrefix(azureServiceUrl.RawPath, pathAzureLegacyWithDeploymentsPrefix) && !azureServiceUrl.Query().Has(queryAzureApiVersion) {
+	} else if strings.HasPrefix(azureServiceUrl.Path, pathAzureLegacyWithDeploymentsPrefix) && !azureServiceUrl.Query().Has(queryAzureApiVersion) {
 		return fmt.Errorf("missing %s query parameter in azureServiceUrl: %s", queryAzureApiVersion, config.azureServiceUrl)
 	}
 	if config.apiTokens == nil || len(config.apiTokens) == 0 {
@@ -204,11 +204,16 @@ func (m *azureProviderInitializer) CreateProvider(config ProviderConfig) (Provid
 
 	config.setDefaultCapabilities(m.DefaultCapabilities())
 	apiVersion := serviceUrl.Query().Get(queryAzureApiVersion)
-	log.Debugf("azureProvider: using %s: %s", queryAzureApiVersion, apiVersion)
-	apiVersionYear, apiVersionMonth, err := parseAzureApiVersion(apiVersion)
-	if err != nil {
-		log.Warnf("azureProvider: failed to parse api version %s: %v", apiVersion, err)
+	var apiVersionYear, apiVersionMonth int
+	if apiVersion != "" {
+		log.Debugf("azureProvider: using %s: %s", queryAzureApiVersion, apiVersion)
+		var err error
+		apiVersionYear, apiVersionMonth, err = parseAzureApiVersion(apiVersion)
+		if err != nil {
+			log.Warnf("azureProvider: failed to parse api version %s: %v", apiVersion, err)
+		}
 	}
+	log.Debugf("azureProvider: apiVersion=%s apiVersionYear=%d, apiVersionMonth=%d", apiVersion, apiVersionYear, apiVersionMonth)
 	return &azureProvider{
 		config:             config,
 		serviceUrl:         serviceUrl,
