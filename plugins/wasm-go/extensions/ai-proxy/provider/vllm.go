@@ -176,9 +176,6 @@ func (m *vllmProvider) TransformRequestBody(ctx wrapper.HttpContext, apiName Api
 }
 
 func (m *vllmProvider) transformRequestFields(apiName ApiName, body []byte) ([]byte, error) {
-	// Expand extra_body field if exists before everything else
-	body = expandExtraBodyField(body)
-
 	// Remove fields not supported by vLLM
 	for _, field := range vllmRequestFieldBlacklist {
 		if transformedBody, err := sjson.DeleteBytes(body, field); err != nil {
@@ -193,6 +190,9 @@ func (m *vllmProvider) transformRequestFields(apiName ApiName, body []byte) ([]b
 	} else {
 		body = transformedBody
 	}
+
+	// Expand extra_body field if exists after everything else
+	body = expandExtraBodyField(body)
 
 	return body, nil
 }
