@@ -213,6 +213,53 @@ TEST_F(ModelRouterTest, IgnorePath) {
   EXPECT_EQ(context_->onRequestBody(request_json.length(), true), FilterDataStatus::Continue);
 }
 
+TEST_F(ModelRouterTest, PathKeywordMatching) {
+  std::string configuration = R"(
+{
+  "modelToHeader": "x-higress-llm-model",
+  "enableOnPathKeyword": [
+    "/tasks/"
+  ]
+})";
+
+  config_.set(configuration);
+  EXPECT_TRUE(root_context_->configure(configuration.size()));
+
+  std::string request_json = R"({"model": "qwen-long"})";
+
+  path_ = "/api/v1/tasks/e6f702e4-d810-11f0-8de9-0242ac120002";
+  EXPECT_CALL(*mock_context_,
+              setBuffer(testing::_, testing::_, testing::_, testing::_))
+      .Times(0);
+
+  EXPECT_CALL(*mock_context_,
+              replaceHeaderMapValue(testing::_,
+                                    std::string_view("x-higress-llm-model"),
+                                    std::string_view("qwen-long")));
+
+  body_.set(request_json);
+  EXPECT_EQ(context_->onRequestHeaders(0, false),
+            FilterHeadersStatus::StopIteration);
+  EXPECT_EQ(context_->onRequestBody(request_json.length(), true), FilterDataStatus::Continue);
+
+  path_ = "/api/v1/jobs/e6f702e4-d810-11f0-8de9-0242ac120002";
+  EXPECT_CALL(*mock_context_,
+              setBuffer(testing::_, testing::_, testing::_, testing::_))
+      .Times(0);
+
+  EXPECT_CALL(*mock_context_,
+              replaceHeaderMapValue(testing::_,
+                                    std::string_view("x-higress-llm-model"),
+                                    std::string_view("qwen-turbo")))
+      .Times(0);
+
+  request_json = R"({"model": "qwen-turbo"})";
+  body_.set(request_json);
+  EXPECT_EQ(context_->onRequestHeaders(0, false),
+            FilterHeadersStatus::Continue);
+  EXPECT_EQ(context_->onRequestBody(request_json.length(), true), FilterDataStatus::Continue);
+}
+
 TEST_F(ModelRouterTest, RouteLevelRewriteModelAndHeader) {
   std::string configuration = R"(
 {
@@ -466,6 +513,124 @@ Content-Type: application/json
 
   body_.set(request_data);
   EXPECT_EQ(context_->onRequestBody(body.size() - last_body_size, true), FilterDataStatus::Continue);
+}
+
+TEST_F(ModelRouterTest, ModelInQueryToHeader) {
+  std::string configuration = R"(
+{
+  "modelToHeader": "x-higress-llm-model"
+})";
+
+  config_.set(configuration);
+  EXPECT_TRUE(root_context_->configure(configuration.size()));
+
+  content_type_ = "";
+  body_.set("");
+
+  // Single model parameter.
+  path_ = "/v1/chat/completions?model=qwen-long";
+  EXPECT_CALL(*mock_context_,
+              setBuffer(testing::_, testing::_, testing::_, testing::_))
+      .Times(0);
+
+  EXPECT_CALL(
+      *mock_context_,
+      replaceHeaderMapValue(testing::_, std::string_view("x-higress-llm-model"),
+                            std::string_view("qwen-long")));
+
+  EXPECT_EQ(context_->onRequestHeaders(0, false),
+            FilterHeadersStatus::Continue);
+
+  // Multiple model parameters, only the first one is used.
+  path_ = "/v1/chat/completions?model=qwen-turbo&model=qwen-max";
+  EXPECT_CALL(*mock_context_,
+              setBuffer(testing::_, testing::_, testing::_, testing::_))
+      .Times(0);
+
+  EXPECT_CALL(
+      *mock_context_,
+      replaceHeaderMapValue(testing::_, std::string_view("x-higress-llm-model"),
+                            std::string_view("qwen-turbo")));
+
+  EXPECT_EQ(context_->onRequestHeaders(0, false),
+            FilterHeadersStatus::Continue);
+
+  // No model parameter
+  path_ = "/v1/chat/completions?param=value";
+  EXPECT_CALL(*mock_context_,
+              setBuffer(testing::_, testing::_, testing::_, testing::_))
+      .Times(0);
+
+  EXPECT_CALL(
+      *mock_context_,
+      replaceHeaderMapValue(testing::_, std::string_view("x-higress-llm-model"),
+                            std::string_view("qwen-turbo")))
+      .Times(0);
+
+  EXPECT_EQ(context_->onRequestHeaders(0, false),
+            FilterHeadersStatus::Continue);
+
+  // Empty query string
+  path_ = "/v1/chat/completions?";
+  EXPECT_CALL(*mock_context_,
+              setBuffer(testing::_, testing::_, testing::_, testing::_))
+      .Times(0);
+
+  EXPECT_CALL(
+      *mock_context_,
+      replaceHeaderMapValue(testing::_, std::string_view("x-higress-llm-model"),
+                            testing::_))
+      .Times(0);
+
+  EXPECT_EQ(context_->onRequestHeaders(0, false),
+            FilterHeadersStatus::Continue);
+
+  // No query string
+  path_ = "/v1/chat/completions";
+  EXPECT_CALL(*mock_context_,
+              setBuffer(testing::_, testing::_, testing::_, testing::_))
+      .Times(0);
+
+  EXPECT_CALL(
+      *mock_context_,
+      replaceHeaderMapValue(testing::_, std::string_view("x-higress-llm-model"),
+                            testing::_))
+      .Times(0);
+
+  EXPECT_EQ(context_->onRequestHeaders(0, false),
+            FilterHeadersStatus::Continue);
+}
+
+TEST_F(ModelRouterTest, ModelInQueryAndBodyToHeader) {
+  std::string configuration = R"(
+{
+  "modelToHeader": "x-higress-llm-model"
+})";
+
+  config_.set(configuration);
+  EXPECT_TRUE(root_context_->configure(configuration.size()));
+
+  path_ = "/v1/chat/completions?model=qwen-max";
+  std::string request_json = R"({"model": "qwen-long"})";
+  EXPECT_CALL(*mock_context_,
+              setBuffer(testing::_, testing::_, testing::_, testing::_))
+      .Times(0);
+
+  EXPECT_CALL(
+      *mock_context_,
+      replaceHeaderMapValue(testing::_, std::string_view("x-higress-llm-model"),
+                            std::string_view("qwen-max")));
+
+  EXPECT_EQ(context_->onRequestHeaders(0, false),
+            FilterHeadersStatus::StopIteration);
+
+  EXPECT_CALL(
+      *mock_context_,
+      replaceHeaderMapValue(testing::_, std::string_view("x-higress-llm-model"),
+                            std::string_view("qwen-long")));
+
+  body_.set(request_json);
+  EXPECT_EQ(context_->onRequestBody(request_json.length(), true), FilterDataStatus::Continue);
 }
 
 }  // namespace model_router
