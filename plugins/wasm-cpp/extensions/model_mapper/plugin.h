@@ -60,12 +60,17 @@ class PluginRootContext : public RootContext,
   FilterHeadersStatus onHeader(const ModelMapperConfigRule&);
   FilterDataStatus onBody(const ModelMapperConfigRule&, std::string_view);
   bool configure(size_t);
+  void incrementRequestCount();
 
  private:
   bool parsePluginConfig(const json&, ModelMapperConfigRule&) override;
   std::string doModelMapping(const ModelMapperConfigRule& rule, const std::string& old_model);
   std::string getModelFromAzureApiPath(const std::string_view& path);
   std::string rewriteModelInModelApiPath(const std::string_view& path, const std::string& model);
+
+  uint64_t request_count_ = 0;
+  static constexpr uint64_t REBUILD_THRESHOLD = 1000;
+  static constexpr size_t MEMORY_THRESHOLD_BYTES = 200 * 1024 * 1024;
 };
 
 // Per-stream context.

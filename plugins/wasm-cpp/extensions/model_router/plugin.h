@@ -70,11 +70,16 @@ class PluginRootContext : public RootContext,
   FilterDataStatus onJsonBody(const ModelRouterConfigRule&, const std::string_view&);
   FilterDataStatus onMultipartBody(PluginContext& ctx, const ModelRouterConfigRule& rule, WasmDataPtr& body, bool end_stream);
   bool configure(size_t);
+  void incrementRequestCount();
 
  private:
   bool parsePluginConfig(const json&, ModelRouterConfigRule&) override;
   bool tryProcessAzureApiPath(const ModelRouterConfigRule& rule, const std::string_view& path);
   bool tryProcessModelInQuery(const ModelRouterConfigRule& rule, const std::string_view& query);
+
+  uint64_t request_count_ = 0;
+  static constexpr uint64_t REBUILD_THRESHOLD = 1000;
+  static constexpr size_t MEMORY_THRESHOLD_BYTES = 200 * 1024 * 1024;
 };
 
 // Per-stream context.
