@@ -230,9 +230,6 @@ func (m *openaiProvider) transformRequestFields(ctx wrapper.HttpContext, apiName
 		}
 	}()
 
-	// Expand extra_body field if exists before everything else
-	body = expandExtraBodyField(body)
-
 	// Remove fields not supported by OpenAI
 	for _, field := range openaiRequestFieldBlacklist {
 		if transformedBody, err := sjson.DeleteBytes(body, field); err != nil {
@@ -254,15 +251,18 @@ func (m *openaiProvider) transformRequestFields(ctx wrapper.HttpContext, apiName
 			return body, fmt.Errorf("azureProvider: transform completion request fields failed: %v", err)
 		} else {
 			needReadResponseBody = needReadResponseBodyLocal
-			return transformedBody, nil
+			body = transformedBody
 		}
 	case ApiNameChatCompletion:
 		if transformedBody, err := m.transformChatCompletionsRequestFields(ctx, body); err != nil {
 			return body, fmt.Errorf("azureProvider: transform chat completion request fields failed: %v", err)
 		} else {
-			return transformedBody, nil
+			body = transformedBody
 		}
 	}
+
+	// Expand extra_body field if exists before everything else
+	body = expandExtraBodyField(body)
 
 	return body, nil
 }
