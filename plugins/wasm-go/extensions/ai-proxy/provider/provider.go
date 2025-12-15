@@ -133,6 +133,7 @@ const (
 	providerTypeVertex     = "vertex"
 	providerTypeOpenRouter = "openrouter"
 	providerTypeVllm       = "vllm"
+	providerTypeGeneric    = "generic"
 
 	protocolOpenAI   = "openai"
 	protocolOriginal = "original"
@@ -213,11 +214,16 @@ var (
 		providerTypeVertex:     &vertexProviderInitializer{},
 		providerTypeOpenRouter: &openrouterProviderInitializer{},
 		providerTypeVllm:       &vllmProviderInitializer{},
+		providerTypeGeneric:    &genericProviderInitializer{},
 	}
 )
 
 type Provider interface {
 	GetProviderType() string
+}
+
+type RuntimeConfigAware interface {
+	SetRuntimeConfig(config *ProviderRuntimeConfig) error
 }
 
 type RequestHeadersHandler interface {
@@ -410,6 +416,12 @@ type ProviderConfig struct {
 	// @Title zh-CN vLLM主机地址
 	// @Description zh-CN 仅适用于vLLM服务，指定vLLM服务器的主机地址，例如：vllm-service.cluster.local
 	vllmServerHost string `required:"false" yaml:"vllmServerHost" json:"vllmServerHost"`
+	// @Title zh-CN 通用大模型服务URL
+	// @Description zh-CN 仅适用于通用大模型服务，大模型服务的完整URL，包含协议、域名、端口等。必须以/结尾。
+	genericServiceUrl string `required:"false" yaml:"genericServiceUrl" json:"genericServiceUrl"`
+	// @Title zh-CN 通用大模型服务认证方式
+	// @Description zh-CN 仅适用于通用大模型服务，认证方式，可选值有：NONE、BEARER等。默认值为BEARER。
+	genericAuthType string `required:"false" yaml:"genericAuthType" json:"genericAuthType"`
 }
 
 func (c *ProviderConfig) GetId() string {
@@ -596,6 +608,11 @@ func (c *ProviderConfig) FromJson(json gjson.Result) {
 	}
 	c.vllmServerHost = json.Get("vllmServerHost").String()
 	c.vllmCustomUrl = json.Get("vllmCustomUrl").String()
+	c.genericServiceUrl = json.Get("genericServiceUrl").String()
+	if c.genericServiceUrl != "" && !strings.HasSuffix(c.genericServiceUrl, "/") {
+		c.genericServiceUrl += "/"
+	}
+	c.genericAuthType = strings.ToUpper(json.Get("genericAuthType").String())
 }
 
 func (c *ProviderConfig) Validate() error {
@@ -727,6 +744,20 @@ func (c *ProviderConfig) mapModel(ctx wrapper.HttpContext, model *string) error 
 	*model = mappedModel
 	ctx.SetContext(ctxKeyFinalRequestModel, *model)
 	return nil
+}
+
+type ProviderRuntimeConfig struct {
+	// @Title zh-CN 路由路径匹配前缀
+	// @Description zh-CN 用于匹配AI代理请求的路由路径前缀，用于在某些特定情况识别出请求路径中的自定义部分。不应以斜线结尾，例如：/custom/path/prefix
+	routePathPrefix string `yaml:"routePathPrefix"`
+}
+
+func (c *ProviderRuntimeConfig) FromJson(json gjson.Result) {
+	c.routePathPrefix = json.Get("routePathPrefix").String()
+	if c.routePathPrefix != "" && !strings.HasPrefix(c.routePathPrefix, "/") {
+		c.routePathPrefix = "/" + c.routePathPrefix
+	}
+	c.routePathPrefix = strings.TrimSuffix(c.routePathPrefix, "/")
 }
 
 func getMappedModel(model string, modelMapping map[string]string) string {

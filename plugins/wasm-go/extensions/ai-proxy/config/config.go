@@ -28,6 +28,8 @@ type PluginConfig struct {
 
 	activeProviderConfig *provider.ProviderConfig `yaml:"-"`
 	activeProvider       provider.Provider        `yaml:"-"`
+
+	providerRuntimeConfig *provider.ProviderRuntimeConfig `yaml:"-"`
 }
 
 func (c *PluginConfig) FromJson(json gjson.Result) {
@@ -62,6 +64,9 @@ func (c *PluginConfig) FromJson(json gjson.Result) {
 			}
 		}
 	}
+
+	c.providerRuntimeConfig = &provider.ProviderRuntimeConfig{}
+	c.providerRuntimeConfig.FromJson(json)
 }
 
 func (c *PluginConfig) Validate() error {
@@ -85,6 +90,12 @@ func (c *PluginConfig) Complete() error {
 	c.activeProvider, err = provider.CreateProvider(*c.activeProviderConfig)
 	if err != nil {
 		return err
+	}
+
+	if runtimeConfigAware, ok := c.activeProvider.(provider.RuntimeConfigAware); ok {
+		if err = runtimeConfigAware.SetRuntimeConfig(c.providerRuntimeConfig); err != nil {
+			return err
+		}
 	}
 
 	providerConfig := c.GetProviderConfig()

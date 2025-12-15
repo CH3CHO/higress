@@ -103,3 +103,8 @@ func TestAzure(t *testing.T) {
 	test.RunAzureOnHttpResponseHeadersTests(t)
 	test.RunAzureOnHttpResponseBodyTests(t)
 }
+
+func TestGeneric(t *testing.T) {
+	test.RunGenericParseConfigTests(t)
+	test.RunGenericOnHttpRequestHeadersTests(t)
+}
