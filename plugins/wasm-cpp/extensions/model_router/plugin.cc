@@ -94,6 +94,18 @@ bool PluginRootContext::parsePluginConfig(const json& configuration,
     return false;
   }
 
+  if (!JsonArrayIterate(
+          configuration, "enableOnPathKeyword", [&](const json& item) -> bool {
+            if (item.is_string()) {
+              rule.enable_on_path_keyword.emplace_back(item.get<std::string>());
+              return true;
+            }
+            return false;
+          })) {
+    LOG_WARN("Invalid type for item in enableOnPathKeyword. Expected string.");
+    return false;
+  }
+
   return true;
 }
 
@@ -127,9 +139,9 @@ bool PluginRootContext::configure(size_t configuration_size) {
 FilterHeadersStatus PluginRootContext::onHeader(
     PluginContext& ctx,
     const ModelRouterConfigRule& rule) {
-  if (!Wasm::Common::Http::hasRequestBody()) {
-    return FilterHeadersStatus::Continue;
-  }
+  // Default to bypass mode
+  ctx.mode_ = MODE_BYPASS;
+
   auto path = getRequestHeader(Wasm::Common::Http::Header::Path)->toString();
   auto params_pos = path.find('?');
   size_t uri_end;
@@ -151,11 +163,32 @@ FilterHeadersStatus PluginRootContext::onHeader(
     }
   }
   if (!enable) {
+    for (const auto& enable_keyword : rule.enable_on_path_keyword) {
+      if (absl::StrContains({path.c_str(), uri_end}, enable_keyword)) {
+        enable = true;
+        break;
+      }
+    }
+  }
+
+  if (!enable) {
     return FilterHeadersStatus::Continue;
   }
+
   if (tryProcessAzureApiPath(rule, path)) {
     return FilterHeadersStatus::Continue;
   }
+
+  if (params_pos != std::string::npos && params_pos + 1 < path.size()) {
+    auto query = path.substr(params_pos + 1);
+    LOG_DEBUG(absl::StrCat("query: ", query));
+    tryProcessModelInQuery(rule, query);
+  }
+
+  if (!Wasm::Common::Http::hasRequestBody()) {
+    return FilterHeadersStatus::Continue;
+  }
+
   auto content_type_ptr =
       getRequestHeader(Wasm::Common::Http::Header::ContentType);
   auto content_type_value = content_type_ptr->view();
@@ -218,6 +251,32 @@ bool PluginRootContext::tryProcessAzureApiPath(const ModelRouterConfigRule& rule
   }
   // Azure deployment name does not contain provider info
   return true;
+}
+
+bool PluginRootContext::tryProcessModelInQuery(const ModelRouterConfigRule& rule, const std::string_view& query) {
+  // NOTE: No provider name support here.
+
+  if (query.empty()) {
+    return false;
+  }
+
+  const auto& model_key = rule.model_key_;
+  const auto& model_to_header = rule.model_to_header_;
+  const auto model_key_eq = absl::StrCat(model_key, "=");
+
+  auto query_params = absl::StrSplit(query, '&');
+  for (const auto& param : query_params) {
+    if (!absl::StartsWith(param, model_key_eq)) {
+      continue;
+    }
+    auto model_value = param.substr(model_key_eq.size());
+    LOG_DEBUG(absl::StrCat("Model value extracted from query parameter \"", model_key, "\": ", model_value));
+    if (!model_to_header.empty()) {
+      replaceRequestHeader(model_to_header, model_value);
+    }
+    return true;
+  }
+  return false;
 }
 
 FilterDataStatus PluginRootContext::onJsonBody(const ModelRouterConfigRule& rule,

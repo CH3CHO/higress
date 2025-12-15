@@ -51,6 +51,7 @@ struct ModelRouterConfigRule {
       "/completions",  "/embeddings",       "/images/generations",
       "/audio/speech", "/fine_tuning/jobs", "/moderations",
       "/image-synthesis", "/video-synthesis"};
+  std::vector<std::string> enable_on_path_keyword;
 };
 
 class PluginContext;
@@ -73,6 +74,7 @@ class PluginRootContext : public RootContext,
  private:
   bool parsePluginConfig(const json&, ModelRouterConfigRule&) override;
   bool tryProcessAzureApiPath(const ModelRouterConfigRule& rule, const std::string_view& path);
+  bool tryProcessModelInQuery(const ModelRouterConfigRule& rule, const std::string_view& query);
 };
 
 // Per-stream context.
