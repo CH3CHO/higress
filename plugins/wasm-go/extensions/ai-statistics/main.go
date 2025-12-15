@@ -158,6 +158,8 @@ type AIStatisticsConfig struct {
 	responseBodyLengthLimit int
 	// Path suffixes to enable the plugin on
 	enablePathSuffixes []string
+	// Path keywords to enable the plugin on
+	enablePathKeywords []string
 	// Content types to enable response body buffering
 	enableContentTypes []string
 }
@@ -207,8 +209,9 @@ func (config *AIStatisticsConfig) incrementCounter(metricName string, inc uint64
 	counter.Increment(inc)
 }
 
-// isPathEnabled checks if the request path matches any of the enabled path suffixes
-func isPathEnabled(requestPath string, enabledSuffixes []string) bool {
+// isPathEnabled checks if the request path matches any of the configured criteria
+func isPathEnabled(requestPath string, config *AIStatisticsConfig) bool {
+	enabledSuffixes := config.enablePathSuffixes
 	if len(enabledSuffixes) == 0 {
 		return true // If no path suffixes configured, enable for all
 	}
@@ -225,6 +228,17 @@ func isPathEnabled(requestPath string, enabledSuffixes []string) bool {
 			return true
 		}
 	}
+
+	// Check if path contains any enabled keyword
+	enabledKeywords := config.enablePathKeywords
+	if len(enabledKeywords) != 0 {
+		for _, keyword := range enabledKeywords {
+			if strings.Contains(pathWithoutQuery, keyword) {
+				return true
+			}
+		}
+	}
+
 	return false
 }
 
@@ -294,6 +308,14 @@ func parseConfig(configJson gjson.Result, config *AIStatisticsConfig) error {
 		config.enablePathSuffixes = append(config.enablePathSuffixes, suffixStr)
 	}
 
+	// Parse path keyword configuration
+	pathKeywords := configJson.Get("enable_path_keywords").Array()
+	config.enablePathKeywords = make([]string, 0, len(pathKeywords))
+
+	for _, keyword := range pathKeywords {
+		config.enablePathKeywords = append(config.enablePathKeywords, keyword.String())
+	}
+
 	// Parse content type configuration
 	contentTypes := configJson.Get("enable_content_types").Array()
 	config.enableContentTypes = make([]string, 0, len(contentTypes))
@@ -337,7 +359,7 @@ func hasAttribute(attributes []Attribute, key string, source string) bool {
 func onHttpRequestHeaders(ctx wrapper.HttpContext, config AIStatisticsConfig) types.Action {
 	// Check if request path matches enabled suffixes
 	requestPath, _ := proxywasm.GetHttpRequestHeader(":path")
-	if !isPathEnabled(requestPath, config.enablePathSuffixes) {
+	if !isPathEnabled(requestPath, &config) {
 		log.Debugf("ai-statistics: skipping request for path %s (not in enabled suffixes)", requestPath)
 		// Set skip processing flag and avoid reading request/response body
 		ctx.SetContext(SkipProcessing, true)
