@@ -109,6 +109,7 @@ var (
 	}
 	azureMaxCompletionTokensModelKeywordBlacklist = []string{
 		"gpt-5.1",
+		"gpt-5.2",
 	}
 	azureReasoningEffortSupportedModelKeywords = []string{
 		"o1",
@@ -119,6 +120,7 @@ var (
 	azureReasoningEffortUnsupportedModelKeywords = []string{
 		"gpt-5-chat",
 		"gpt-5.1-chat",
+		"gpt-5.2-chat",
 	}
 	azureTemperature1OnlyModelKeywords = []string{ // Models that only support temperature=1
 		"o1",
@@ -129,6 +131,7 @@ var (
 	azureResponseFormatSupportedModelKeywords = []string{
 		"4o",
 		"gpt-5.1",
+		"gpt-5.2",
 	}
 	azureNullRequestFieldBlacklist = map[ApiName][]string{
 		// If a field in the list has null as its value,
