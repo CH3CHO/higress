@@ -2,12 +2,15 @@ package vertex
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"reflect"
 	"strings"
 
 	"github.com/higress-group/wasm-go/pkg/log"
+	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 
 	"github.com/alibaba/higress/plugins/wasm-go/extensions/ai-proxy/util"
 	"github.com/alibaba/higress/plugins/wasm-go/extensions/ai-proxy/util/templates"
@@ -680,4 +683,22 @@ func ProcessGeminiImage(imageURL string, format string) (*Part, error) {
 	}
 
 	return nil, fmt.Errorf("invalid image url: %s", imageURL)
+}
+
+func DeleteInvalidRequestFields(body []byte) ([]byte, error) {
+	toolsJson := gjson.GetBytes(body, "tools")
+	if !toolsJson.Exists() {
+		return body, nil
+	}
+	if !toolsJson.IsArray() {
+		log.Debugf("delete invalid vertex tools field: %s", toolsJson.Raw)
+		newBody, err := sjson.DeleteBytes(body, "tools")
+		if err != nil {
+			return nil, errors.New("[vertex]: unable to delete invalid tools field: " + err.Error())
+		}
+		body = newBody
+		log.Debugf("[vertex]: delete invalid tools field successfully: %s", body)
+	}
+
+	return body, nil
 }
