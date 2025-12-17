@@ -193,6 +193,12 @@ func (v *vertexProvider) TransformRequestBodyHeaders(ctx wrapper.HttpContext, ap
 }
 
 func (v *vertexProvider) onChatCompletionRequestBody(ctx wrapper.HttpContext, body []byte, headers http.Header) ([]byte, error) {
+	if newBody, err := vertex.DeleteInvalidRequestFields(body); err != nil {
+		return nil, err
+	} else {
+		body = newBody
+	}
+
 	extendedParams, err := extractVertexExtendedParams(body)
 	if err != nil {
 		return nil, err
@@ -331,7 +337,7 @@ func (v *vertexProvider) buildChatCompletionResponse(ctx wrapper.HttpContext, re
 		return handleVertexBlockedResponse(ctx, response), nil, nil, nil, nil
 	}
 
-	out := chatCompletionResponse{
+	out := &chatCompletionResponse{
 		Id:      response.ResponseId,
 		Object:  objectChatCompletion,
 		Created: time.Now().UnixMilli() / 1000,
@@ -365,7 +371,8 @@ func (v *vertexProvider) buildChatCompletionResponse(ctx wrapper.HttpContext, re
 			citationMetadataList = append(citationMetadataList, candidate.CitationMetadata)
 		}
 	}
-	return &out, groundingMetadataList, urlContextMetadataList, safetyRatingsList, citationMetadataList
+	fillResponseToolCallIndex(out)
+	return out, groundingMetadataList, urlContextMetadataList, safetyRatingsList, citationMetadataList
 }
 
 func buildChatCompletionChoice(candidate *vertex.Candidate) *chatCompletionChoice {
@@ -523,7 +530,7 @@ func (v *vertexProvider) buildChatCompletionStreamResponse(ctx wrapper.HttpConte
 		// for last chunk, split into three messages:
 		// one with content only, one with finish reason only, and one with usage only
 
-		if text != "" || reasoningContent != "" {
+		if text != "" || reasoningContent != "" || len(toolCalls) > 0 {
 			choiceWithContentOnly := chatCompletionChoice{
 				Index: 0,
 				Delta: &chatMessage{
@@ -583,6 +590,10 @@ func (v *vertexProvider) buildChatCompletionStreamResponse(ctx wrapper.HttpConte
 		}
 	}
 
+	for _, respItem := range out {
+		fillResponseToolCallIndex(respItem)
+	}
+
 	return out, isLastChunk
 }
 
@@ -615,6 +626,10 @@ func (v *vertexProvider) buildVertexChatRequest(request *chatCompletionRequest, 
 		})
 	}
 
+	fixMessages(request.Messages)
+
+	systemInstruction, messages := buildVertexReqSystemInstruction(request)
+
 	generationConfig, err := buildVertexReqGenerationConfig(request, extendedParams)
 	if err != nil {
 		return nil, fmt.Errorf("unable to build vertex request: %w", err)
@@ -625,7 +640,7 @@ func (v *vertexProvider) buildVertexChatRequest(request *chatCompletionRequest, 
 		return nil, fmt.Errorf("unable to build vertex request: %w", err)
 	}
 
-	contents, err := transformMessagesToVertexContents(request.Messages)
+	contents, err := transformMessagesToVertexContents(messages)
 	if err != nil {
 		return nil, fmt.Errorf("unable to build vertex request: %w", err)
 	}
@@ -636,7 +651,7 @@ func (v *vertexProvider) buildVertexChatRequest(request *chatCompletionRequest, 
 		GenerationConfig:  generationConfig,
 		Tools:             tools,
 		ToolConfig:        toolConfig,
-		SystemInstruction: buildVertexReqSystemInstruction(request),
+		SystemInstruction: systemInstruction,
 	}
 	if extendedParams.CachedContent != "" {
 		vertexRequest.CachedContent = extendedParams.CachedContent

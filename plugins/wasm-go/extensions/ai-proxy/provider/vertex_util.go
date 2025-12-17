@@ -225,26 +225,33 @@ func buildVertexContentParts(msg *chatMessage) ([]*vertex.Part, error) {
 
 // buildVertexReqSystemInstruction extracts system messages and converts to Vertex AI format
 // based on litellm's _transform_system_message implementation
-func buildVertexReqSystemInstruction(req *chatCompletionRequest) *vertex.SystemInstruction {
+func buildVertexReqSystemInstruction(req *chatCompletionRequest) (*vertex.SystemInstruction, []chatMessage) {
+	var messages []chatMessage
 	var systemParts []*vertex.Part
 	for _, msg := range req.Messages {
-		if msg.Role == roleSystem {
+		if msg.Role == roleSystem || msg.Role == roleDeveloper {
 			// Extract system message content and add to parts
+			content := msg.StringContent()
+			if content == "" {
+				continue
+			}
 			systemParts = append(systemParts, &vertex.Part{
-				Text: msg.StringContent(),
+				Text: content,
 			})
+		} else {
+			messages = append(messages, msg)
 		}
 	}
 	// If no system messages found, return nil
 	if len(systemParts) == 0 {
-		return nil
+		return nil, messages
 	}
 
 	// Return system instruction with all system message parts
 	return &vertex.SystemInstruction{
 		Role:  roleUser,
 		Parts: systemParts,
-	}
+	}, messages
 }
 
 // buildVertexReqGenerationConfig converts OpenAI request parameters to Vertex AI generation config
@@ -347,6 +354,15 @@ func buildVertexReqGenerationConfig(req *chatCompletionRequest, extendedParams *
 	return out, nil
 }
 
+var (
+	modelsNotSupportThinking = map[string]bool{
+		"gemini-3-pro-image-preview":     true,
+		"gemini-2.5-flash-image-preview": true,
+		"gemini-2.5-flash-image":         true,
+		"gemini-2.0-flash-001":           true,
+	}
+)
+
 func buildVertexReqThinkingConfig(req *chatCompletionRequest, extendedParams *vertexExtendedParams) (*vertex.ThinkingConfig, error) {
 	passThroughThinkingConfig := extendedParams.ThinkingConfig
 	if passThroughThinkingConfig != nil {
@@ -354,6 +370,11 @@ func buildVertexReqThinkingConfig(req *chatCompletionRequest, extendedParams *ve
 			IncludeThoughts: passThroughThinkingConfig.IncludeThoughts,
 			ThinkingBudget:  passThroughThinkingConfig.ThinkingBudget,
 		}, nil
+	}
+
+	model := req.Model
+	if _, notSupport := modelsNotSupportThinking[model]; notSupport {
+		return nil, nil
 	}
 
 	thinking := extendedParams.Thinking

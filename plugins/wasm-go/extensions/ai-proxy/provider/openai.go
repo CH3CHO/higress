@@ -8,12 +8,13 @@ import (
 	"path"
 	"strings"
 
-	"github.com/alibaba/higress/plugins/wasm-go/extensions/ai-proxy/util"
 	"github.com/higress-group/proxy-wasm-go-sdk/proxywasm/types"
 	"github.com/higress-group/wasm-go/pkg/log"
 	"github.com/higress-group/wasm-go/pkg/wrapper"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
+
+	"github.com/alibaba/higress/plugins/wasm-go/extensions/ai-proxy/util"
 )
 
 // openaiProvider is the provider for OpenAI service.
@@ -422,4 +423,29 @@ func handleCompletionsStreamingEvent(ctx wrapper.HttpContext, event StreamEvent)
 	transformedEvent := event
 	transformedEvent.Data = transformedData
 	return []StreamEvent{transformedEvent}, nil
+}
+
+func fixMessages(messages []chatMessage) {
+	for i := range messages {
+		// Set default role to "assistant" if missing
+		if messages[i].Role == "" {
+			messages[i].Role = roleAssistant
+		}
+	}
+}
+
+func fillResponseToolCallIndex(resp *chatCompletionResponse) {
+	if resp == nil || len(resp.Choices) == 0 {
+		return
+	}
+	for idx := range resp.Choices {
+		choice := resp.Choices[idx]
+		toolCallIdx := 0
+		if choice.Message != nil && len(choice.Message.ToolCalls) > 0 {
+			for i := range choice.Message.ToolCalls {
+				choice.Message.ToolCalls[i].Index = toolCallIdx
+				toolCallIdx += 1
+			}
+		}
+	}
 }

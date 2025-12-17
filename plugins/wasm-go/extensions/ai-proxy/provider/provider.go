@@ -139,6 +139,7 @@ const (
 	protocolOriginal = "original"
 
 	roleSystem    = "system"
+	roleDeveloper = "developer"
 	roleAssistant = "assistant"
 	roleUser      = "user"
 	roleTool      = "tool"
