@@ -219,6 +219,10 @@ var (
 	}
 )
 
+func IsGenericProvider(provider Provider) bool {
+	return provider.GetProviderType() == providerTypeGeneric
+}
+
 type Provider interface {
 	GetProviderType() string
 }
