@@ -239,7 +239,9 @@ func onHttpRequestHeader(ctx wrapper.HttpContext, pluginConfig config.PluginConf
 	if apiName == "" {
 		ctx.DontReadRequestBody()
 		ctx.DontReadResponseBody()
-		log.Warnf("[onHttpRequestHeader] unsupported path: %s, will not process http path and body", path.Path)
+		if !provider.IsGenericProvider(activeProvider) {
+			log.Warnf("[onHttpRequestHeader] unsupported path: %s, will not process http path and body", path.Path)
+		}
 	}
 
 	ctx.SetContext(provider.CtxKeyApiName, apiName)
