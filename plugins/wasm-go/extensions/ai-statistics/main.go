@@ -144,6 +144,22 @@ type Attribute struct {
 	AsSeparateLogField bool   `json:"as_separate_log_field,omitempty"`
 }
 
+var (
+	defaultEnablePathSuffixes = []string{
+		"/completions",
+		"/embeddings",
+		"/images/generations",
+		"/audio/speech",
+		"/fine_tuning/jobs",
+		"/moderations",
+		"/image-synthesis",
+		"/video-synthesis",
+	}
+	defaultEnablePathKeywords = []string{
+		"/llm/",
+	}
+)
+
 type AIStatisticsConfig struct {
 	// Metrics
 	// TODO: add more metrics in Gauge and Histogram format
@@ -297,7 +313,8 @@ func parseConfig(configJson gjson.Result, config *AIStatisticsConfig) error {
 
 	// Parse path suffix configuration
 	pathSuffixes := configJson.Get("enable_path_suffixes").Array()
-	config.enablePathSuffixes = make([]string, 0, len(pathSuffixes))
+	config.enablePathSuffixes = make([]string, 0, len(defaultEnablePathSuffixes)+len(pathSuffixes))
+	config.enablePathSuffixes = append(config.enablePathSuffixes, defaultEnablePathSuffixes...)
 
 	for _, suffix := range pathSuffixes {
 		suffixStr := suffix.String()
@@ -311,7 +328,8 @@ func parseConfig(configJson gjson.Result, config *AIStatisticsConfig) error {
 
 	// Parse path keyword configuration
 	pathKeywords := configJson.Get("enable_path_keywords").Array()
-	config.enablePathKeywords = make([]string, 0, len(pathKeywords))
+	config.enablePathKeywords = make([]string, 0, len(defaultEnablePathKeywords)+len(pathKeywords))
+	config.enablePathKeywords = append(config.enablePathKeywords, defaultEnablePathKeywords...)
 
 	for _, keyword := range pathKeywords {
 		config.enablePathKeywords = append(config.enablePathKeywords, keyword.String())

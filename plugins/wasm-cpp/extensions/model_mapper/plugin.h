@@ -45,6 +45,9 @@ struct ModelMapperConfigRule {
       "/completions",  "/embeddings",       "/images/generations",
       "/audio/speech", "/fine_tuning/jobs", "/moderations",
       "/image-synthesis", "/video-synthesis"};
+  std::vector<std::string> enable_on_path_keyword = {
+      "/llm/"
+  };
 };
 
 // PluginRootContext is the root context for all streams processed by the

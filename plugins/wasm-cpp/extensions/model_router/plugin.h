@@ -51,7 +51,9 @@ struct ModelRouterConfigRule {
       "/completions",  "/embeddings",       "/images/generations",
       "/audio/speech", "/fine_tuning/jobs", "/moderations",
       "/image-synthesis", "/video-synthesis"};
-  std::vector<std::string> enable_on_path_keyword;
+  std::vector<std::string> enable_on_path_keyword = {
+      "/llm/"
+  };
 };
 
 class PluginContext;
