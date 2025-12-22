@@ -335,8 +335,8 @@ func rejected(cfg config.AiTokenRateLimitConfig, context LimitContext) {
 	_ = proxywasm.SendHttpResponseWithDetail(
 		cfg.RejectedCode, "ai-token-ratelimit.rejected", util.ReconvertHeaders(headers), []byte(cfg.RejectedMsg), -1)
 
-	route, _ := util.GetRouteName()
-	cluster, _ := util.GetClusterName()
-	consumer, _ := util.GetConsumer()
-	cfg.IncrementCounter(generateMetricName(route, cluster, "none", consumer, TokenRateLimitCount), 1)
+	//route, _ := util.GetRouteName()
+	//cluster, _ := util.GetClusterName()
+	//consumer, _ := util.GetConsumer()
+	//cfg.IncrementCounter(generateMetricName(route, cluster, "none", consumer, TokenRateLimitCount), 1)
 }
