@@ -93,15 +93,15 @@ type LimitConfigItem struct {
 }
 
 func (cfg *AiTokenRateLimitConfig) IncrementCounter(metricName string, inc uint64) {
-	if inc == 0 {
-		return
-	}
-	counter, ok := cfg.CounterMetrics[metricName]
-	if !ok {
-		counter = proxywasm.DefineCounterMetric(metricName)
-		cfg.CounterMetrics[metricName] = counter
-	}
-	counter.Increment(inc)
+	//if inc == 0 {
+	//	return
+	//}
+	//counter, ok := cfg.CounterMetrics[metricName]
+	//if !ok {
+	//	counter = proxywasm.DefineCounterMetric(metricName)
+	//	cfg.CounterMetrics[metricName] = counter
+	//}
+	//counter.Increment(inc)
 }
 
 func IsRedisConfigured(json gjson.Result) bool {
