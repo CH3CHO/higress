@@ -626,7 +626,7 @@ func (v *vertexProvider) buildVertexChatRequest(request *chatCompletionRequest, 
 		})
 	}
 
-	fixMessages(request.Messages)
+	fixChatMessages(request.Messages)
 
 	systemInstruction, messages := buildVertexReqSystemInstruction(request)
 

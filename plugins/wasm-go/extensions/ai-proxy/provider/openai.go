@@ -152,10 +152,15 @@ type openaiProvider struct {
 	customPath         string
 	isDirectCustomPath bool
 	contextCache       *contextCache
+	tokenizer          Tokenizer
 }
 
 func (m *openaiProvider) GetProviderType() string {
 	return providerTypeOpenAI
+}
+
+func (m *openaiProvider) SetTokenizer(tokenizer Tokenizer) {
+	m.tokenizer = tokenizer
 }
 
 func (m *openaiProvider) OnRequestHeaders(ctx wrapper.HttpContext, apiName ApiName) error {
@@ -193,6 +198,25 @@ func (m *openaiProvider) OnRequestBody(ctx wrapper.HttpContext, apiName ApiName,
 		return types.ActionContinue, nil
 	}
 	return m.config.handleRequestBody(m, m.contextCache, ctx, apiName, body)
+}
+
+func (m *openaiProvider) NeedAsyncTransform(ctx wrapper.HttpContext, apiName ApiName, body []byte) bool {
+	if apiName == ApiNameEmbeddings {
+		if m.tokenizer != nil && needTokenizerForEmbeddingsRequest(body) {
+			return true
+		}
+	}
+	return false
+}
+
+func (m *openaiProvider) TransformRequestBodyAsync(ctx wrapper.HttpContext, apiName ApiName, body []byte, callback func([]byte, error)) error {
+	if apiName == ApiNameEmbeddings {
+		if m.tokenizer == nil {
+			return errors.New("tokenizer is not set for openaiProvider")
+		}
+		return transformEmbeddingsRequestWithTokenizer(ctx, m.tokenizer, body, callback)
+	}
+	return errors.ErrUnsupported
 }
 
 func (m *openaiProvider) TransformRequestBody(ctx wrapper.HttpContext, apiName ApiName, body []byte) (transformedBody []byte, err error) {
@@ -425,7 +449,7 @@ func handleCompletionsStreamingEvent(ctx wrapper.HttpContext, event StreamEvent)
 	return []StreamEvent{transformedEvent}, nil
 }
 
-func fixMessages(messages []chatMessage) {
+func fixChatMessages(messages []chatMessage) {
 	for i := range messages {
 		// Set default role to "assistant" if missing
 		if messages[i].Role == "" {
@@ -448,4 +472,24 @@ func fillResponseToolCallIndex(resp *chatCompletionResponse) {
 			}
 		}
 	}
+}
+
+func transformEmbeddingsRequestWithTokenizer(ctx wrapper.HttpContext, tokenizer Tokenizer, body []byte, callback func([]byte, error)) error {
+	if tokenizer == nil {
+		return errors.New("tokenizer is nil")
+	}
+	model := gjson.GetBytes(body, "model").String()
+	input := gjson.GetBytes(body, "input")
+	log.Debugf("transformEmbeddingsRequestWithTokenizer: model=%s input=%s", model, input.Raw)
+	return tokenizer.Decode(model, input, func(tokenizedInput gjson.Result, err error) {
+		if err != nil {
+			callback(nil, err)
+			return
+		}
+		if transformedBody, err := sjson.SetRawBytes(body, "input", []byte(tokenizedInput.Raw)); err != nil {
+			callback(nil, fmt.Errorf("failed to set tokenized input in embeddings request body, err: %v", err))
+		} else {
+			callback(transformedBody, nil)
+		}
+	})
 }
