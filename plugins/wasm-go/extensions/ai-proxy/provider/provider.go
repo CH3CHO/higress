@@ -255,6 +255,14 @@ type TransformRequestHeadersHandler interface {
 	TransformRequestHeaders(ctx wrapper.HttpContext, apiName ApiName, headers http.Header)
 }
 
+// AsyncTransformRequestBodyHandler allows to transform request body asynchronously when needed.
+// If not, it can fall back to synchronous TransformRequestBodyHandler.or TransformRequestBodyHeadersHandler
+type AsyncTransformRequestBodyHandler interface {
+	NeedAsyncTransform(ctx wrapper.HttpContext, apiName ApiName, body []byte) bool
+
+	TransformRequestBodyAsync(ctx wrapper.HttpContext, apiName ApiName, body []byte, callback func([]byte, error)) error
+}
+
 type TransformRequestBodyHandler interface {
 	TransformRequestBody(ctx wrapper.HttpContext, apiName ApiName, body []byte) ([]byte, error)
 }
@@ -766,31 +774,31 @@ func (c *ProviderRuntimeConfig) FromJson(json gjson.Result) {
 }
 
 func getMappedModel(model string, modelMapping map[string]string) string {
-	mappedModel := doGetMappedModel(model, modelMapping)
+	mappedModel := performPatternMapping(model, modelMapping)
 	if len(mappedModel) != 0 {
 		return mappedModel
 	}
 	return model
 }
 
-func doGetMappedModel(model string, modelMapping map[string]string) string {
-	if len(modelMapping) == 0 {
+func performPatternMapping(input string, mapping map[string]string) string {
+	if len(mapping) == 0 {
 		return ""
 	}
 
-	if v, ok := modelMapping[model]; ok {
-		log.Debugf("model [%s] is mapped to [%s] explictly", model, v)
+	if v, ok := mapping[input]; ok {
+		log.Debugf("input [%s] is mapped to [%s] explicitly", input, v)
 		return v
 	}
 
-	for k, v := range modelMapping {
+	for k, v := range mapping {
 		if k == wildcard {
 			continue
 		}
 		if strings.HasSuffix(k, wildcard) {
 			k = strings.TrimSuffix(k, wildcard)
-			if strings.HasPrefix(model, k) {
-				log.Debugf("model [%s] is mapped to [%s] via prefix [%s]", model, v, k)
+			if strings.HasPrefix(input, k) {
+				log.Debugf("input [%s] is mapped to [%s] via prefix [%s]", input, v, k)
 				return v
 			}
 		}
@@ -798,16 +806,16 @@ func doGetMappedModel(model string, modelMapping map[string]string) string {
 		if strings.HasPrefix(k, "~") {
 			k = strings.TrimPrefix(k, "~")
 			re := regexp.MustCompile(k)
-			if re.MatchString(model) {
-				v = re.ReplaceAllString(model, v)
-				log.Debugf("model [%s] is mapped to [%s] via regex [%s]", model, v, k)
+			if re.MatchString(input) {
+				v = re.ReplaceAllString(input, v)
+				log.Debugf("input [%s] is mapped to [%s] via regex [%s]", input, v, k)
 				return v
 			}
 		}
 	}
 
-	if v, ok := modelMapping[wildcard]; ok {
-		log.Debugf("model [%s] is mapped to [%s] via wildcard", model, v)
+	if v, ok := mapping[wildcard]; ok {
+		log.Debugf("input [%s] is mapped to [%s] via wildcard", input, v)
 		return v
 	}
 
@@ -943,6 +951,27 @@ func (c *ProviderConfig) handleRequestBody(
 	}
 
 	// use openai protocol (either original openai or converted from claude)
+
+	if handler, ok := provider.(AsyncTransformRequestBodyHandler); ok && handler.NeedAsyncTransform(ctx, apiName, body) {
+		// Only call async handler when needed
+		callback := func(transformedBody []byte, callbackErr error) {
+			body = transformedBody
+			err = callbackErr
+			if err == nil {
+				err = replaceRequestBody(body)
+			}
+			if err != nil {
+				_ = util.ErrorHandler("ai-proxy.proc_req_body_failed", fmt.Errorf("failed to process request body: %v", err))
+			}
+			_ = proxywasm.ResumeHttpRequest()
+		}
+		err = handler.TransformRequestBodyAsync(ctx, apiName, body, callback)
+		if err != nil {
+			return types.ActionContinue, err
+		}
+		return types.ActionPause, nil
+	}
+
 	if handler, ok := provider.(TransformRequestBodyHandler); ok {
 		body, err = handler.TransformRequestBody(ctx, apiName, body)
 	} else if handler, ok := provider.(TransformRequestBodyHeadersHandler); ok {

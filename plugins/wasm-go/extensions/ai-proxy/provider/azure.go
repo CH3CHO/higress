@@ -241,10 +241,15 @@ type azureProvider struct {
 	apiVersionYear     int
 	apiVersionMonth    int
 	defaultModel       string
+	tokenizer          Tokenizer
 }
 
 func (m *azureProvider) GetProviderType() string {
 	return providerTypeAzure
+}
+
+func (m *azureProvider) SetTokenizer(tokenizer Tokenizer) {
+	m.tokenizer = tokenizer
 }
 
 func (m *azureProvider) OnRequestHeaders(ctx wrapper.HttpContext, apiName ApiName) error {
@@ -254,6 +259,25 @@ func (m *azureProvider) OnRequestHeaders(ctx wrapper.HttpContext, apiName ApiNam
 
 func (m *azureProvider) OnRequestBody(ctx wrapper.HttpContext, apiName ApiName, body []byte) (types.Action, error) {
 	return m.config.handleRequestBody(m, m.contextCache, ctx, apiName, body)
+}
+
+func (m *azureProvider) NeedAsyncTransform(ctx wrapper.HttpContext, apiName ApiName, body []byte) bool {
+	if apiName == ApiNameEmbeddings {
+		if m.tokenizer != nil && needTokenizerForEmbeddingsRequest(body) {
+			return true
+		}
+	}
+	return false
+}
+
+func (m *azureProvider) TransformRequestBodyAsync(ctx wrapper.HttpContext, apiName ApiName, body []byte, callback func([]byte, error)) error {
+	if apiName == ApiNameEmbeddings {
+		if m.tokenizer == nil {
+			return errors.New("tokenizer is not set for azureProvider")
+		}
+		return transformEmbeddingsRequestWithTokenizer(ctx, m.tokenizer, body, callback)
+	}
+	return errors.ErrUnsupported
 }
 
 func (m *azureProvider) TransformRequestBody(ctx wrapper.HttpContext, apiName ApiName, body []byte) (transformedBody []byte, err error) {

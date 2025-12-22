@@ -191,3 +191,15 @@ func fixChatCompletionsImageUrlValues(body []byte, messageIndex int) ([]byte, er
 	}
 	return body, nil
 }
+
+func needTokenizerForEmbeddingsRequest(body []byte) bool {
+	inputText := gjson.GetBytes(body, "input")
+	if !inputText.Exists() || !inputText.IsArray() {
+		return false
+	}
+	firstInput := inputText.Get("0")
+	if !firstInput.Exists() || !firstInput.IsArray() {
+		return false
+	}
+	return firstInput.Get("0").Type == gjson.Number
+}

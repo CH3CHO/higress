@@ -2,6 +2,7 @@ package config
 
 import (
 	"github.com/alibaba/higress/plugins/wasm-go/extensions/ai-proxy/provider"
+	"github.com/higress-group/wasm-go/pkg/log"
 	"github.com/tidwall/gjson"
 )
 
@@ -30,6 +31,9 @@ type PluginConfig struct {
 	activeProvider       provider.Provider        `yaml:"-"`
 
 	providerRuntimeConfig *provider.ProviderRuntimeConfig `yaml:"-"`
+
+	tokenizerConfig *provider.TokenizerConfig `required:"false" yaml:"tokenizerConfig"`
+	activeTokenizer provider.Tokenizer        `yaml:"-"`
 }
 
 func (c *PluginConfig) FromJson(json gjson.Result) {
@@ -67,6 +71,12 @@ func (c *PluginConfig) FromJson(json gjson.Result) {
 
 	c.providerRuntimeConfig = &provider.ProviderRuntimeConfig{}
 	c.providerRuntimeConfig.FromJson(json)
+
+	if tokenizerJson := json.Get("tokenizer"); tokenizerJson.Exists() && tokenizerJson.IsObject() {
+		log.Debugf("Loading tokenizer config from json: %s", tokenizerJson.Raw)
+		c.tokenizerConfig = &provider.TokenizerConfig{}
+		c.tokenizerConfig.FromJson(tokenizerJson)
+	}
 }
 
 func (c *PluginConfig) Validate() error {
@@ -75,6 +85,11 @@ func (c *PluginConfig) Validate() error {
 	}
 	if err := c.activeProviderConfig.Validate(); err != nil {
 		return err
+	}
+	if c.tokenizerConfig != nil {
+		if err := c.tokenizerConfig.Validate(); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -95,6 +110,13 @@ func (c *PluginConfig) Complete() error {
 	if runtimeConfigAware, ok := c.activeProvider.(provider.RuntimeConfigAware); ok {
 		if err = runtimeConfigAware.SetRuntimeConfig(c.providerRuntimeConfig); err != nil {
 			return err
+		}
+	}
+
+	if c.tokenizerConfig != nil {
+		c.activeTokenizer = provider.CreateTokenizer(*c.tokenizerConfig)
+		if tokenizerAware, ok := c.activeProvider.(provider.TokenizerAware); ok {
+			tokenizerAware.SetTokenizer(c.activeTokenizer)
 		}
 	}
 
