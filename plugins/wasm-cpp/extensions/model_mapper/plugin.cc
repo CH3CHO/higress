@@ -106,6 +106,19 @@ bool PluginRootContext::parsePluginConfig(const json& configuration,
     LOG_WARN("Invalid type for item in enableOnPathSuffix. Expected string.");
     return false;
   }
+
+  if (!JsonArrayIterate(
+          configuration, "enableOnPathKeyword", [&](const json& item) -> bool {
+            if (item.is_string()) {
+              rule.enable_on_path_keyword.emplace_back(item.get<std::string>());
+              return true;
+            }
+            return false;
+          })) {
+    LOG_WARN("Invalid type for item in enableOnPathKeyword. Expected string.");
+    return false;
+  }
+
   return true;
 }
 
@@ -189,8 +202,18 @@ FilterHeadersStatus PluginRootContext::onHeader(
     }
   }
   if (!enable) {
+    for (const auto& enable_keyword : rule.enable_on_path_keyword) {
+      if (absl::StrContains({path.c_str(), uri_end}, enable_keyword)) {
+        enable = true;
+        break;
+      }
+    }
+  }
+
+  if (!enable) {
     return FilterHeadersStatus::Continue;
   }
+  
   auto content_type_value =
       getRequestHeader(Wasm::Common::Http::Header::ContentType);
   if (!absl::StrContains(content_type_value->view(),
