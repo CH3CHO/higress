@@ -66,6 +66,13 @@ const (
 	RateLimitLimitHeader     = "X-RateLimit-Limit"     // 限制的总请求数
 	RateLimitRemainingHeader = "X-RateLimit-Remaining" // 剩余还可以发送的请求数
 	RateLimitResetHeader     = "X-RateLimit-Reset"     // 限流重置时间（触发限流时返回）
+
+	LogKey               = "rate_limit_log"
+	UserAttrKeyKey       = "qpx_key"
+	UserAttrThresholdKey = "qpx_threshold"
+	UserAttrIntervalKey  = "qpx_interval"
+	UserAttrResultKey    = "qpx_result"
+	UserAttrRemainingKey = "qpx_remaining"
 )
 
 type LimitContext struct {
@@ -126,14 +133,31 @@ func onHttpRequestHeaders(ctx wrapper.HttpContext, cfg config.ClusterKeyRateLimi
 		timeWindow = configItem.TimeWindow
 	}
 
+	ctx.SetUserAttribute(UserAttrKeyKey, limitKey)
+	ctx.SetUserAttribute(UserAttrThresholdKey, count)
+	ctx.SetUserAttribute(UserAttrIntervalKey, timeWindow)
+
+	defer func() {
+		_ = ctx.WriteUserAttributeToLogWithKey(LogKey)
+	}()
+
 	// 执行限流逻辑
 	keys := []interface{}{limitKey}
 	args := []interface{}{count, timeWindow}
 	err := cfg.RedisClient.Eval(FixedWindowScript, 1, keys, args, func(response resp.Value) {
+		defer func() {
+			_ = ctx.WriteUserAttributeToLogWithKey(LogKey)
+		}()
+
 		resultArray := response.Array()
 		if len(resultArray) != 3 {
+			// Server connection error is also possible to reach here, so we log it as error level.
+			// response = "cannot connect to redis cluster"
+
+			ctx.SetUserAttribute(UserAttrResultKey, "resp_error")
+
 			log.Errorf("redis response parse error, response: %v", response)
-			proxywasm.ResumeHttpRequest()
+			_ = proxywasm.ResumeHttpRequest()
 			return
 		}
 		context := LimitContext{
@@ -141,16 +165,22 @@ func onHttpRequestHeaders(ctx wrapper.HttpContext, cfg config.ClusterKeyRateLimi
 			remaining: resultArray[1].Integer(),
 			reset:     resultArray[2].Integer(),
 		}
+		ctx.SetUserAttribute(UserAttrRemainingKey, context.remaining)
 		if context.remaining < 0 {
+			ctx.SetUserAttribute(UserAttrResultKey, "reject")
+
 			// 触发限流
 			rejected(cfg, context)
 		} else {
+			ctx.SetUserAttribute(UserAttrResultKey, "pass")
+
 			ctx.SetContext(LimitContextKey, context)
-			proxywasm.ResumeHttpRequest()
+			_ = proxywasm.ResumeHttpRequest()
 		}
 	})
 
 	if err != nil {
+		ctx.SetUserAttribute(UserAttrResultKey, "call_error")
 		log.Errorf("redis call failed: %v", err)
 		return types.ActionContinue
 	}
