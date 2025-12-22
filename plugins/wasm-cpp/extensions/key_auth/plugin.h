@@ -18,8 +18,14 @@
 
 #include <string>
 #include <unordered_set>
+#include <vector>
+#include <sstream>
+#include <iomanip>
+#include <cstdint>
+#include <algorithm>
 
 #include "common/route_rule_matcher.h"
+#include "absl/strings/escaping.h"
 #define ASSERT(_X) assert(_X)
 
 #ifndef NULL_PLUGIN
@@ -129,6 +135,31 @@ class PluginContext : public Context {
     return dynamic_cast<PluginRootContext*>(this->root());
   }
 };
+
+inline std::string encryptWithXorAndBase64(const std::string& key, const std::string& input) {
+    if (key.empty()) return "";
+    std::vector<uint8_t> encrypted(input.size());
+    for (size_t i = 0; i < input.size(); ++i) {
+        encrypted[i] = static_cast<uint8_t>(input[i]) ^ static_cast<uint8_t>(key[i % key.size()]);
+    }
+    std::string encoded;
+    absl::Base64Escape(absl::string_view(reinterpret_cast<const char*>(encrypted.data()), encrypted.size()), &encoded);
+    return encoded;
+}
+
+inline std::string decryptWithXorAndBase64(const std::string& key, const std::string& input) {
+    if (key.empty()) return "";
+    std::string decoded;
+    if (!absl::Base64Unescape(input, &decoded)) {
+        return "";
+    }
+    std::string output(decoded.size(), '\0');
+    for (size_t i = 0; i < decoded.size(); ++i) {
+        output[i] = static_cast<char>(static_cast<uint8_t>(decoded[i]) ^ static_cast<uint8_t>(key[i % key.size()]));
+    }
+    return output;
+}
+
 
 #ifdef NULL_PLUGIN
 
