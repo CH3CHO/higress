@@ -20,6 +20,8 @@
 #include "include/proxy-wasm/context.h"
 #include "include/proxy-wasm/null.h"
 
+#include <iostream>
+
 namespace proxy_wasm {
 namespace null_plugin {
 namespace key_auth {
@@ -46,6 +48,7 @@ class MockContext : public proxy_wasm::ContextBase {
                Pairs /* additional_headers */, uint32_t /* grpc_status */,
                std::string_view /* details */));
   MOCK_METHOD(WasmResult, getProperty, (std::string_view, std::string*));
+  MOCK_METHOD(WasmResult, setProperty, (std::string_view path, std::string_view value));
 };
 
 class KeyAuthTest : public ::testing::Test {
@@ -100,6 +103,15 @@ class KeyAuthTest : public ::testing::Test {
           return WasmResult::Ok;
         });
 
+    ON_CALL(*mock_context_, setProperty(testing::_, testing::_))
+        .WillByDefault([&](std::string_view path, std::string_view value) {
+          if (path == "auth_log") {
+            auth_log_ = std::string(value);
+            std::cerr << "auth_log: " << auth_log_ << "\n";
+          }
+          return WasmResult::Ok;
+        });
+
     // Initialize Wasm sandbox context
     root_context_ = std::make_unique<PluginRootContext>(0, "");
     context_ = std::make_unique<PluginContext>(1, root_context_.get());
@@ -119,6 +131,7 @@ class KeyAuthTest : public ::testing::Test {
   std::string key_header_;
   std::string authorization_header_key_;
   std::string authorization_header_value_;
+  std::string auth_log_;
 };
 
 TEST_F(KeyAuthTest, InQuery) {
@@ -130,7 +143,7 @@ TEST_F(KeyAuthTest, InQuery) {
       "credentials":["abc","def"],
       "keys": ["apiKey", "x-api-key"]
     }
-  ]  
+  ]
 })";
   BufferBase buffer;
   buffer.set(configuration);
@@ -154,7 +167,7 @@ TEST_F(KeyAuthTest, InQuery) {
   path_ = "/test?hello=123&apiKey=123&x-api-key=def";
   EXPECT_EQ(context_->onRequestHeaders(0, false),
             FilterHeadersStatus::Continue);
-  
+
   route_name_ = "pass";
   path_ = "/pass?hello=123&apiKey=123";
   EXPECT_EQ(context_->onRequestHeaders(0, false),
@@ -371,7 +384,7 @@ TEST_F(KeyAuthTest, ConsumerMultiCredentials) {
       "_match_route_": ["test"],
       "allow": ["c1"]
     }
-  ]  
+  ]
 })";
   BufferBase buffer;
   buffer.set(configuration);
@@ -529,6 +542,8 @@ TEST_F(KeyAuthTest, AuthorizationTest) {
         effective_prefix += prefix;
       }
       for (const auto& header_key : authentication_headers) {
+        auth_log_ = "";
+
         authorization_header_key_ = header_key;
 
         authorization_header_value_ = absl::StrCat(effective_prefix, "sk-111111");
@@ -538,6 +553,7 @@ TEST_F(KeyAuthTest, AuthorizationTest) {
                                       std::string_view("c1")));
         EXPECT_EQ(context_->onRequestHeaders(0, false),
                   FilterHeadersStatus::StopIteration);
+        EXPECT_EQ(auth_log_, "");
 
         authorization_header_value_ = absl::StrCat(effective_prefix, "sk-222222");
         LOG_DEBUG(absl::StrCat("Testing with header: ", authorization_header_key_, ", value: ", authorization_header_value_));
@@ -546,9 +562,105 @@ TEST_F(KeyAuthTest, AuthorizationTest) {
                                       std::string_view("c2")));
         EXPECT_EQ(context_->onRequestHeaders(0, false),
                   FilterHeadersStatus::Continue);
+        EXPECT_EQ(auth_log_, "");
+
+        authorization_header_value_ = absl::StrCat(effective_prefix, "sk-333333");
+        LOG_DEBUG(absl::StrCat("Testing with header: ", authorization_header_key_, ", value: ", authorization_header_value_));
+        EXPECT_CALL(*mock_context_,
+                    addHeaderMapValue(testing::_, testing::_, testing::_)).Times(0);
+        EXPECT_EQ(context_->onRequestHeaders(0, false),
+                  FilterHeadersStatus::StopIteration);
+        EXPECT_EQ(auth_log_,
+                  "UNKNOWN_TOKEN:" + encryptWithXorAndBase64("@=y]U~5jz4@D..^w", "Bearer sk-333333"));
+
+        authorization_header_value_ = absl::StrCat(effective_prefix, "sk-12345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890");
+        LOG_DEBUG(absl::StrCat("Testing with header: ", authorization_header_key_, ", value: ", authorization_header_value_));
+        EXPECT_CALL(*mock_context_,
+                    addHeaderMapValue(testing::_, testing::_, testing::_)).Times(0);
+        EXPECT_EQ(context_->onRequestHeaders(0, false),
+                  FilterHeadersStatus::StopIteration);
+        EXPECT_EQ(auth_log_,
+                  "UNKNOWN_TOKEN:" + encryptWithXorAndBase64("@=y]U~5jz4@D..^w", "Bearer sk-12345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567(truncated)"));
       }
     }
   }
+}
+
+TEST(EncryptDecryptTest, BasicCases) {
+    std::string key = "mykey";
+    std::string plaintext = "hello world!";
+    std::string encrypted = encryptWithXorAndBase64(key, plaintext);
+    std::string encrypted2 = encryptWithXorAndBase64(key, plaintext);
+    std::cout << "Plaintext: " << plaintext << std::endl;
+    std::cout << "Encrypted: " << encrypted << std::endl;
+    EXPECT_EQ(encrypted, encrypted2);
+    std::string decrypted = decryptWithXorAndBase64(key, encrypted);
+    std::cout << "Decrypted: " << decrypted << std::endl;
+    EXPECT_EQ(decrypted, plaintext);
+
+    std::cout << std::endl;
+
+    // 空字符串
+    plaintext = "";
+    encrypted = encryptWithXorAndBase64(key, plaintext);
+    encrypted2 = encryptWithXorAndBase64(key, plaintext);
+    std::cout << "Plaintext: " << plaintext << std::endl;
+    std::cout << "Encrypted: " << encrypted << std::endl;
+    EXPECT_EQ(encrypted, encrypted2);
+    decrypted = decryptWithXorAndBase64(key, encrypted);
+    std::cout << "Decrypted: " << decrypted << std::endl;
+    EXPECT_EQ(decrypted, plaintext);
+
+    std::cout << std::endl;
+
+    // 特殊字符
+    plaintext = "你好，世界！\n\t";
+    encrypted = encryptWithXorAndBase64(key, plaintext);
+    encrypted2 = encryptWithXorAndBase64(key, plaintext);
+    std::cout << "Plaintext: " << plaintext << std::endl;
+    std::cout << "Encrypted: " << encrypted << std::endl;
+    EXPECT_EQ(encrypted, encrypted2);
+    decrypted = decryptWithXorAndBase64(key, encrypted);
+    std::cout << "Decrypted: " << decrypted << std::endl;
+    EXPECT_EQ(decrypted, plaintext);
+
+    std::cout << std::endl;
+
+    // 密钥比明文长
+    key = "averylongkeythatexceedstheplaintext";
+    plaintext = "short";
+    encrypted = encryptWithXorAndBase64(key, plaintext);
+    encrypted2 = encryptWithXorAndBase64(key, plaintext);
+    std::cout << "Plaintext: " << plaintext << std::endl;
+    std::cout << "Encrypted: " << encrypted << std::endl;
+    EXPECT_EQ(encrypted, encrypted2);
+    decrypted = decryptWithXorAndBase64(key, encrypted);
+    std::cout << "Decrypted: " << decrypted << std::endl;
+    EXPECT_EQ(decrypted, plaintext);
+
+    std::cout << std::endl;
+
+    // 明文比密钥长
+    key = "k";
+    plaintext = "this is a long plaintext for testing";
+    encrypted = encryptWithXorAndBase64(key, plaintext);
+    encrypted2 = encryptWithXorAndBase64(key, plaintext);
+    std::cout << "Plaintext: " << plaintext << std::endl;
+    std::cout << "Encrypted: " << encrypted << std::endl;
+    EXPECT_EQ(encrypted, encrypted2);
+    decrypted = decryptWithXorAndBase64(key, encrypted);
+    std::cout << "Decrypted: " << decrypted << std::endl;
+    EXPECT_EQ(decrypted, plaintext);
+
+    std::cout << std::endl;
+
+    // base64非法输入
+    key = "mykey";
+    std::string invalid_cipher = "!!!notbase64!!!";
+    decrypted = decryptWithXorAndBase64(key, invalid_cipher);
+    std::cout << "Encrypted: " << invalid_cipher << std::endl;
+    std::cout << "Decrypted: " << decrypted << std::endl;
+    EXPECT_EQ(decrypted, "");
 }
 
 }  // namespace key_auth

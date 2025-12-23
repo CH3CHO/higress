@@ -42,6 +42,7 @@ static RegisterContextFactory register_KeyAuth(CONTEXT_FACTORY(PluginContext),
 
 namespace {
 
+const std::string LogFilterStateKey("auth_log");
 const std::string OriginalAuthKey("X-HI-ORIGINAL-AUTH");
 const std::string AuthorizationKey("authorization"); // Must be in its lowercase form for comparison
 const std::string Wildcard("*");
@@ -51,6 +52,7 @@ const std::vector<std::string> BackupAuthenticationHeaders = {
     "x-goog-api-key", // google_ai_studio_authorization
     "Ocp-Apim-Subscription-Key" // azure_apim_authorization
 };
+const std::string ENCRYPTION_KEY("@=y]U~5jz4@D..^w");
 
 void deniedInvalidCredentials(const std::string& realm) {
   sendLocalResponse(401, "Request denied by Key Auth check. Invalid API key", "",
@@ -379,6 +381,22 @@ bool PluginRootContext::checkPlugin(
       }
     }
   }
+
+  // Added by Trip.com for logging purpose
+  // Because we only use Bearer token in our scenario, so we only log the token extracted from Authorization header.
+  // Even it is extracted from a backup header, we still log it as from Authorization header for simplicity.
+  auto bearerToken = extractCredential(credential_cache, true, false, AuthorizationKey);
+  std::string log_msg;
+  if (bearerToken.empty()) {
+    log_msg = "NO_TOKEN";
+  } else {
+    if (bearerToken.length() > 128) {
+      bearerToken = bearerToken.substr(0, 117) + "(truncated)";
+    }
+    log_msg = "UNKNOWN_TOKEN:" + encryptWithXorAndBase64(ENCRYPTION_KEY, bearerToken);
+  }
+  setFilterState(LogFilterStateKey, log_msg);
+  // End of addition
 
   LOG_DEBUG("No valid credentials were found after checking all consumers.");
   deniedInvalidCredentials(rule.realm);
