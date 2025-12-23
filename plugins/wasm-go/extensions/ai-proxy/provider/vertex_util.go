@@ -351,6 +351,10 @@ func buildVertexReqGenerationConfig(req *chatCompletionRequest, extendedParams *
 		out.ImageConfig = extendedParams.ImageConfig
 	}
 
+	if len(extendedParams.SpeechConfig) > 0 {
+		out.SpeechConfig = extendedParams.SpeechConfig
+	}
+
 	return out, nil
 }
 

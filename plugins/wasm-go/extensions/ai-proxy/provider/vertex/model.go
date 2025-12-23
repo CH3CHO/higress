@@ -32,6 +32,7 @@ type GenerationConfig struct {
 	ResponseLogprobs   *bool                  `json:"responseLogprobs,omitempty"`
 	ThinkingConfig     *ThinkingConfig        `json:"thinkingConfig,omitempty"`
 	ImageConfig        *ImageConfig           `json:"imageConfig,omitempty"`
+	SpeechConfig       map[string]any         `json:"speechConfig,omitempty"`
 }
 
 type Candidate struct {
