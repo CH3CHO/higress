@@ -366,10 +366,7 @@ var (
 func buildVertexReqThinkingConfig(req *chatCompletionRequest, extendedParams *vertexExtendedParams) (*vertex.ThinkingConfig, error) {
 	passThroughThinkingConfig := extendedParams.ThinkingConfig
 	if passThroughThinkingConfig != nil {
-		return &vertex.ThinkingConfig{
-			IncludeThoughts: passThroughThinkingConfig.IncludeThoughts,
-			ThinkingBudget:  passThroughThinkingConfig.ThinkingBudget,
-		}, nil
+		return passThroughThinkingConfig, nil
 	}
 
 	model := req.Model
