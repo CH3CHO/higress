@@ -385,7 +385,7 @@ func buildVertexReqThinkingConfig(req *chatCompletionRequest, extendedParams *ve
 
 		// For Gemini 3+ models, use thinking_level instead of thinking_budget
 		if isGemini3OrNewer {
-			thinkConfig, err := mapReasoningEffortToVertexThinkingLevel(req.ReasoningEffort)
+			thinkConfig, err := mapReasoningEffortToVertexThinkingLevel(req.ReasoningEffort, req.Model)
 			if err != nil {
 				return nil, fmt.Errorf("cannot map reasoning effort to thinking level: %v", err)
 			}
@@ -857,9 +857,27 @@ func mapReasoningEffortToThinkingBudget(reasoningEffort string, model string) (*
 	}
 }
 
+var (
+	gemini3FlashSupportedThinkingLevels = map[string]bool{
+		vertex.ThinkingLevelMinimal: true,
+		vertex.ThinkingLevelLow:     true,
+		vertex.ThinkingLevelMedium:  true,
+		vertex.ThinkingLevelHigh:    true,
+	}
+)
+
 // mapReasoningEffortToVertexThinkingLevel maps reasoning_effort to thinking_level for Gemini 3+ models.
 // This is equivalent to Python's _map_reasoning_effort_to_thinking_level method.
-func mapReasoningEffortToVertexThinkingLevel(reasoningEffort string) (*vertex.ThinkingConfig, error) {
+func mapReasoningEffortToVertexThinkingLevel(reasoningEffort string, model string) (*vertex.ThinkingConfig, error) {
+	if strings.Contains(model, "gemini-3-flash") {
+		if gemini3FlashSupportedThinkingLevels[reasoningEffort] {
+			return &vertex.ThinkingConfig{
+				ThinkingLevel:   &reasoningEffort,
+				IncludeThoughts: util.BoolPtr(true),
+			}, nil
+		}
+	}
+
 	switch reasoningEffort {
 	case "minimal", "low":
 		return &vertex.ThinkingConfig{

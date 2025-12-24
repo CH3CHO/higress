@@ -9,8 +9,10 @@ const (
 
 // Use var instead of const because ThinkingConfig.ThinkingLevel is a pointer to string
 var (
-	ThinkingLevelLow  = "low"
-	ThinkingLevelHigh = "high"
+	ThinkingLevelMinimal = "minimal"
+	ThinkingLevelLow     = "low"
+	ThinkingLevelMedium  = "medium"
+	ThinkingLevelHigh    = "high"
 )
 
 type GenerationConfig struct {
