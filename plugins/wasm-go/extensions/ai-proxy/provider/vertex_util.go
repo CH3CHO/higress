@@ -387,7 +387,7 @@ func buildVertexReqThinkingConfig(req *chatCompletionRequest, extendedParams *ve
 		if isGemini3OrNewer {
 			thinkConfig, err := mapReasoningEffortToVertexThinkingLevel(req.ReasoningEffort, req.Model)
 			if err != nil {
-				return nil, fmt.Errorf("cannot map reasoning effort to thinking level: %v", err)
+				return nil, fmt.Errorf("cannot map reasoning effort to thinking level: %w", err)
 			}
 			return thinkConfig, nil
 		}
@@ -395,7 +395,7 @@ func buildVertexReqThinkingConfig(req *chatCompletionRequest, extendedParams *ve
 		// For older models, use thinking_budget
 		thinkConfig, err := mapReasoningEffortToThinkingBudget(req.ReasoningEffort, req.Model)
 		if err != nil {
-			return nil, fmt.Errorf("cannot map reasoning effort to thinking budget: %v", err)
+			return nil, fmt.Errorf("cannot map reasoning effort to thinking budget: %w", err)
 		}
 		return thinkConfig, nil
 	}
@@ -853,7 +853,7 @@ func mapReasoningEffortToThinkingBudget(reasoningEffort string, model string) (*
 		}, nil
 
 	default:
-		return nil, fmt.Errorf("unknown reasoning_effort: %s", reasoningEffort)
+		return nil, util.BadRequest("unknown reasoning_effort: " + reasoningEffort)
 	}
 }
 
@@ -902,7 +902,7 @@ func mapReasoningEffortToVertexThinkingLevel(reasoningEffort string, model strin
 			IncludeThoughts: util.BoolPtr(false),
 		}, nil
 	default:
-		return nil, fmt.Errorf("unknown reasoning effort : %s", reasoningEffort)
+		return nil, util.BadRequest("unknown reasoning effort: " + reasoningEffort)
 	}
 }
 

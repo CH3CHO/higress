@@ -961,7 +961,7 @@ func (c *ProviderConfig) handleRequestBody(
 				err = replaceRequestBody(body)
 			}
 			if err != nil {
-				_ = util.ErrorHandler("ai-proxy.proc_req_body_failed", fmt.Errorf("failed to process request body: %v", err))
+				_ = util.ProcessReqBodyErrorHandler("ai-proxy.proc_req_body_failed", fmt.Errorf("failed to process request body: %w", err))
 			}
 			_ = proxywasm.ResumeHttpRequest()
 		}

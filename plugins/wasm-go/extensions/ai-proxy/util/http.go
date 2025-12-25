@@ -46,6 +46,13 @@ var ErrorHandler ErrorHandlerFunc = func(statusCodeDetails string, err error) er
 	return proxywasm.SendHttpResponseWithDetail(500, statusCodeDetails, CreateHeaders(HeaderContentType, MimeTypeTextPlain), []byte(err.Error()), -1)
 }
 
+var ProcessReqBodyErrorHandler ErrorHandlerFunc = func(statusCodeDetails string, err error) error {
+	if IsBadRequestErr(err) {
+		return proxywasm.SendHttpResponseWithDetail(400, statusCodeDetails, CreateHeaders(HeaderContentType, MimeTypeTextPlain), []byte(err.Error()), -1)
+	}
+	return proxywasm.SendHttpResponseWithDetail(500, statusCodeDetails, CreateHeaders(HeaderContentType, MimeTypeTextPlain), []byte(err.Error()), -1)
+}
+
 func CreateHeaders(kvs ...string) [][2]string {
 	headers := make([][2]string, 0, len(kvs)/2)
 	for i := 0; i < len(kvs); i += 2 {
