@@ -314,7 +314,7 @@ func onHttpRequestBody(ctx wrapper.HttpContext, pluginConfig config.PluginConfig
 		if err == nil {
 			return action
 		}
-		_ = util.ErrorHandler("ai-proxy.proc_req_body_failed", fmt.Errorf("failed to process request body: %v", err))
+		_ = util.ProcessReqBodyErrorHandler("ai-proxy.proc_req_body_failed", fmt.Errorf("failed to process request body: %w", err))
 	}
 	return types.ActionContinue
 }
