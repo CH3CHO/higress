@@ -25,6 +25,7 @@ type vertexExtendedParams struct {
 	Thinking           *vertex.ClaudeStyleThinking
 	CachedContent      string
 	SafetySettings     []*vertex.SafetySettingsConfig
+	SpeechConfig       map[string]any
 }
 
 func extractVertexExtendedParams(reqBody []byte) (*vertexExtendedParams, error) {
@@ -73,6 +74,11 @@ func extractVertexExtendedParams(reqBody []byte) (*vertexExtendedParams, error) 
 		return nil, err
 	}
 
+	speechConfig, err := extractVertexSpeechConfig(reqBody)
+	if err != nil {
+		return nil, err
+	}
+
 	return &vertexExtendedParams{
 		ThinkingConfig:     tc,
 		tools:              tools,
@@ -88,6 +94,7 @@ func extractVertexExtendedParams(reqBody []byte) (*vertexExtendedParams, error) 
 		Thinking:           thinking,
 		CachedContent:      extractVertexCachedContent(reqBody),
 		SafetySettings:     safetySettings,
+		SpeechConfig:       speechConfig,
 	}, nil
 }
 
@@ -264,4 +271,17 @@ func extractVertexSafetySettings(reqBody []byte) ([]*vertex.SafetySettingsConfig
 		return nil, fmt.Errorf("failed to unmarshal safety settings: %v", err)
 	}
 	return safetySettings, nil
+}
+
+func extractVertexSpeechConfig(reqBody []byte) (map[string]any, error) {
+	speechConfigJson := gjson.GetBytes(reqBody, "speechConfig")
+	if !speechConfigJson.Exists() {
+		return nil, nil
+	}
+	log.Tracef("vertex speech config: %s", speechConfigJson.Raw)
+	var speechConfig map[string]any
+	if err := json.Unmarshal([]byte(speechConfigJson.Raw), &speechConfig); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal speech config: %v", err)
+	}
+	return speechConfig, nil
 }
