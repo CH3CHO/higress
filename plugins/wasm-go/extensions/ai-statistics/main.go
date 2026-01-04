@@ -828,23 +828,7 @@ func combineStreamingEventsForLog(ctx wrapper.HttpContext, config *AIStatisticsC
 			if key.Str == "choices" && value.IsArray() {
 				// TODO: Only support one choice for now
 				choice := value.Get("0")
-				currentContent := gjson.Get(responseBody, "choices.0.delta.content")
-				log.Debugf("current streaming delta choice content for log at key %s: %s", key.Str, currentContent.String())
-				if !currentContent.Exists() {
-					if newBody, err := sjson.SetRaw(responseBody, "choices", value.Raw); err == nil {
-						responseBody = newBody
-					} else {
-						log.Errorf("failed to init streaming delta choice content for log at key %s: %v", key.Str, err)
-					}
-				} else {
-					newContent := currentContent.String() + choice.Get("delta.content").String()
-					log.Debugf("combined streaming delta choice content for log at key %s: %s", key.Str, newContent)
-					if newBody, err := sjson.Set(responseBody, "choices.0.delta.content", newContent); err == nil {
-						responseBody = newBody
-					} else {
-						log.Errorf("failed to combine streaming delta choice content for log at key %s: %v", key.Str, err)
-					}
-				}
+				responseBody = combineStreamingChoice(responseBody, 0, &choice)
 			} else if !processedFields[key.Str] {
 				if newBody, err := sjson.SetRaw(responseBody, key.Str, value.Raw); err == nil {
 					responseBody = newBody
@@ -865,6 +849,64 @@ func combineStreamingEventsForLog(ctx wrapper.HttpContext, config *AIStatisticsC
 			ctx.SetUserAttribute(ResponseBody, responseBody)
 		}
 	}
+}
+
+func combineStreamingChoice(body string, choiceIndex int, choice *gjson.Result) string {
+	choicePath := fmt.Sprintf("choices.%d", choiceIndex)
+	if currentChoice := gjson.Get(body, choicePath); !currentChoice.Exists() {
+		// initialize the choice object
+		if newBody, err := sjson.SetRaw(body, choicePath, choice.Raw); err == nil {
+			body = newBody
+		} else {
+			log.Errorf("failed to init streaming choice object for log at index %d: %v", choiceIndex, err)
+		}
+		return body
+	}
+
+	body = combineStreamingStringField(body, choicePath+".delta.content", choice, "delta.content")
+	body = combineStreamingStringField(body, choicePath+".delta.reasoning_content", choice, "delta.reasoning_content")
+	body = combineStreamingChoiceToolCalls(body, choiceIndex, choice)
+	return body
+}
+
+func combineStreamingChoiceToolCalls(body string, choiceIndex int, choice *gjson.Result) string {
+	inputToolCalls := choice.Get("delta.tool_calls")
+	if !inputToolCalls.Exists() || !inputToolCalls.IsArray() {
+		return body
+	}
+
+	// TODO: Only support one tool call for now
+	inputToolCall := inputToolCalls.Get("0")
+
+	bodyFieldPath := fmt.Sprintf("choices.%d.delta.tool_calls.0", choiceIndex)
+	bodyToolCall := gjson.Get(body, bodyFieldPath).String()
+	log.Debugf("current streaming choice tool call for log at key %s: %s", bodyFieldPath, bodyToolCall)
+	if bodyToolCall == "" {
+		bodyToolCall = inputToolCall.Raw
+	} else {
+		bodyToolCall = combineStreamingStringField(bodyToolCall, "function.name", &inputToolCall, "function.name")
+		bodyToolCall = combineStreamingStringField(bodyToolCall, "function.arguments", &inputToolCall, "function.arguments")
+	}
+	log.Debugf("combined streaming choice delta tool call for log at key %s: %s", bodyFieldPath, bodyToolCall)
+	if newBody, err := sjson.SetRaw(body, bodyFieldPath, bodyToolCall); err == nil {
+		body = newBody
+	} else {
+		log.Errorf("failed to combine streaming choice delta value for log at key %s: %v", bodyFieldPath, err)
+	}
+	return body
+}
+
+func combineStreamingStringField(body string, bodyFieldPath string, json *gjson.Result, jsonFieldPath string) string {
+	currentValue := gjson.Get(body, bodyFieldPath).String()
+	log.Debugf("current streaming value for log at key %s: %s", bodyFieldPath, currentValue)
+	newValue := currentValue + json.Get(jsonFieldPath).String()
+	log.Debugf("combined streaming value for log at key %s: %s", bodyFieldPath, newValue)
+	if newBody, err := sjson.Set(body, bodyFieldPath, newValue); err == nil {
+		body = newBody
+	} else {
+		log.Errorf("failed to combine streaming value for log at key %s: %v", bodyFieldPath, err)
+	}
+	return body
 }
 
 func extractStreamingBodyByJsonPath(events []StreamEvent, jsonPath string, rule string, currentValue interface{}) interface{} {
