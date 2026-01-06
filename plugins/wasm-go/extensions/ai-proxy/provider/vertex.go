@@ -173,19 +173,15 @@ func (v *vertexProvider) OnRequestBody(ctx wrapper.HttpContext, apiName ApiName,
 
 func (v *vertexProvider) TransformRequestBodyHeaders(ctx wrapper.HttpContext, apiName ApiName, body []byte, headers http.Header) ([]byte, error) {
 	if apiName == ApiNameCompletion {
-		if prompt := gjson.GetBytes(body, "prompt"); prompt.Exists() {
-			messages, err := translatePromptToMessages(prompt)
-			if err != nil {
-				return nil, errors.New("[vertex]: failed to translate prompt to messages: " + err.Error())
-			}
-			if body, err = sjson.SetRawBytes(body, "messages", messages); err != nil {
-				return nil, errors.New("[vertex]: failed to set messages field: " + err.Error())
-			}
-			log.Debugf("[vertex]: translated prompt to messages successfully, new body: %s", body)
+		var err error
+		body, err = translateCompletionRequestToChatCompletionRequest(body)
+		if err != nil {
+			return nil, err
 		}
+		return v.onChatCompletionRequestBody(ctx, body, headers)
 	}
 
-	if apiName == ApiNameChatCompletion || apiName == ApiNameCompletion {
+	if apiName == ApiNameChatCompletion {
 		return v.onChatCompletionRequestBody(ctx, body, headers)
 	} else {
 		return v.onEmbeddingsRequestBody(ctx, body, headers)

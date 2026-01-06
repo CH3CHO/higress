@@ -24,6 +24,7 @@ const (
 	contentTypeImageUrl   = "image_url"
 	contentTypeInputAudio = "input_audio"
 	contentTypeFile       = "file"
+	contentTypeThinking   = "thinking"
 
 	reasoningStartTag = "<think>"
 	reasoningEndTag   = "</think>"
@@ -190,6 +191,15 @@ type chatMessage struct {
 	FunctionCall     *functionCall          `json:"function_call,omitempty"` // For legacy OpenAI format
 	Refusal          string                 `json:"refusal,omitempty"`
 	ToolCallId       string                 `json:"tool_call_id,omitempty"`
+
+	// currently only bedrock uses following three fields
+	ThinkingBlocks         []map[string]any       `json:"thinking_blocks,omitempty"`
+	CacheControl           *cacheControl          `json:"cache_control,omitempty"`
+	ProviderSpecificFields map[string]interface{} `json:"provider_specific_fields,omitempty"`
+}
+
+type cacheControl struct {
+	Type string `json:"type"` // currently only "ephemeral" is supported
 }
 
 func (m *chatMessage) handleNonStreamingReasoningContent(reasoningContentMode string) {
@@ -256,6 +266,11 @@ type chatMessageContent struct {
 	ImageUrl   *chatMessageContentImageUrl `json:"image_url,omitempty"`
 	File       *chatMessageContentFile     `json:"file,omitempty"`
 	InputAudio *chatMessageContentAudio    `json:"input_audio,omitempty"`
+
+	// bedrock uses following fields
+	Thinking     string        `json:"thinking,omitempty"`
+	Signature    string        `json:"signature,omitempty"`
+	CacheControl *cacheControl `json:"cache_control,omitempty"` // For prompt caching
 }
 
 type chatMessageContentAudio struct {
@@ -330,14 +345,31 @@ func (m *chatMessage) StringContent() string {
 	return ""
 }
 
+// extractCacheControl extracts cache_control from a content map
+func extractCacheControl(contentMap map[string]any) *cacheControl {
+	if ccInterface, ok := contentMap["cache_control"]; ok {
+		if ccMap, ok := ccInterface.(map[string]any); ok {
+			if ccType, ok := ccMap["type"].(string); ok {
+				return &cacheControl{Type: ccType}
+			}
+		}
+	}
+	return nil
+}
+
 func (m *chatMessage) ParseContent() []chatMessageContent {
 	var contentList []chatMessageContent
 	content, ok := m.Content.(string)
 	if ok {
-		contentList = append(contentList, chatMessageContent{
+		msg := chatMessageContent{
 			Type: contentTypeText,
 			Text: content,
-		})
+		}
+		// Check for cache_control at message level
+		if m.CacheControl != nil {
+			msg.CacheControl = m.CacheControl
+		}
+		contentList = append(contentList, msg)
 		return contentList
 	}
 	anyList, ok := m.Content.([]any)
@@ -347,12 +379,25 @@ func (m *chatMessage) ParseContent() []chatMessageContent {
 			if !ok {
 				continue
 			}
+			// Extract cache_control for this content block
+			cc := extractCacheControl(contentMap)
+
 			switch contentMap["type"] {
 			case contentTypeText:
 				if subStr, ok := contentMap[contentTypeText].(string); ok {
 					contentList = append(contentList, chatMessageContent{
-						Type: contentTypeText,
-						Text: subStr,
+						Type:         contentTypeText,
+						Text:         subStr,
+						CacheControl: cc,
+					})
+				}
+			case contentTypeThinking:
+				if subStr, ok := contentMap[contentTypeThinking].(string); ok {
+					contentList = append(contentList, chatMessageContent{
+						Type:         contentTypeThinking,
+						Thinking:     subStr,
+						Signature:    contentMap["signature"].(string),
+						CacheControl: cc,
 					})
 				}
 			case contentTypeImageUrl:
@@ -364,6 +409,7 @@ func (m *chatMessage) ParseContent() []chatMessageContent {
 						ImageUrl: &chatMessageContentImageUrl{
 							Url: imageUrlObj["url"].(string),
 						},
+						CacheControl: cc,
 					}
 					if detail, ok := imageUrlObj["detail"].(string); ok {
 						msg.ImageUrl.Detail = detail
@@ -375,6 +421,7 @@ func (m *chatMessage) ParseContent() []chatMessageContent {
 						ImageUrl: &chatMessageContentImageUrl{
 							Url: imageUrlString,
 						},
+						CacheControl: cc,
 					}
 					contentList = append(contentList, msg)
 				}
@@ -386,6 +433,7 @@ func (m *chatMessage) ParseContent() []chatMessageContent {
 							Data:   subObj["data"].(string),
 							Format: subObj["format"].(string),
 						},
+						CacheControl: cc,
 					})
 				}
 			case contentTypeFile:
@@ -404,8 +452,9 @@ func (m *chatMessage) ParseContent() []chatMessageContent {
 						file.Format = format
 					}
 					contentList = append(contentList, chatMessageContent{
-						Type: contentTypeFile,
-						File: file,
+						Type:         contentTypeFile,
+						File:         file,
+						CacheControl: cc,
 					})
 				}
 			}
@@ -548,4 +597,13 @@ func (r embeddingsRequest) ParseInput() []string {
 		}
 	}
 	return input
+}
+
+func hasToolCallMessage(messages []chatMessage) bool {
+	for _, msg := range messages {
+		if len(msg.ToolCalls) > 0 {
+			return true
+		}
+	}
+	return false
 }
