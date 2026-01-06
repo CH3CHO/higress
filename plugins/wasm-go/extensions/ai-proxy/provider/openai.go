@@ -374,6 +374,22 @@ func translatePromptToMessages(prompt gjson.Result) ([]byte, error) {
 	return messages, nil
 }
 
+// translateCompletionRequestToChatCompletionRequest converts a completion request body
+// to a chat completion request body by translating the "prompt" field to "messages" field
+func translateCompletionRequestToChatCompletionRequest(body []byte) ([]byte, error) {
+	if prompt := gjson.GetBytes(body, "prompt"); prompt.Exists() {
+		messages, err := translatePromptToMessages(prompt)
+		if err != nil {
+			return nil, fmt.Errorf("failed to translate prompt to messages: %v", err)
+		}
+		if body, err = sjson.SetRawBytes(body, "messages", messages); err != nil {
+			return nil, fmt.Errorf("failed to set messages field: %v", err)
+		}
+		log.Debugf("translated prompt to messages successfully, new body: %s", body)
+	}
+	return body, nil
+}
+
 func transformCompletionsResponseFields(ctx wrapper.HttpContext, body []byte) ([]byte, error) {
 	transformedBody := `{"object":"text_completion"}`
 	if id := gjson.GetBytes(body, "id"); id.Exists() {
@@ -416,7 +432,12 @@ func transformCompletionsResponseFields(ctx wrapper.HttpContext, body []byte) ([
 }
 
 func handleCompletionsStreamingEvent(ctx wrapper.HttpContext, event StreamEvent) ([]StreamEvent, error) {
-	data := event.Data
+	transformedEvent := event
+	transformedEvent.Data = transformCompletionsStreamingData(event.Data)
+	return []StreamEvent{transformedEvent}, nil
+}
+
+func transformCompletionsStreamingData(data string) string {
 	transformedData := `{"object":"text_completion"}`
 	if id := gjson.Get(data, "id"); id.Exists() {
 		transformedData, _ = sjson.SetRaw(transformedData, "id", id.Raw)
@@ -443,10 +464,7 @@ func handleCompletionsStreamingEvent(ctx wrapper.HttpContext, event StreamEvent)
 	if usage := gjson.Get(data, "usage"); usage.Exists() {
 		transformedData, _ = sjson.SetRaw(transformedData, "usage", usage.Raw)
 	}
-
-	transformedEvent := event
-	transformedEvent.Data = transformedData
-	return []StreamEvent{transformedEvent}, nil
+	return transformedData
 }
 
 func fixChatMessages(messages []chatMessage) {

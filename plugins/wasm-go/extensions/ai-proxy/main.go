@@ -575,7 +575,7 @@ func normalizeOpenAiRequestBody(ctx wrapper.HttpContext, body []byte) []byte {
 
 func checkStream(ctx wrapper.HttpContext) {
 	contentType, err := proxywasm.GetHttpResponseHeader("Content-Type")
-	if err != nil || !strings.HasPrefix(contentType, "text/event-stream") {
+	if err != nil || !strings.HasPrefix(contentType, "text/event-stream") || util.IsFakeStream(ctx) {
 		if err != nil {
 			log.Errorf("unable to load content-type header from response: %v", err)
 		}
