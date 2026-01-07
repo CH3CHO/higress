@@ -416,7 +416,10 @@ func transformMessagesToBedrockMessageBlocks(messages []chatMessage, opts *bedro
 		// MERGE CONSECUTIVE TOOL CALL MESSAGES
 		var toolContentBlocks []*bedrock.ContentBlock
 		for msgIdx < len(messages) && messages[msgIdx].Role == roleTool {
-			toolResult := convertToBedrockToolCallResult(messages[msgIdx])
+			toolResult, err := convertToBedrockToolCallResult(messages[msgIdx])
+			if err != nil {
+				return nil, fmt.Errorf("failed to convert to bedrock tool call result: %w", err)
+			}
 			toolContentBlocks = append(toolContentBlocks, toolResult)
 			msgIdx++
 		}
@@ -619,17 +622,38 @@ func convertToBedrockToolCallInvoke(toolCalls []toolCall) []*bedrock.ContentBloc
 // convertToBedrockToolCallResult converts an OpenAI tool result message to Bedrock format.
 // This function corresponds to _convert_to_bedrock_tool_call_result in Python's litellm:
 // litellm/litellm_core_utils/prompt_templates/factory.py
-func convertToBedrockToolCallResult(msg chatMessage) *bedrock.ContentBlock {
-	// Extract content string
+func convertToBedrockToolCallResult(msg chatMessage) (*bedrock.ContentBlock, error) {
+	var contentBlocks []*bedrock.ToolResultContentBlock
+
 	var contentStr string
 	if msg.IsStringContent() {
 		contentStr = msg.StringContent()
+		contentBlocks = append(contentBlocks, &bedrock.ToolResultContentBlock{
+			Text: &contentStr,
+		})
 	} else {
 		// Handle array content
 		parsedContent := msg.ParseContent()
 		for _, part := range parsedContent {
-			if part.Type == contentTypeText {
-				contentStr += part.Text
+			switch part.Type {
+			case contentTypeText:
+				contentBlocks = append(contentBlocks, &bedrock.ToolResultContentBlock{
+					Text: &part.Text,
+				})
+			case contentTypeImageUrl:
+				imageBlock, err := bedrock.ProcessImage(part.ImageUrl.Url, "")
+				if err != nil {
+					return nil, fmt.Errorf("failed to process image URL: %w", err)
+				}
+				if imageBlock.Image != nil {
+					contentBlocks = append(contentBlocks, &bedrock.ToolResultContentBlock{
+						Image: imageBlock.Image,
+					})
+				} else {
+					log.Debugf("[bedrock] imageBlock.Image is nil for URL: %s", part.ImageUrl.Url)
+				}
+			default:
+
 			}
 		}
 	}
@@ -643,12 +667,10 @@ func convertToBedrockToolCallResult(msg chatMessage) *bedrock.ContentBlock {
 
 	return &bedrock.ContentBlock{
 		ToolResult: &bedrock.ToolResultBlock{
-			Content: []*bedrock.ToolResultContentBlock{
-				{Text: &contentStr},
-			},
+			Content:   contentBlocks,
 			ToolUseID: toolUseID,
 		},
-	}
+	}, nil
 }
 
 // transformSystemMessage extracts system messages from the message list and converts them to SystemContentBlocks.
