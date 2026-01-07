@@ -16,6 +16,7 @@ package main
 
 import (
 	"fmt"
+	"maps"
 	"net"
 	"net/url"
 	"strconv"
@@ -74,6 +75,14 @@ const (
 	RateLimitResetHeader = "X-TokenRateLimit-Reset" // 限流重置时间（触发限流时返回）
 
 	TokenRateLimitCount = "token_ratelimit_count" // metric name
+
+	LogKey               = "rate_limit_log"
+	UserAttrKeyKey       = "tpx_key"
+	UserAttrThresholdKey = "tpx_threshold"
+	UserAttrIntervalKey  = "tpx_interval"
+	UserAttrResultKey    = "tpx_result"
+	UserAttrRemainingKey = "tpx_remaining"
+	UserAttrUsageKey     = "tpx_usage"
 )
 
 type LimitContext struct {
@@ -148,14 +157,31 @@ func onHttpRequestHeaders(ctx wrapper.HttpContext, cfg config.AiTokenRateLimitCo
 		window: timeWindow,
 	})
 
+	ctx.SetUserAttribute(UserAttrKeyKey, limitKey)
+	ctx.SetUserAttribute(UserAttrThresholdKey, count)
+	ctx.SetUserAttribute(UserAttrIntervalKey, timeWindow)
+
+	defer func() {
+		_ = ctx.WriteUserAttributeToLogWithKey(LogKey)
+	}()
+
 	// 执行限流逻辑
 	keys := []interface{}{limitKey}
 	args := []interface{}{count, timeWindow}
 	err := cfg.RedisClient.Eval(RequestPhaseFixedWindowScript, 1, keys, args, func(response resp.Value) {
+		defer func() {
+			_ = ctx.WriteUserAttributeToLogWithKey(LogKey)
+		}()
+
 		resultArray := response.Array()
 		if len(resultArray) != 3 {
+			// Server connection error is also possible to reach here, so we log it as error level.
+			// response = "cannot connect to redis cluster"
+
+			ctx.SetUserAttribute(UserAttrResultKey, "resp_error")
+
 			log.Errorf("redis response parse error, response: %v", response)
-			proxywasm.ResumeHttpRequest()
+			_ = proxywasm.ResumeHttpRequest()
 			return
 		}
 		context := LimitContext{
@@ -163,16 +189,17 @@ func onHttpRequestHeaders(ctx wrapper.HttpContext, cfg config.AiTokenRateLimitCo
 			remaining: resultArray[1].Integer(),
 			reset:     resultArray[2].Integer(),
 		}
+		ctx.SetUserAttribute(UserAttrRemainingKey, context.remaining)
 		if context.remaining < 0 {
-			// 触发限流
-			ctx.SetUserAttribute("token_ratelimit_status", "limited")
-			ctx.WriteUserAttributeToLogWithKey(wrapper.AILogKey)
+			ctx.SetUserAttribute(UserAttrResultKey, "reject")
 			rejected(cfg, context)
 		} else {
-			proxywasm.ResumeHttpRequest()
+			ctx.SetUserAttribute(UserAttrResultKey, "pass")
+			_ = proxywasm.ResumeHttpRequest()
 		}
 	})
 	if err != nil {
+		ctx.SetUserAttribute(UserAttrResultKey, "call_error")
 		log.Errorf("redis call failed: %v", err)
 		return types.ActionContinue
 	}
@@ -180,22 +207,35 @@ func onHttpRequestHeaders(ctx wrapper.HttpContext, cfg config.AiTokenRateLimitCo
 }
 
 func onHttpStreamingBody(ctx wrapper.HttpContext, cfg config.AiTokenRateLimitConfig, data []byte, endOfStream bool) []byte {
+	// `tokenusage.GetTokenUsage` call will write user attribute map, which we don't need them at all.
+	// So we need to save and restore it afterward.
+	userAttrMap := maps.Clone(ctx.GetUserAttributeMap())
+	// TODO: Major issue here. The token usage calculation logic won't work if the chunked response body doesn't contain
+	// TODO: the complete JSON object with the `usage` property.
 	if usage := tokenusage.GetTokenUsage(ctx, data); usage.TotalToken > 0 {
-		ctx.SetContext(tokenusage.CtxKeyInputToken, usage.InputToken)
-		ctx.SetContext(tokenusage.CtxKeyOutputToken, usage.OutputToken)
+		ctx.SetContext(tokenusage.CtxKeyTotalToken, usage.TotalToken)
 	}
+	ctx.SetUserAttributeMap(userAttrMap)
+
 	if endOfStream {
-		if ctx.GetContext(tokenusage.CtxKeyInputToken) == nil || ctx.GetContext(tokenusage.CtxKeyOutputToken) == nil {
+		if ctx.GetContext(tokenusage.CtxKeyTotalToken) == nil {
 			return data
 		}
-		inputToken := ctx.GetContext(tokenusage.CtxKeyInputToken).(int64)
-		outputToken := ctx.GetContext(tokenusage.CtxKeyOutputToken).(int64)
+		totalToken := ctx.GetContext(tokenusage.CtxKeyTotalToken).(int64)
 		limitRedisContext, ok := ctx.GetContext(LimitRedisContextKey).(LimitRedisContext)
 		if !ok {
 			return data
 		}
+
+		defer func() {
+			_ = ctx.WriteUserAttributeToLogWithKey(LogKey)
+		}()
+
+		usage := totalToken
+		ctx.SetUserAttribute(UserAttrUsageKey, usage)
+
 		keys := []interface{}{limitRedisContext.key}
-		args := []interface{}{limitRedisContext.count, limitRedisContext.window, inputToken + outputToken}
+		args := []interface{}{limitRedisContext.count, limitRedisContext.window, usage}
 		err := cfg.RedisClient.Eval(ResponsePhaseFixedWindowScript, 1, keys, args, nil)
 		if err != nil {
 			log.Errorf("redis call failed: %v", err)
