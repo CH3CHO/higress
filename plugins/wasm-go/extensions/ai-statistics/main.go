@@ -46,6 +46,9 @@ const (
 	ConsumerKey                            = "x-mse-consumer"
 	RequestPath                            = "request_path"
 	SkipProcessing                         = "skip_processing"
+	LogRawResponseBody                     = "log_raw_response_body"
+	StreamingResponseBodyLogged            = "streaming_response_body_logged"
+	StreamEventFoundInResponseBody         = "stream_event_found_in_response_body"
 	SkipStreamingRequestBodyLogProcessing  = "skip_streaming_request_body_log_processing"
 	SkipStreamingResponseBodyLogProcessing = "skip_streaming_response_body_log_processing"
 
@@ -414,7 +417,7 @@ func onHttpRequestHeaders(ctx wrapper.HttpContext, config AIStatisticsConfig) ty
 	// Set user defined log & span attributes which type is request_header
 	setAttributeBySource(ctx, config, RequestHeader, nil)
 
-	if wrapper.HasRequestBody() {
+	if ctx.HasRequestBody() {
 		if contentType, _ := proxywasm.GetHttpRequestHeader("content-type"); strings.Contains(contentType, "json") {
 			// For non-JSON content types, we don't buffer the body here.
 			// Just process it in onHttpStreamingRequestBody.
@@ -578,15 +581,10 @@ func onHttpResponseHeaders(ctx wrapper.HttpContext, config AIStatisticsConfig) t
 		ctx.BufferResponseBody()
 	} else if strings.Contains(contentType, "text/event-stream") {
 		// Do nothing, streaming body will be processed in onHttpStreamingResponseBody
+		setResponseType(ctx, ResponseTypeStream, false)
 	} else {
-		if status, _ := proxywasm.GetHttpResponseHeader(":status"); status == "200" {
-			// For other content types, skip processing for successful responses
-			ctx.SetContext(SkipProcessing, true)
-			ctx.DontReadResponseBody()
-		} else {
-			// For error responses, buffer body for a full response body logging
-			ctx.BufferResponseBody()
-		}
+		// Other content types, just log the raw response body
+		ctx.SetContext(LogRawResponseBody, true)
 	}
 
 	// Set user defined log & span attributes.
@@ -601,38 +599,36 @@ func onHttpStreamingResponseBody(ctx wrapper.HttpContext, config AIStatisticsCon
 		return data
 	}
 
-	setResponseType(ctx, ResponseTypeStream, false)
-	if chatID := wrapper.GetValueFromBody(data, []string{
-		"id",
-		"response.id",
-		"responseId", // Gemini generateContent
-		"message.id", // anthropic messages
-	}); chatID != nil {
-		ctx.SetUserAttribute(ChatID, chatID.String())
-	}
-
 	// Get requestStartTime from http context
-	requestStartTime, ok := ctx.GetContext(StatisticsRequestStartTime).(int64)
-	if !ok {
-		log.Error("failed to get requestStartTime from http context")
-		return data
-	}
+	requestStartTime, _ := ctx.GetContext(StatisticsRequestStartTime).(int64)
 
-	// If this is the first chunk, record first token duration metric and span attribute
-	if ctx.GetContext(StatisticsFirstTokenTime) == nil {
-		firstTokenTime := time.Now().UnixMilli()
-		ctx.SetContext(StatisticsFirstTokenTime, firstTokenTime)
-		ctx.SetUserAttribute(LLMFirstTokenDuration, firstTokenTime-requestStartTime)
-	}
+	if !ctx.GetBoolContext(LogRawResponseBody, false) {
+		// there is no need for attribute extraction when raw logging is enabled
+		if chatID := wrapper.GetValueFromBody(data, []string{
+			"id",
+			"response.id",
+			"responseId", // Gemini generateContent
+			"message.id", // anthropic messages
+		}); chatID != nil {
+			ctx.SetUserAttribute(ChatID, chatID.String())
+		}
 
-	// Set information about this request
-	if !config.disableOpenaiUsage {
-		if usage := tokenusage.GetTokenUsage(ctx, data); usage.TotalToken > 0 {
-			// Set span attributes for ARMS.
-			setSpanAttribute(ArmsTotalToken, usage.TotalToken)
-			setSpanAttribute(ArmsModelName, usage.Model)
-			setSpanAttribute(ArmsInputToken, usage.InputToken)
-			setSpanAttribute(ArmsOutputToken, usage.OutputToken)
+		// If this is the first chunk, record first token duration metric and span attribute
+		if requestStartTime > 0 && ctx.GetContext(StatisticsFirstTokenTime) == nil {
+			firstTokenTime := time.Now().UnixMilli()
+			ctx.SetContext(StatisticsFirstTokenTime, firstTokenTime)
+			ctx.SetUserAttribute(LLMFirstTokenDuration, firstTokenTime-requestStartTime)
+		}
+
+		// Set information about this request
+		if !config.disableOpenaiUsage {
+			if usage := tokenusage.GetTokenUsage(ctx, data); usage.TotalToken > 0 {
+				// Set span attributes for ARMS.
+				setSpanAttribute(ArmsTotalToken, usage.TotalToken)
+				setSpanAttribute(ArmsModelName, usage.Model)
+				setSpanAttribute(ArmsInputToken, usage.InputToken)
+				setSpanAttribute(ArmsOutputToken, usage.OutputToken)
+			}
 		}
 	}
 
@@ -640,15 +636,23 @@ func onHttpStreamingResponseBody(ctx wrapper.HttpContext, config AIStatisticsCon
 
 	// If the end of the stream is reached, record metrics/logs/spans.
 	if endOfStream {
-		responseEndTime := time.Now().UnixMilli()
-		ctx.SetUserAttribute(LLMServiceDuration, responseEndTime-requestStartTime)
+		if requestStartTime > 0 {
+			responseEndTime := time.Now().UnixMilli()
+			ctx.SetUserAttribute(LLMServiceDuration, responseEndTime-requestStartTime)
+		}
 
 		// Write log
 		_ = ctx.WriteUserAttributeToLogWithKey(wrapper.AILogKey)
 
 		// Write metrics
 		writeMetric(ctx, config)
+	} else if !ctx.GetBoolContext(StreamingResponseBodyLogged, false) {
+		// For streaming response, we only log once when the first non-empty streaming body chunk is received,
+		// to avoid missing logs in case of stream interruption.
+		ctx.SetContext(StreamingResponseBodyLogged, true)
+		_ = ctx.WriteUserAttributeToLogWithKey(wrapper.AILogKey)
 	}
+
 	return data
 }
 
@@ -744,11 +748,28 @@ func setResponseType(ctx wrapper.HttpContext, responseType string, overwrite boo
 
 func setAttributeBySource(ctx wrapper.HttpContext, config AIStatisticsConfig, source string, body []byte) {
 	streamingEvents := make([]StreamEvent, 0)
+
 	if source == ResponseStreamingBody {
-		log.Debugf("parsing streaming body chunks for attribute extraction")
-		// get buffered streaming body chunks for one-time to reduce memory footprint.
-		streamingEvents = ExtractStreamingEvents(ctx, body)
-		combineStreamingEventsForLog(ctx, &config, streamingEvents)
+		logRawResponseBody := ctx.GetBoolContext(LogRawResponseBody, false)
+
+		if !logRawResponseBody {
+			// for a potential streaming body, we need to extract streaming events first for attribute extraction
+			log.Debugf("parsing streaming body chunks for attribute extraction")
+			// get buffered streaming body chunks for one-time to reduce memory footprint.
+			streamingEvents = ExtractStreamingEvents(ctx, body)
+			combineStreamingEventsForLog(ctx, &config, streamingEvents)
+		}
+
+		if !ctx.GetBoolContext(StreamEventFoundInResponseBody, false) {
+			// as long as no streaming event hasn't been found in the response body,
+			// we can directly use the raw response body for logging just in case that the body isn't a streaming one.
+			appendRawStreamingResponseBodyToLog(ctx, &config, body)
+		}
+
+		if logRawResponseBody {
+			// skip attribute extraction from streaming body when just logging raw response body
+			return
+		}
 	}
 
 	for _, attribute := range config.attributes {
@@ -802,10 +823,32 @@ func setAttributeBySource(ctx wrapper.HttpContext, config AIStatisticsConfig, so
 	}
 }
 
+func appendRawStreamingResponseBodyToLog(ctx wrapper.HttpContext, config *AIStatisticsConfig, body []byte) {
+	if ctx.GetContext(SkipStreamingResponseBodyLogProcessing) != nil {
+		log.Debugf("skipping streaming response body log processing as per context flag")
+		return
+	}
+	responseBody, _ := ctx.GetUserAttribute(ResponseBody).(string)
+	responseBody += string(body)
+	// use a smaller limit for raw appending since it may contain binary data which needs more space after encoding
+	responseBodyLengthLimit := config.responseBodyLengthLimit / 5
+	if len(responseBody) > responseBodyLengthLimit {
+		responseBody = responseBody[:responseBodyLengthLimit] + "[truncated]"
+		ctx.SetContext(SkipStreamingResponseBodyLogProcessing, true)
+	}
+	ctx.SetUserAttribute(ResponseBody, responseBody)
+}
+
 func combineStreamingEventsForLog(ctx wrapper.HttpContext, config *AIStatisticsConfig, events []StreamEvent) {
 	log.Debugf("adding %d streaming events to the full response body for log", len(events))
 	if events == nil || len(events) == 0 {
 		return
+	}
+
+	if !ctx.GetBoolContext(StreamEventFoundInResponseBody, false) {
+		ctx.SetContext(StreamEventFoundInResponseBody, true)
+		// reset response body for combining
+		ctx.SetUserAttribute(ResponseBody, "")
 	}
 
 	if ctx.GetContext(SkipStreamingResponseBodyLogProcessing) != nil {
