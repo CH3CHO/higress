@@ -745,11 +745,6 @@ func calculateVertexUsage(usageMetadata *vertex.UsageMetadata) *usage {
 		completionTokens = usageMetadata.CandidatesTokenCount
 	}
 
-	// Check if candidate token count is inclusive
-	if !isVertexCandidateTokenCountInclusive(usageMetadata) && reasoningTokens != nil {
-		completionTokens = *reasoningTokens + completionTokens
-	}
-
 	// based on litellm's Usage __init__, adjust text tokens in completion details
 	if reasoningTokens != nil {
 		textTokensAdjusted := completionTokens - *reasoningTokens
@@ -776,16 +771,6 @@ func calculateVertexUsage(usageMetadata *vertex.UsageMetadata) *usage {
 	}
 
 	return result
-}
-
-// isVertexCandidateTokenCountInclusive checks if the candidate token count is inclusive of the thinking token count
-// If promptTokenCount + candidatesTokenCount == totalTokenCount, then the candidate token count is inclusive
-// Addresses - https://github.com/BerriAI/litellm/pull/10141#discussion_r2052272035
-func isVertexCandidateTokenCountInclusive(usageMetadata *vertex.UsageMetadata) bool {
-	if usageMetadata == nil {
-		return false
-	}
-	return usageMetadata.PromptTokenCount+usageMetadata.CandidatesTokenCount == usageMetadata.TotalTokenCount
 }
 
 // mapThinkingParam maps Claude-style thinking parameter to Vertex AI ThinkingConfig.
