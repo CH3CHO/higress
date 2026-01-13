@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/alibaba/higress/plugins/wasm-go/extensions/ai-proxy/util"
+	"github.com/google/uuid"
 	"github.com/tidwall/sjson"
 )
 
@@ -391,7 +392,7 @@ func createBedrockBlock(imageBytes string, mimeType string, imageFormat string) 
 		return &ContentBlock{
 			Document: &DocumentBlock{
 				Format: imageFormat,
-				Name:   "document",
+				Name:   fmt.Sprintf("DocumentPDFmessages_%s", uuid.New().String()),
 				Source: blob,
 			},
 		}
@@ -439,9 +440,12 @@ func ProcessImage(imageURL string, format string) (*ContentBlock, error) {
 
 	// Override with user-defined format if provided
 	if format != "" {
-		mimeType = format
-		// Extract format from mime type (e.g., "image/jpeg" -> "jpeg")
-		imageFormat = strings.Split(imageURL, "/")[1]
+		parts := strings.Split(imageURL, "/")
+		if len(parts) > 1 {
+			mimeType = format
+			// Extract format from mime type (e.g., "image/jpeg" -> "jpeg")
+			imageFormat = parts[1]
+		}
 	}
 
 	// Validate format
@@ -456,8 +460,6 @@ func ProcessImage(imageURL string, format string) (*ContentBlock, error) {
 }
 
 // ProcessFileContent converts file content to Bedrock ContentBlock format.
-// It determines whether the content is an image or document based on mime type,
-// and returns the appropriate ContentBlock.
 //
 // This function corresponds to BedrockImageProcessor._process_file_message in Python's litellm:
 // litellm/litellm_core_utils/prompt_templates/factory.py
@@ -474,62 +476,11 @@ func ProcessFileContent(fileData string, fileId string, format string) (*Content
 		return nil, util.BadRequest("file_data and file_id cannot both be empty")
 	}
 
-	// Use fileId if present, otherwise use fileData
-	content := fileId
-	if content == "" {
-		content = fileData
+	data := fileId
+	if data == "" {
+		data = fileData
 	}
-
-	var data string
-	var mimeType string
-	var fileFormat string
-
-	// Check if it's a base64 data URL (matching Python's: if "base64" in image_url)
-	if strings.Contains(content, "base64") {
-		info := util.ParseBase64Image(content)
-		if info == nil {
-			return nil, fmt.Errorf("failed to parse base64 data URL")
-		}
-		data = info.Data
-		fileFormat = info.Format
-		mimeType = info.MimeType
-	} else if strings.Contains(content, "http://") || strings.Contains(content, "https://") {
-		return nil, fmt.Errorf("HTTP/HTTPS URLs are not yet supported")
-	}
-
-	// Assume it's raw base64 data
-	data = content
-	fileFormat = format
-	if fileFormat == "" {
-		fileFormat = "png" // default to image
-	}
-
-	fileType, err := util.GetFileTypeFromExtension(fileFormat)
-	if err != nil {
-		return nil, err
-	}
-	mimeType = util.GetFileMimeTypeForFileType(fileType)
-
-	source := SourceBlock{Bytes: &data}
-
-	// Determine if it's a document or image based on mime type
-	if isDocumentMimeType(mimeType) {
-		return &ContentBlock{
-			Document: &DocumentBlock{
-				Format: fileFormat,
-				Name:   "document",
-				Source: source,
-			},
-		}, nil
-	}
-
-	// Default to image
-	return &ContentBlock{
-		Image: &ImageBlock{
-			Format: fileFormat,
-			Source: source,
-		},
-	}, nil
+	return ProcessImage(data, format)
 }
 
 // DeepCopyMap creates a deep copy of a map using JSON marshal/unmarshal
