@@ -908,6 +908,7 @@ func combineStreamingChoice(body string, choiceIndex int, choice *gjson.Result) 
 
 	body = combineStreamingStringField(body, choicePath+".delta.content", choice, "delta.content")
 	body = combineStreamingStringField(body, choicePath+".delta.reasoning_content", choice, "delta.reasoning_content")
+	body = combineStreamingStringField(body, choicePath+".text", choice, "text") // for /v1/completions api
 	body = combineStreamingChoiceToolCalls(body, choiceIndex, choice)
 	return body
 }
