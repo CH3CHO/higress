@@ -685,7 +685,7 @@ func transformSystemMessage(messages []chatMessage) ([]chatMessage, []*bedrock.S
 	var systemBlocks []*bedrock.SystemContentBlock
 
 	for _, msg := range messages {
-		if msg.Role == roleSystem {
+		if msg.Role == roleSystem || msg.Role == roleDeveloper {
 			// Extract system content
 			if msg.IsStringContent() {
 				content := msg.StringContent()
