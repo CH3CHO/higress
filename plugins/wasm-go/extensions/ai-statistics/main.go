@@ -51,12 +51,15 @@ const (
 	StreamEventFoundInResponseBody         = "stream_event_found_in_response_body"
 	SkipStreamingRequestBodyLogProcessing  = "skip_streaming_request_body_log_processing"
 	SkipStreamingResponseBodyLogProcessing = "skip_streaming_response_body_log_processing"
+	IsSseResponse                          = "is_sse_response"
+	SseStreamStopped                       = "sse_stream_stopped"
+	NeedDropAdditionalUsageChunk           = "need_drop_additional_usage_chunk"
 
 	// AI API Paths
-	PathOpenAIChatCompletions       = "/v1/chat/completions"
-	PathOpenAICompletions           = "/v1/completions"
-	PathOpenAIEmbeddings            = "/v1/embeddings"
-	PathOpenAIModels                = "/v1/models"
+	PathOpenAIChatCompletions       = "/chat/completions"
+	PathOpenAICompletions           = "/completions"
+	PathOpenAIEmbeddings            = "/embeddings"
+	PathOpenAIModels                = "/models"
 	PathGeminiGenerateContent       = "/generateContent"
 	PathGeminiStreamGenerateContent = "/streamGenerateContent"
 
@@ -132,6 +135,10 @@ var (
 	bodyToLongPlaceholder = "too-long"
 	redactedPlaceholder   = []byte("[REDACTED]")
 	bodyRedactingOptions  = &sjson.Options{Optimistic: true, ReplaceInPlace: false}
+
+	pathSuffixesNeedDropAdditionalUsageChunk = []string{
+		PathOpenAIChatCompletions,
+	}
 )
 
 // TracingSpan is the tracing span configuration.
@@ -413,9 +420,9 @@ func onHttpRequestHeaders(ctx wrapper.HttpContext, config AIStatisticsConfig) ty
 	// Set span attributes for ARMS.
 	setSpanAttribute(ArmsSpanKind, "LLM")
 	// Set user defined log & span attributes which type is fixed_value
-	setAttributeBySource(ctx, config, FixedValue, nil)
+	setAttributeBySource(ctx, config, FixedValue, nil, nil)
 	// Set user defined log & span attributes which type is request_header
-	setAttributeBySource(ctx, config, RequestHeader, nil)
+	setAttributeBySource(ctx, config, RequestHeader, nil, nil)
 
 	if ctx.HasRequestBody() {
 		if contentType, _ := proxywasm.GetHttpRequestHeader("content-type"); strings.Contains(contentType, "json") {
@@ -482,7 +489,7 @@ func onHttpRequestBody(ctx wrapper.HttpContext, config AIStatisticsConfig, body 
 	ctx.SetUserAttribute(RequestBody, getRequestBodyToLog(body, &config))
 
 	// Set user defined log & span attributes.
-	setAttributeBySource(ctx, config, RequestBody, body)
+	setAttributeBySource(ctx, config, RequestBody, body, nil)
 	// Set span attributes for ARMS.
 	requestModel := "UNKNOWN"
 	if model := gjson.GetBytes(body, "model"); model.Exists() {
@@ -526,6 +533,9 @@ func onHttpRequestBody(ctx wrapper.HttpContext, config AIStatisticsConfig, body 
 
 	// Write log
 	_ = ctx.WriteUserAttributeToLogWithKey(wrapper.AILogKey)
+
+	markForResponsePostProcesses(ctx, body)
+
 	return types.ActionContinue
 }
 
@@ -582,13 +592,14 @@ func onHttpResponseHeaders(ctx wrapper.HttpContext, config AIStatisticsConfig) t
 	} else if strings.Contains(contentType, "text/event-stream") {
 		// Do nothing, streaming body will be processed in onHttpStreamingResponseBody
 		setResponseType(ctx, ResponseTypeStream, false)
+		ctx.SetContext(IsSseResponse, true)
 	} else {
 		// Other content types, just log the raw response body
 		ctx.SetContext(LogRawResponseBody, true)
 	}
 
 	// Set user defined log & span attributes.
-	setAttributeBySource(ctx, config, ResponseHeader, nil)
+	setAttributeBySource(ctx, config, ResponseHeader, nil, nil)
 
 	return types.ActionContinue
 }
@@ -632,7 +643,13 @@ func onHttpStreamingResponseBody(ctx wrapper.HttpContext, config AIStatisticsCon
 		}
 	}
 
-	setAttributeBySource(ctx, config, ResponseStreamingBody, data)
+	var streamEvents []StreamEvent
+	if ctx.GetBoolContext(IsSseResponse, false) {
+		streamEvents = ExtractStreamingEvents(ctx, data)
+	}
+	setAttributeBySource(ctx, config, ResponseStreamingBody, data, streamEvents)
+
+	data = postProcessResponseData(ctx, config, data, streamEvents)
 
 	// If the end of the stream is reached, record metrics/logs/spans.
 	if endOfStream {
@@ -692,7 +709,7 @@ func onHttpResponseBody(ctx wrapper.HttpContext, config AIStatisticsConfig, body
 	ctx.SetUserAttribute(ResponseBody, getResponseBodyToLog(body, &config))
 
 	// Set user defined log & span attributes.
-	setAttributeBySource(ctx, config, ResponseBody, body)
+	setAttributeBySource(ctx, config, ResponseBody, body, nil)
 
 	// Write log
 	_ = ctx.WriteUserAttributeToLogWithKey(wrapper.AILogKey)
@@ -746,7 +763,7 @@ func setResponseType(ctx wrapper.HttpContext, responseType string, overwrite boo
 
 // fetches the tracing span value from the specified source.
 
-func setAttributeBySource(ctx wrapper.HttpContext, config AIStatisticsConfig, source string, body []byte) {
+func setAttributeBySource(ctx wrapper.HttpContext, config AIStatisticsConfig, source string, body []byte, streamEvents []StreamEvent) {
 	streamingEvents := make([]StreamEvent, 0)
 
 	if source == ResponseStreamingBody {
@@ -1010,6 +1027,76 @@ func setSpanAttribute(key string, value interface{}) {
 	} else {
 		log.Debugf("failed to write span attribute [%s], because it's value is empty", key)
 	}
+}
+
+func markForResponsePostProcesses(ctx wrapper.HttpContext, requestBody []byte) {
+	path := ctx.Path()
+	for _, suffix := range pathSuffixesNeedDropAdditionalUsageChunk {
+		if !strings.HasSuffix(path, suffix) {
+			continue
+		}
+		if includeUsage := gjson.GetBytes(requestBody, "stream_options.include_usage").Bool(); !includeUsage {
+			// If the request doesn't have stream_options.include_usage enabled,
+			// we shall drop the additional usage chunk in response streaming body
+			// to prevent potential errors on client side caused by the empty choices array.
+			ctx.SetContext(NeedDropAdditionalUsageChunk, true)
+		}
+		break
+	}
+}
+
+func postProcessResponseData(ctx wrapper.HttpContext, config AIStatisticsConfig, data []byte, events []StreamEvent) (outputData []byte) {
+	outputData = data
+
+	// Drop additional usage chunk if needed
+	if ctx.GetBoolContext(NeedDropAdditionalUsageChunk, false) && len(events) > 0 {
+		changed := false
+		for i := 0; i < len(events); i++ {
+			event := events[i]
+			log.Debugf("response streaming event %d: %s", i, event.Data)
+			if !ctx.GetBoolContext(SseStreamStopped, false) {
+				if isStopEvent(&event) {
+					log.Debugf("found stop event in response streaming body: %s", event.Data)
+					ctx.SetContext(SseStreamStopped, true)
+				}
+			} else if isAdditionalUsageChunk(&event) {
+				// Remove the event
+				log.Debugf("dropping additional usage chunk in response streaming body: %s", event.Data)
+				events = append(events[:i], events[i+1:]...)
+				i-- // adjust index after removal
+				changed = true
+			}
+
+		}
+		if changed {
+			// reconstruct the data
+			var reconstructedData strings.Builder
+			for _, event := range events {
+				reconstructedData.WriteString(event.ToHttpString())
+			}
+			outputData = []byte(reconstructedData.String())
+		}
+	}
+
+	return
+}
+
+func isStopEvent(event *StreamEvent) bool {
+	if event == nil {
+		return false
+	}
+	finishReason := gjson.Get(event.Data, "choices.0.finish_reason")
+	return finishReason.Exists() && finishReason.String() != ""
+}
+
+func isAdditionalUsageChunk(event *StreamEvent) bool {
+	if event == nil {
+		return false
+	}
+	if choiceCount := gjson.Get(event.Data, "choices.#").Int(); choiceCount != 0 {
+		return false
+	}
+	return gjson.Get(event.Data, "usage").Exists()
 }
 
 func writeMetric(ctx wrapper.HttpContext, config AIStatisticsConfig) {
