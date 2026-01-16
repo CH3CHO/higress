@@ -40,6 +40,8 @@ func transformToBedrockConverseRequest(request *chatCompletionRequest, opts *bed
 
 	out.System = systemContentBlocks
 
+	fixChatMessages(messages)
+
 	// VALIDATE REQUEST: Bedrock doesn't support tool calling without `tools=` param specified.
 	if len(messages) > 0 && hasToolCallMessage(messages) && len(request.Tools) == 0 {
 		return nil, false, util.BadRequest("bedrock doesn't support tool calling without `tools=` param specified. Pass `tools=` param")
@@ -703,18 +705,27 @@ func transformSystemMessage(messages []chatMessage) ([]chatMessage, []*bedrock.S
 			} else {
 				// Handle array content
 				parsedContent := msg.ParseContent()
+
+				contentText := ""
+				hasCacheControl := false
 				for _, part := range parsedContent {
 					if part.Type == contentTypeText && part.Text != "" {
-						text := part.Text
-						systemBlocks = append(systemBlocks, &bedrock.SystemContentBlock{
-							Text: &text,
-						})
-						// Add cache point if cache_control is present on content block
+						contentText += part.Text
 						if part.CacheControl != nil {
-							systemBlocks = append(systemBlocks, &bedrock.SystemContentBlock{
-								CachePoint: &bedrock.CachePointBlock{Type: "default"},
-							})
+							// Add cache point if cache_control is present on content block
+							hasCacheControl = true
 						}
+					}
+				}
+
+				if contentText != "" {
+					systemBlocks = append(systemBlocks, &bedrock.SystemContentBlock{
+						Text: &contentText,
+					})
+					if hasCacheControl {
+						systemBlocks = append(systemBlocks, &bedrock.SystemContentBlock{
+							CachePoint: &bedrock.CachePointBlock{Type: "default"},
+						})
 					}
 				}
 			}
