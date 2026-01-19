@@ -705,27 +705,18 @@ func transformSystemMessage(messages []chatMessage) ([]chatMessage, []*bedrock.S
 			} else {
 				// Handle array content
 				parsedContent := msg.ParseContent()
-
-				contentText := ""
-				hasCacheControl := false
 				for _, part := range parsedContent {
 					if part.Type == contentTypeText && part.Text != "" {
-						contentText += part.Text
-						if part.CacheControl != nil {
-							// Add cache point if cache_control is present on content block
-							hasCacheControl = true
-						}
-					}
-				}
-
-				if contentText != "" {
-					systemBlocks = append(systemBlocks, &bedrock.SystemContentBlock{
-						Text: &contentText,
-					})
-					if hasCacheControl {
+						text := part.Text
 						systemBlocks = append(systemBlocks, &bedrock.SystemContentBlock{
-							CachePoint: &bedrock.CachePointBlock{Type: "default"},
+							Text: &text,
 						})
+						// Add cache point if cache_control is present on content block
+						if part.CacheControl != nil {
+							systemBlocks = append(systemBlocks, &bedrock.SystemContentBlock{
+								CachePoint: &bedrock.CachePointBlock{Type: "default"},
+							})
+						}
 					}
 				}
 			}
