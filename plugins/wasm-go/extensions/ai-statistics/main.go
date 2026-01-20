@@ -34,6 +34,14 @@ func init() {
 	)
 }
 
+type ApiName string
+
+const (
+	ApiNameUndetermined    ApiName = "undetermined"
+	ApiNameChatCompletions         = "chat_completions"
+	ApiNameCompletions             = "completions"
+)
+
 const (
 	defaultMaxBodyBytes uint32 = 100 * 1024 * 1024
 
@@ -54,6 +62,7 @@ const (
 	IsSseResponse                          = "is_sse_response"
 	SseStreamStopped                       = "sse_stream_stopped"
 	NeedDropAdditionalUsageChunk           = "need_drop_additional_usage_chunk"
+	RequestApiName                         = "request_api_name"
 
 	// AI API Paths
 	PathOpenAIChatCompletions       = "/chat/completions"
@@ -132,9 +141,9 @@ var (
 		},
 	}
 
-	bodyToLongPlaceholder = "too-long"
-	redactedPlaceholder   = []byte("[REDACTED]")
-	bodyRedactingOptions  = &sjson.Options{Optimistic: true, ReplaceInPlace: false}
+	bodyToLongPlaceholder      = "too long"
+	bodyToLongPlaceholderBytes = []byte(bodyToLongPlaceholder)
+	bodyRedactingOptions       = &sjson.Options{Optimistic: true, ReplaceInPlace: false}
 
 	pathSuffixesNeedDropAdditionalUsageChunk = []string{
 		PathOpenAIChatCompletions,
@@ -237,16 +246,10 @@ func (config *AIStatisticsConfig) incrementCounter(metricName string, inc uint64
 }
 
 // isPathEnabled checks if the request path matches any of the configured criteria
-func isPathEnabled(requestPath string, config *AIStatisticsConfig) bool {
+func isPathEnabled(pathWithoutQuery string, config *AIStatisticsConfig) bool {
 	enabledSuffixes := config.enablePathSuffixes
 	if len(enabledSuffixes) == 0 {
 		return true // If no path suffixes configured, enable for all
-	}
-
-	// Remove query parameters from path
-	pathWithoutQuery := requestPath
-	if queryPos := strings.Index(requestPath, "?"); queryPos != -1 {
-		pathWithoutQuery = requestPath[:queryPos]
 	}
 
 	// Check if path ends with any enabled suffix
@@ -388,6 +391,7 @@ func hasAttribute(attributes []Attribute, key string, source string) bool {
 func onHttpRequestHeaders(ctx wrapper.HttpContext, config AIStatisticsConfig) types.Action {
 	// Check if request path matches enabled suffixes
 	requestPath, _ := proxywasm.GetHttpRequestHeader(":path")
+	requestPath = strings.SplitN(requestPath, "?", 2)[0]
 	if !isPathEnabled(requestPath, &config) {
 		log.Debugf("ai-statistics: skipping request for path %s (not in enabled suffixes)", requestPath)
 		// Set skip processing flag and avoid reading request/response body
@@ -396,6 +400,14 @@ func onHttpRequestHeaders(ctx wrapper.HttpContext, config AIStatisticsConfig) ty
 		ctx.DontReadResponseBody()
 		return types.ActionContinue
 	}
+
+	apiName := ApiNameUndetermined
+	if strings.HasSuffix(requestPath, PathOpenAIChatCompletions) {
+		apiName = ApiNameChatCompletions
+	} else if strings.HasSuffix(requestPath, PathOpenAICompletions) {
+		apiName = ApiNameCompletions
+	}
+	ctx.SetContext(RequestApiName, apiName)
 
 	ctx.DisableReroute()
 	route, _ := getRouteName()
@@ -406,7 +418,7 @@ func onHttpRequestHeaders(ctx wrapper.HttpContext, config AIStatisticsConfig) ty
 	}
 	ctx.SetContext(RouteName, route)
 	ctx.SetContext(ClusterName, cluster)
-	ctx.SetUserAttribute(APIName, api)
+	ctx.SetUserAttribute(APIName, apiName)
 	ctx.SetContext(StatisticsRequestStartTime, time.Now().UnixMilli())
 	if requestPath, _ := proxywasm.GetHttpRequestHeader(":path"); requestPath != "" {
 		ctx.SetContext(RequestPath, requestPath)
@@ -486,7 +498,7 @@ func onHttpRequestBody(ctx wrapper.HttpContext, config AIStatisticsConfig, body 
 		return types.ActionContinue
 	}
 
-	ctx.SetUserAttribute(RequestBody, getRequestBodyToLog(body, &config))
+	ctx.SetUserAttribute(RequestBody, getRequestBodyToLog(ctx, body, &config))
 
 	// Set user defined log & span attributes.
 	setAttributeBySource(ctx, config, RequestBody, body, nil)
@@ -539,38 +551,110 @@ func onHttpRequestBody(ctx wrapper.HttpContext, config AIStatisticsConfig, body 
 	return types.ActionContinue
 }
 
-func getRequestBodyToLog(body []byte, config *AIStatisticsConfig) string {
-	if len(body) <= config.requestBodyLengthLimit {
+func getRequestBodyToLog(ctx wrapper.HttpContext, body []byte, config *AIStatisticsConfig) string {
+	requestBodyLengthLimit := config.requestBodyLengthLimit
+	if len(body) <= requestBodyLengthLimit {
 		return string(body)
 	}
-	redactedBody := body
-	log.Debugf("request body length %d exceeds limit %d, start redacting", len(redactedBody), config.requestBodyLengthLimit)
-	for _, itemsKey := range []string{
-		"messages", // /chat/completions requests
-		"input",    // /embeddings requests. this field can be an array of strings or a single string. For now, we only redact when it's an array.
-	} {
-		itemsLength := int(gjson.GetBytes(redactedBody, itemsKey+".#").Int())
-		if itemsLength <= 0 {
-			continue
+
+	apiName, _ := ctx.GetContext(RequestApiName).(ApiName)
+	log.Debugf("request body length %d exceeds limit %d, start redacting for api %s", len(body), config.requestBodyLengthLimit, apiName)
+	switch apiName {
+	case ApiNameChatCompletions:
+		return getRequestBodyToLogForChatCompletions(body, requestBodyLengthLimit)
+	case ApiNameCompletions:
+		return getRequestBodyToLogForCompletions(body, requestBodyLengthLimit)
+	default:
+		return bodyToLongPlaceholder
+	}
+}
+
+func getRequestBodyToLogForChatCompletions(body []byte, limit int) string {
+	if tools := gjson.GetBytes(body, "tools"); tools.Exists() {
+		log.Debugf("redacting request body 'tools' field, current length %d", len(body))
+		if redactedBody, err := sjson.SetBytesOptions(body, "tools", bodyToLongPlaceholderBytes, bodyRedactingOptions); err != nil {
+			log.Errorf("failed to redact request body 'tools' field: %v", err)
+		} else {
+			body = redactedBody
+			log.Debugf("redacted request body 'tools' field, new length %d", len(body))
+			if len(body) <= limit {
+				return string(body)
+			}
 		}
-		for i := itemsLength - 1; i >= 0; i-- {
-			itemPath := fmt.Sprintf("%s.%d", itemsKey, i)
-			log.Debugf("redacting request body at %s, current length %d", itemPath, len(redactedBody))
-			if newRedactedBody, err := sjson.SetBytesOptions(redactedBody, itemPath, redactedPlaceholder, bodyRedactingOptions); err != nil {
+	}
+
+	if responseFormat := gjson.GetBytes(body, "response_format"); responseFormat.Exists() {
+		log.Debugf("redacting request body 'response_format' field, current length %d", len(body))
+		if redactedBody, err := sjson.SetBytesOptions(body, "response_format", bodyToLongPlaceholderBytes, bodyRedactingOptions); err != nil {
+			log.Errorf("failed to redact request body 'response_format' field: %v", err)
+		} else {
+			body = redactedBody
+			log.Debugf("redacted request body 'response_format' field, new length %d", len(body))
+			if len(body) <= limit {
+				return string(body)
+			}
+		}
+	}
+
+	if messagesLength := int(gjson.GetBytes(body, "messages.#").Int()); messagesLength > 0 {
+		for i := 0; i < messagesLength; i++ {
+			itemPath := fmt.Sprintf("messages.%d", i)
+			log.Debugf("redacting request body at %s, current length %d", itemPath, len(body))
+			if redactedBody, err := sjson.SetBytesOptions(body, itemPath, bodyToLongPlaceholderBytes, bodyRedactingOptions); err != nil {
 				log.Errorf("failed to redact request body at %s: %v", itemPath, err)
 			} else {
-				redactedBody = newRedactedBody
+				body = redactedBody
 				log.Debugf("request body redacted at %s, new length %d", itemPath, len(redactedBody))
-				if len(redactedBody) <= config.requestBodyLengthLimit {
-					break
+				if len(redactedBody) <= limit {
+					return string(body)
 				}
 			}
 		}
 	}
-	if len(redactedBody) <= config.requestBodyLengthLimit {
-		return string(redactedBody)
+
+	return bodyToLongPlaceholder
+}
+
+func getRequestBodyToLogForCompletions(body []byte, limit int) string {
+	if tools := gjson.GetBytes(body, "tools"); tools.Exists() {
+		log.Debugf("redacting request body 'tools' field, current length %d", len(body))
+		if redactedBody, err := sjson.SetBytesOptions(body, "tools", bodyToLongPlaceholderBytes, bodyRedactingOptions); err != nil {
+			log.Errorf("failed to redact request body 'tools' field: %v", err)
+		} else {
+			body = redactedBody
+			log.Debugf("redacted request body 'tools' field, new length %d", len(body))
+			if len(body) <= limit {
+				return string(body)
+			}
+		}
 	}
-	log.Debugf("request body length after redacting still exceeds limit, set to placeholder")
+
+	if responseFormat := gjson.GetBytes(body, "response_format"); responseFormat.Exists() {
+		log.Debugf("redacting request body 'response_format' field, current length %d", len(body))
+		if redactedBody, err := sjson.SetBytesOptions(body, "response_format", bodyToLongPlaceholderBytes, bodyRedactingOptions); err != nil {
+			log.Errorf("failed to redact request body 'response_format' field: %v", err)
+		} else {
+			body = redactedBody
+			log.Debugf("redacted request body 'response_format' field, new length %d", len(body))
+			if len(body) <= limit {
+				return string(body)
+			}
+		}
+	}
+
+	if prompt := gjson.GetBytes(body, "prompt"); prompt.Exists() {
+		log.Debugf("redacting request body 'prompt' field, current length %d", len(body))
+		if redactedBody, err := sjson.SetBytesOptions(body, "prompt", bodyToLongPlaceholderBytes, bodyRedactingOptions); err != nil {
+			log.Errorf("failed to redact request body 'prompt' field: %v", err)
+		} else {
+			body = redactedBody
+			log.Debugf("redacted request body 'prompt' field, new length %d", len(body))
+			if len(body) <= limit {
+				return string(body)
+			}
+		}
+	}
+
 	return bodyToLongPlaceholder
 }
 
@@ -706,7 +790,7 @@ func onHttpResponseBody(ctx wrapper.HttpContext, config AIStatisticsConfig, body
 		}
 	}
 
-	ctx.SetUserAttribute(ResponseBody, getResponseBodyToLog(body, &config))
+	ctx.SetUserAttribute(ResponseBody, getResponseBodyToLog(ctx, body, &config))
 
 	// Set user defined log & span attributes.
 	setAttributeBySource(ctx, config, ResponseBody, body, nil)
@@ -720,39 +804,53 @@ func onHttpResponseBody(ctx wrapper.HttpContext, config AIStatisticsConfig, body
 	return types.ActionContinue
 }
 
-func getResponseBodyToLog(body []byte, config *AIStatisticsConfig) string {
-	if len(body) <= config.responseBodyLengthLimit {
+func getResponseBodyToLog(ctx wrapper.HttpContext, body []byte, config *AIStatisticsConfig) string {
+	responseBodyLengthLimit := config.responseBodyLengthLimit
+	if len(body) <= responseBodyLengthLimit {
 		return string(body)
 	}
-	redactedBody := body
-	log.Debugf("response body length %d exceeds limit %d, start redacting", len(redactedBody), config.responseBodyLengthLimit)
-	for _, itemsKey := range []string{
-		"choices", // /chat/completions responses
-		"data",    // /embeddings responses
-	} {
-		itemsLength := int(gjson.GetBytes(redactedBody, itemsKey+".#").Int())
-		if itemsLength <= 0 {
-			continue
-		}
-		for i := itemsLength - 1; i >= 0; i-- {
-			itemPath := fmt.Sprintf("%s.%d", itemsKey, i)
-			log.Debugf("redacting response body at %s, current length %d", itemPath, len(redactedBody))
-			if newRedactedBody, err := sjson.SetBytesOptions(redactedBody, itemPath, redactedPlaceholder, bodyRedactingOptions); err != nil {
+
+	apiName, _ := ctx.GetContext(RequestApiName).(ApiName)
+	log.Debugf("response body length %d exceeds limit %d, start redacting for api %s", len(body), config.requestBodyLengthLimit, apiName)
+	switch apiName {
+	case ApiNameChatCompletions, ApiNameCompletions:
+		return getResponseBodyToLogForCompletions(body, responseBodyLengthLimit)
+	default:
+		return bodyToLongPlaceholder
+	}
+}
+
+func getResponseBodyToLogForCompletions(body []byte, limit int) string {
+	if choicesLength := int(gjson.GetBytes(body, "choices.#").Int()); choicesLength > 0 {
+		for i := 0; i < choicesLength; i++ {
+			itemPath := fmt.Sprintf("choices.%d", i)
+			log.Debugf("redacting response body at %s, current length %d", itemPath, len(body))
+			if redactedBody, err := sjson.SetBytesOptions(body, itemPath, bodyToLongPlaceholderBytes, bodyRedactingOptions); err != nil {
 				log.Errorf("failed to redact response body at %s: %v", itemPath, err)
 			} else {
-				redactedBody = newRedactedBody
+				body = redactedBody
 				log.Debugf("response body redacted at %s, new length %d", itemPath, len(redactedBody))
-				if len(redactedBody) <= config.responseBodyLengthLimit {
-					break
+				if len(redactedBody) <= limit {
+					return string(redactedBody)
 				}
 			}
 		}
 	}
-	if len(redactedBody) <= config.responseBodyLengthLimit {
-		return string(redactedBody)
+
+	newBody := ""
+
+	if id := gjson.GetBytes(body, "id"); id.Exists() {
+		newBody, _ = sjson.SetRaw(newBody, "id", id.Raw)
+	} else {
+		newBody, _ = sjson.Set(newBody, "id", "")
 	}
-	log.Debugf("response body length after redacting still exceeds limit, set to placeholder")
-	return bodyToLongPlaceholder
+	if usage := gjson.GetBytes(body, "usage"); usage.Exists() {
+		newBody, _ = sjson.SetRaw(newBody, "usage", usage.Raw)
+	} else {
+		newBody, _ = sjson.SetRaw(newBody, "usage", "{}")
+	}
+
+	return newBody
 }
 
 func setResponseType(ctx wrapper.HttpContext, responseType string, overwrite bool) {
@@ -764,8 +862,6 @@ func setResponseType(ctx wrapper.HttpContext, responseType string, overwrite boo
 // fetches the tracing span value from the specified source.
 
 func setAttributeBySource(ctx wrapper.HttpContext, config AIStatisticsConfig, source string, body []byte, streamEvents []StreamEvent) {
-	streamingEvents := make([]StreamEvent, 0)
-
 	if source == ResponseStreamingBody {
 		logRawResponseBody := ctx.GetBoolContext(LogRawResponseBody, false)
 
@@ -773,8 +869,7 @@ func setAttributeBySource(ctx wrapper.HttpContext, config AIStatisticsConfig, so
 			// for a potential streaming body, we need to extract streaming events first for attribute extraction
 			log.Debugf("parsing streaming body chunks for attribute extraction")
 			// get buffered streaming body chunks for one-time to reduce memory footprint.
-			streamingEvents = ExtractStreamingEvents(ctx, body)
-			combineStreamingEventsForLog(ctx, &config, streamingEvents)
+			combineStreamingEventsForLog(ctx, &config, streamEvents)
 		}
 
 		if !ctx.GetBoolContext(StreamEventFoundInResponseBody, false) {
@@ -804,7 +899,7 @@ func setAttributeBySource(ctx wrapper.HttpContext, config AIStatisticsConfig, so
 			case ResponseHeader:
 				value, _ = proxywasm.GetHttpResponseHeader(attribute.Value)
 			case ResponseStreamingBody:
-				value = extractStreamingBodyByJsonPath(streamingEvents, attribute.Value, attribute.Rule, ctx.GetUserAttribute(key))
+				value = extractStreamingBodyByJsonPath(streamEvents, attribute.Value, attribute.Rule, ctx.GetUserAttribute(key))
 			case ResponseBody:
 				value = gjson.GetBytes(body, attribute.Value).Value()
 			default:
@@ -886,9 +981,11 @@ func combineStreamingEventsForLog(ctx wrapper.HttpContext, config *AIStatisticsC
 		dataJson.ForEach(func(key, value gjson.Result) bool {
 			log.Debugf("processing key %s in streaming event %d", key.Str, i)
 			if key.Str == "choices" && value.IsArray() {
-				// TODO: Only support one choice for now
+				// Only support the default choice or choice with index 0 for now
 				choice := value.Get("0")
-				responseBody = combineStreamingChoice(responseBody, 0, &choice)
+				if index := choice.Get("index"); !index.Exists() || index.Type == gjson.Number && index.Int() == 0 {
+					responseBody = combineStreamingChoice(responseBody, 0, &choice)
+				}
 			} else if !processedFields[key.Str] {
 				if newBody, err := sjson.SetRaw(responseBody, key.Str, value.Raw); err == nil {
 					responseBody = newBody
