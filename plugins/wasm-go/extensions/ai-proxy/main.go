@@ -441,8 +441,10 @@ func onStreamingResponseBody(ctx wrapper.HttpContext, pluginConfig config.Plugin
 				log.Errorf("[onStreamingResponseBody] failed to process streaming event: %v\n%s", err, chunk)
 				return chunk
 			}
-			if len(outputEvents) == 0 {
+			if outputEvents == nil {
 				responseBuilder.WriteString(event.ToHttpString())
+			} else if len(outputEvents) == 0 {
+				// Event is filtered out, do nothing
 			} else {
 				for _, outputEvent := range outputEvents {
 					responseBuilder.WriteString(outputEvent.ToHttpString())
