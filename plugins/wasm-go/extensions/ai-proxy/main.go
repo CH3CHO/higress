@@ -273,7 +273,12 @@ func onHttpRequestHeader(ctx wrapper.HttpContext, pluginConfig config.PluginConf
 			// Delay the header processing to allow changing in OnRequestBody
 			return types.HeaderStopIteration
 		}
+
 		ctx.DontReadRequestBody()
+	}
+
+	if err := providerConfig.ApplyBundledRequestParams(ctx); err != nil {
+		_ = util.ErrorHandler("ai-proxy.apply_bundled_req_params_failed", fmt.Errorf("failed to apply bundled request params: %v", err))
 		return types.ActionContinue
 	}
 
@@ -293,6 +298,7 @@ func onHttpRequestBody(ctx wrapper.HttpContext, pluginConfig config.PluginConfig
 		saveContextsToHeaders(ctx)
 	}()
 
+	var action types.Action
 	if handler, ok := activeProvider.(provider.RequestBodyHandler); ok {
 		apiName, _ := ctx.GetContext(provider.CtxKeyApiName).(provider.ApiName)
 		providerConfig := pluginConfig.GetProviderConfig()
@@ -310,13 +316,21 @@ func onHttpRequestBody(ctx wrapper.HttpContext, pluginConfig config.PluginConfig
 		}
 		log.Debugf("[onHttpRequestBody] newBody=%s", newBody)
 		body = newBody
-		action, err := handler.OnRequestBody(ctx, apiName, body)
-		if err == nil {
-			return action
+
+		if handlerAction, err := handler.OnRequestBody(ctx, apiName, body); err != nil {
+			_ = util.ProcessReqBodyErrorHandler("ai-proxy.proc_req_body_failed", fmt.Errorf("failed to process request body: %w", err))
+			return types.ActionContinue
+		} else {
+			action = handlerAction
 		}
-		_ = util.ProcessReqBodyErrorHandler("ai-proxy.proc_req_body_failed", fmt.Errorf("failed to process request body: %w", err))
 	}
-	return types.ActionContinue
+
+	if err := pluginConfig.GetProviderConfig().ApplyBundledRequestParams(ctx); err != nil {
+		_ = util.ErrorHandler("ai-proxy.apply_bundled_req_params_failed", fmt.Errorf("failed to apply bundled request params: %v", err))
+		return types.ActionContinue
+	}
+
+	return action
 }
 
 func onHttpResponseHeaders(ctx wrapper.HttpContext, pluginConfig config.PluginConfig) types.Action {
