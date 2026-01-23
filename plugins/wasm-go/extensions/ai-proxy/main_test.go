@@ -108,3 +108,7 @@ func TestGeneric(t *testing.T) {
 	test.RunGenericParseConfigTests(t)
 	test.RunGenericOnHttpRequestHeadersTests(t)
 }
+
+func TestBundledRequestParams(t *testing.T) {
+	test.RunBundledRequestParamsTests(t)
+}

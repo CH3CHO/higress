@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math/rand"
 	"net/http"
+	"net/url"
 	"path"
 	"regexp"
 	"strconv"
@@ -281,6 +282,85 @@ type TransformResponseBodyHandler interface {
 	TransformResponseBody(ctx wrapper.HttpContext, apiName ApiName, body []byte) ([]byte, error)
 }
 
+type ParamTarget int
+type ParamValueSource int
+
+const (
+	ParamTargetInvalid ParamTarget = -1
+	ParamTargetHeader  ParamTarget = 0
+	ParamTargetQuery   ParamTarget = 1
+
+	ParamValueSourceInvalid ParamValueSource = -1
+	ParamValueSourceConst   ParamValueSource = 0
+	ParamValueSourceHeader  ParamValueSource = 1
+	ParamValueSourceQuery   ParamValueSource = 2
+)
+
+type RequestParam struct {
+	// @Title zh-CN 目标位置
+	// @Description zh-CN 参数写入的目标位置 0=HTTP Header 1=Query string
+	target ParamTarget `required:"true" yaml:"target" json:"target"`
+	// @Title zh-CN 参数名称
+	// @Description zh-CN 参数名称
+	name string `required:"true" yaml:"name" json:"name"`
+	// @Title zh-CN 参数取值
+	// @Description zh-CN 参数取值
+	value string `required:"true" yaml:"value" json:"value"`
+	// @Title zh-CN 取值来源
+	// @Description zh-CN 参数取值来源类型。0=常量，即直接取 value 字段的值 1=HTTP header，value 字段的值为对应的 header 名称 2=Query param，value 字段的值为对应的查询参数名称
+	valueSource ParamValueSource `required:"true" yaml:"valueSource" json:"valueSource"`
+}
+
+func (p *RequestParam) FromJson(json gjson.Result) {
+	if target := json.Get("target"); target.Exists() && target.Type == gjson.Number {
+		p.target = ParamTarget(target.Int())
+	} else {
+		p.target = ParamTargetInvalid
+	}
+
+	p.name = json.Get("name").String()
+	p.value = json.Get("value").String()
+
+	if valueSource := json.Get("valueSource"); valueSource.Exists() && valueSource.Type == gjson.Number {
+		p.valueSource = ParamValueSource(valueSource.Int())
+	} else {
+		p.valueSource = ParamValueSourceInvalid
+	}
+}
+
+func (p *RequestParam) Validate() error {
+	if p.target == ParamTargetInvalid {
+		return fmt.Errorf("param target is not configured correctly")
+	} else {
+		switch p.target {
+		case ParamTargetHeader, ParamTargetQuery:
+			// valid
+		default:
+			return fmt.Errorf("param target %d is not supported", p.target)
+		}
+	}
+
+	if p.name == "" {
+		return fmt.Errorf("param name is required")
+	}
+	if p.value == "" {
+		return fmt.Errorf("param value is required")
+	}
+
+	if p.valueSource == ParamValueSourceInvalid {
+		return fmt.Errorf("param valueSource is not configured correctly")
+	} else {
+		switch p.valueSource {
+		case ParamValueSourceConst, ParamValueSourceHeader, ParamValueSourceQuery:
+			// valid
+		default:
+			return fmt.Errorf("param valueSource %d is not supported", p.valueSource)
+		}
+	}
+
+	return nil
+}
+
 type ProviderConfig struct {
 	// @Title zh-CN ID
 	// @Description zh-CN AI服务提供商标识
@@ -435,6 +515,9 @@ type ProviderConfig struct {
 	// @Title zh-CN 通用大模型服务认证方式
 	// @Description zh-CN 仅适用于通用大模型服务，认证方式，可选值有：NONE、BEARER等。默认值为BEARER。
 	genericAuthType string `required:"false" yaml:"genericAuthType" json:"genericAuthType"`
+	// @Title zh-CN 内置请求参数
+	// @Description zh-CN 内置请求参数列表，在处理请求时会自动添加到请求参数中
+	bundledRequestParams []RequestParam `required:"false" yaml:"bundledRequestParams" json:"bundledRequestParams"`
 }
 
 func (c *ProviderConfig) GetId() string {
@@ -626,6 +709,14 @@ func (c *ProviderConfig) FromJson(json gjson.Result) {
 		c.genericServiceUrl += "/"
 	}
 	c.genericAuthType = strings.ToUpper(json.Get("genericAuthType").String())
+
+	if bundledRequestParams := json.Get("bundledRequestParams"); bundledRequestParams.Exists() && bundledRequestParams.IsArray() {
+		for _, paramJson := range bundledRequestParams.Array() {
+			var param RequestParam
+			param.FromJson(paramJson)
+			c.bundledRequestParams = append(c.bundledRequestParams, param)
+		}
+	}
 }
 
 func (c *ProviderConfig) Validate() error {
@@ -641,6 +732,14 @@ func (c *ProviderConfig) Validate() error {
 	if c.failover.enabled {
 		if err := c.failover.Validate(); err != nil {
 			return err
+		}
+	}
+
+	if len(c.bundledRequestParams) > 0 {
+		for _, param := range c.bundledRequestParams {
+			if err := param.Validate(); err != nil {
+				return err
+			}
 		}
 	}
 
@@ -1077,4 +1176,90 @@ func (c *ProviderConfig) needToProcessRequestBody(apiName ApiName) bool {
 		return true
 	}
 	return false
+}
+
+func (c *ProviderConfig) ApplyBundledRequestParams(ctx wrapper.HttpContext) error {
+	if len(c.bundledRequestParams) != 0 {
+		// Parse request URL only once
+		var originalQuery url.Values
+		changedQuery := make(map[string]string)
+		queryParsed := false
+
+		getOriginalQuery := func() url.Values {
+			if !queryParsed {
+				queryParsed = true
+				// Use ctx.Path() to get the very original request path instead of the one modified by the active provider.
+				p := ctx.Path()
+				requestPath, err := url.Parse(p)
+				if err != nil {
+					log.Errorf("failed to parse request path %s: %v", p, err)
+					return nil
+				}
+
+				originalQuery = requestPath.Query()
+				if originalQuery == nil {
+					originalQuery = make(url.Values)
+				}
+			}
+			return originalQuery
+		}
+
+		for _, param := range c.bundledRequestParams {
+			value := ""
+			switch param.valueSource {
+			case ParamValueSourceConst:
+				value = param.value
+			case ParamValueSourceHeader:
+				if header, _ := proxywasm.GetHttpRequestHeader(param.value); header != "" {
+					value = header
+					log.Debugf("extracted header [%s]=[%s] for bundled request param", param.value, value)
+				}
+			case ParamValueSourceQuery:
+				if queryValues, ok := getOriginalQuery()[param.value]; ok && len(queryValues) > 0 {
+					value = queryValues[0]
+					log.Debugf("extracted query param [%s]=[%s] for bundled request param", param.value, value)
+				}
+			}
+
+			if value == "" {
+				log.Warnf("bundled request param [%s] has empty value, skipped. source=%d, value=%s", param.name, param.valueSource, param.value)
+				continue
+			}
+
+			switch param.target {
+			case ParamTargetHeader:
+				log.Debugf("setting bundled request header [%s]=[%s]", param.name, value)
+				if err := proxywasm.ReplaceHttpRequestHeader(param.name, value); err != nil {
+					return fmt.Errorf("failed to set bundled request header [%s]: %v", param.name, err)
+				}
+			case ParamTargetQuery:
+				log.Debugf("setting bundled request query param [%s]=[%s]", param.name, value)
+				changedQuery[param.name] = value
+			}
+		}
+
+		if len(changedQuery) != 0 {
+			// Use proxywasm.GetHttpRequestHeader to get the current header which might have been modified by the active provider.
+			requestPathStr, err := proxywasm.GetHttpRequestHeader(":path")
+			if err != nil {
+				return fmt.Errorf("failed to get request path for applying bundled request query params: %v", err)
+			}
+			requestPathUrl, err := url.Parse(requestPathStr)
+			if err != nil {
+				return fmt.Errorf("failed to parse request path [%s] for applying bundled request query params: %v", requestPathStr, err)
+			}
+			requestQuery := requestPathUrl.Query()
+			for key, value := range changedQuery {
+				requestQuery.Set(key, value)
+			}
+			requestPathUrl.RawQuery = requestQuery.Encode()
+			newPath := requestPathUrl.String()
+			log.Debugf("updating request path to [%s] after applying bundled request query params", newPath)
+			if err := proxywasm.ReplaceHttpRequestHeader(":path", newPath); err != nil {
+				return fmt.Errorf("failed to update request path after applying bundled request query params [%s]: %v", newPath, err)
+			}
+		}
+	}
+
+	return nil
 }
