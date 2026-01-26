@@ -173,7 +173,11 @@ func saveContextsToHeaders(ctx wrapper.HttpContext) {
 			continue
 		}
 		currentValue, _ := proxywasm.GetHttpRequestHeader(header)
-		if currentValue == "" || originalValue == currentValue {
+		// Always save the original value, even if it is the same as current value,
+		// because the value might be modified by an async http callback after finishing the regular request processing,
+		// for example, in the initial Vertex token request.
+		// Otherwise, the original value will be lost, causing 401 errors in failbacks or retries.
+		if currentValue == "" /* || originalValue == currentValue */ {
 			continue
 		}
 		originalHeader := headerToOriginalHeaderMapping[header]
