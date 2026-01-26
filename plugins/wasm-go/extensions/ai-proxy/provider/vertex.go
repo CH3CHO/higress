@@ -35,6 +35,7 @@ const (
 	vertexChatCompletionAction       = "generateContent"
 	vertexChatCompletionStreamAction = "streamGenerateContent?alt=sse"
 	vertexEmbeddingAction            = "predict"
+	vertexRequestTypeHeader          = "X-Vertex-AI-LLM-Request-Type"
 )
 
 const (
@@ -110,6 +111,14 @@ func (v *vertexProvider) TransformRequestHeaders(ctx wrapper.HttpContext, apiNam
 		vertexRegionDomain = vertexGlobalDomain
 	} else {
 		vertexRegionDomain = strings.Replace(vertexDomain, "{REGION}", v.config.vertexRegion, 1)
+	}
+	if v.config.vertexRequestType == "" {
+		headers.Del(vertexRequestTypeHeader)
+		// Entries in `headers` will only be replaced into the actual request headers when calling.
+		// So we need to explicitly remove the header from the actual request headers here.
+		_ = proxywasm.RemoveHttpRequestHeader(vertexRequestTypeHeader)
+	} else {
+		headers.Set(vertexRequestTypeHeader, v.config.vertexRequestType)
 	}
 	util.OverwriteRequestHostHeader(headers, vertexRegionDomain)
 }
