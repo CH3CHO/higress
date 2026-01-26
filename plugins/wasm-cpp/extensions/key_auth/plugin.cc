@@ -303,6 +303,9 @@ bool PluginRootContext::parsePluginConfig(const json& configuration,
 bool PluginRootContext::checkPlugin(
     const KeyAuthConfigRule& rule,
     const std::optional<std::unordered_set<std::string>>& allow_set) {
+  // Remove any existing X-Mse-Consumer header first to prevent spoofing and incorrect logging
+  removeRequestHeader("X-Mse-Consumer");
+
   // LOG_DEBUG(rule.debugString("check phase"));
   std::map<std::string, std::string> credential_cache;
   if (rule.consumers.empty()) {
@@ -321,6 +324,7 @@ bool PluginRootContext::checkPlugin(
 
       auto credential_to_name_iter = rule.credential_to_name.find(credential);
       if (credential_to_name_iter != rule.credential_to_name.end()) {
+        LOG_DEBUG("found consumer " + credential_to_name_iter->second + " for credential " + credential);
         addRequestHeader("X-Mse-Consumer", credential_to_name_iter->second);
         if (allow_set && !allow_set->empty()) {
           if (allow_set->find(credential_to_name_iter->second) == allow_set->end()
@@ -344,12 +348,12 @@ bool PluginRootContext::checkPlugin(
       for (const auto& key : keys_to_check) {
         auto credential = extractCredential(credential_cache, in_header, in_query, key);
         if (credential.empty()) {
-          LOG_DEBUG("empty credential for key: " + key);
+          LOG_TRACE("empty credential for key: " + key);
           continue;
         }
 
         if (consumer.credentials.find(credential) == consumer.credentials.end()) {
-          LOG_DEBUG("credential " + credential + " does not match the consumer " + consumer.name);
+          LOG_TRACE("credential " + credential + " does not match the consumer " + consumer.name);
           continue;
         }
 
@@ -361,6 +365,7 @@ bool PluginRootContext::checkPlugin(
 
         auto credential_to_name_iter = rule.credential_to_name.find(credential);
         if (credential_to_name_iter != rule.credential_to_name.end()) {
+          LOG_DEBUG("found consumer " + credential_to_name_iter->second + " for credential " + credential);
           addRequestHeader("X-Mse-Consumer", credential_to_name_iter->second);
           if (allow_set) {
             if (allow_set->empty()) {
@@ -441,6 +446,7 @@ std::string PluginRootContext::extractCredential(std::map<std::string, std::stri
       credential = it->second;
     }
   }
+  LOG_DEBUG("extracted credential for key " + cache_key + ": " + credential);
   credential_cache.emplace(std::make_pair(cache_key, credential));
   return credential;
 }
