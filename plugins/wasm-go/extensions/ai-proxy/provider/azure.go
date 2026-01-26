@@ -58,6 +58,7 @@ const (
 
 	ctxKeyResponseFormatTransformed = "azure_response_format_transformed"
 	ctxKeyBase64FormatCoerced       = "azure_base64_format_coerced"
+	ctxAzureFirstChunkProcessed     = "azure_first_chunk_processed"
 )
 
 var (
@@ -455,6 +456,11 @@ func (m *azureProvider) transformChatCompletionRequestFields(ctx wrapper.HttpCon
 		body = transformedBody
 	}
 
+	if stream := gjson.GetBytes(body, "stream"); stream.Exists() && stream.Type == gjson.True {
+		// Only need to process response body when it's a streaming request to remove the first empty chunk.
+		needReadResponseBody = true
+	}
+
 	return body, needReadResponseBody, nil
 }
 
@@ -600,6 +606,9 @@ func (m *azureProvider) OnStreamingEvent(ctx wrapper.HttpContext, name ApiName, 
 	if name == ApiNameCompletion {
 		return handleCompletionsStreamingEvent(ctx, event)
 	}
+	if name == ApiNameChatCompletion {
+		return m.handleChatCompletionsStreamingEvent(ctx, event)
+	}
 	return nil, nil
 }
 
@@ -676,6 +685,50 @@ func (m *azureProvider) transformEmbeddingsResponseFields(ctx wrapper.HttpContex
 		}
 	}
 	return body, nil
+}
+
+func (m *azureProvider) handleChatCompletionsStreamingEvent(ctx wrapper.HttpContext, event StreamEvent) ([]StreamEvent, error) {
+	if ctx.GetBoolContext(ctxAzureFirstChunkProcessed, false) {
+		return nil, nil
+	}
+	ctx.SetContext(ctxAzureFirstChunkProcessed, true)
+	// We only need to check the first chunk to see if it's an empty chunk and skip if necessary.
+	// So we can skip reading the request body for the following chunks.
+	ctx.DontReadRequestBody()
+
+	log.Debugf("azureProvider: processing first chunk of chat completion streaming event: %s", event.Data)
+	if isEmptyChatCompletionChunk(event) {
+		log.Debugf("azureProvider: first chunk of chat completion streaming event is empty, skipping it")
+		return make([]StreamEvent, 0), nil
+	}
+	return nil, nil
+}
+
+func isEmptyChatCompletionChunk(event StreamEvent) bool {
+	if delta := gjson.Get(event.Data, "choices.0.delta"); delta.Exists() {
+		if content := delta.Get("content"); len(content.Str) != 0 {
+			return false
+		}
+		if toolCalls := delta.Get("tool_calls"); toolCalls.IsArray() && len(toolCalls.Array()) != 0 {
+			return false
+		}
+		if functionCall := delta.Get("function_call"); functionCall.IsObject() {
+			return false
+		}
+		if reasoningContent := delta.Get("reasoning_content"); reasoningContent.Str != "" {
+			return false
+		}
+		if providerSpecificFields := delta.Get("provider_specific_fields"); providerSpecificFields.IsObject() {
+			return false
+		}
+		if annotations := delta.Get("annotations"); annotations.IsObject() {
+			return false
+		}
+	}
+	if providerSpecificFields := gjson.Get(event.Data, "provider_specific_fields"); providerSpecificFields.IsObject() {
+		return false
+	}
+	return true
 }
 
 func decodeBase64FormatEmbeddingToJsonRaw(s string) ([]byte, error) {
