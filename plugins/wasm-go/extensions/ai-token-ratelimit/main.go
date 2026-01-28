@@ -15,20 +15,20 @@
 package main
 
 import (
+	"errors"
 	"fmt"
-	"maps"
 	"net"
 	"net/url"
 	"strconv"
 	"strings"
 
 	"ai-token-ratelimit/config"
+	"ai-token-ratelimit/json"
 	"ai-token-ratelimit/util"
 
 	"github.com/higress-group/proxy-wasm-go-sdk/proxywasm"
 	"github.com/higress-group/proxy-wasm-go-sdk/proxywasm/types"
 	"github.com/higress-group/wasm-go/pkg/log"
-	"github.com/higress-group/wasm-go/pkg/tokenusage"
 	"github.com/higress-group/wasm-go/pkg/wrapper"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/resp"
@@ -48,9 +48,9 @@ func init() {
 	)
 }
 
-const (
-	defaultMaxBodyBytes uint32 = 100 * 1024 * 1024
+type ResponseType int
 
+const (
 	RedisKeyPrefix string = "higress-token-ratelimit"
 	// AiTokenGlobalRateLimitFormat  全局限流模式 redis key 为 RedisKeyPrefix:限流规则名称:global_threshold:时间窗口:窗口内限流数
 	AiTokenGlobalRateLimitFormat = RedisKeyPrefix + ":%s:global_threshold:%d:%d"
@@ -73,13 +73,24 @@ const (
 	return {ARGV[1], redis.call('decrby', KEYS[1], ARGV[3]), ttl}
 	`
 
-	LimitRedisContextKey = "LimitRedisContext"
+	LimitRedisContextKey   = "LimitRedisContext"
+	ResponseTypeKey        = "ResponseType"
+	ResponseUsageFoundKey  = "ResponseUsageFound"
+	ResponseNeedBuffer     = "ResponseNeedBuffer"
+	ResponseEndOfStreamKey = "ResponseEndOfStream"
+
+	ResponseTypeJson ResponseType = 1
+	ResponseTypeSse  ResponseType = 2
 
 	CookieHeader = "cookie"
 
 	RateLimitResetHeader = "X-TokenRateLimit-Reset" // 限流重置时间（触发限流时返回）
 
-	TokenRateLimitCount = "token_ratelimit_count" // metric name
+	TokenRateLimitCount         = "token_ratelimit_count" // metric name
+	StreamingBodyBufferKey      = "streaming_body_buffer"
+	StreamingJsonReaderKey      = "streaming_json_reader"
+	SkipStreamingJsonProcessing = "skip_streaming_json_processing"
+	UsageObject                 = "usage_object"
 
 	LogKey               = "rate_limit_log"
 	UserAttrKeyKey       = "tpx_key"
@@ -194,7 +205,6 @@ func onHttpRequestHeaders(ctx wrapper.HttpContext, cfg config.AiTokenRateLimitCo
 			remaining: resultArray[1].Integer(),
 			reset:     resultArray[2].Integer(),
 		}
-		ctx.SetUserAttribute(UserAttrRemainingKey, context.remaining)
 		if context.remaining < 0 {
 			ctx.SetUserAttribute(UserAttrResultKey, "reject")
 			rejected(cfg, context)
@@ -223,11 +233,9 @@ func onHttpResponseHeaders(ctx wrapper.HttpContext, cfg config.AiTokenRateLimitC
 	contentType, _ := proxywasm.GetHttpResponseHeader("content-type")
 
 	if strings.Contains(contentType, "application/json") {
-		// Non-streaming JSON response body will be processed in onHttpResponseBody
-		ctx.SetResponseBodyBufferLimit(defaultMaxBodyBytes)
-		ctx.BufferResponseBody()
+		ctx.SetContext(ResponseTypeKey, ResponseTypeJson)
 	} else if strings.Contains(contentType, "text/event-stream") {
-		// Do nothing, streaming body will be processed in onHttpStreamingResponseBody
+		ctx.SetContext(ResponseTypeKey, ResponseTypeSse)
 	} else {
 		// Other content types, no need to read response body
 		ctx.DontReadResponseBody()
@@ -236,42 +244,191 @@ func onHttpResponseHeaders(ctx wrapper.HttpContext, cfg config.AiTokenRateLimitC
 	return types.ActionContinue
 }
 
-func onHttpStreamingBody(ctx wrapper.HttpContext, cfg config.AiTokenRateLimitConfig, data []byte, endOfStream bool) []byte {
-	// `tokenusage.GetTokenUsage` call will write user attribute map, which we don't need them at all.
-	// So we need to save and restore it afterward.
-	userAttrMap := maps.Clone(ctx.GetUserAttributeMap())
-	// TODO: Major issue here. The token usage calculation logic won't work if the chunked response body doesn't contain
-	// TODO: the complete JSON object with the `usage` property.
-	if usage := tokenusage.GetTokenUsage(ctx, data); usage.TotalToken > 0 {
-		ctx.SetContext(tokenusage.CtxKeyTotalToken, usage.TotalToken)
-	}
-	ctx.SetUserAttributeMap(userAttrMap)
+func onHttpStreamingBody(ctx wrapper.HttpContext, cfg config.AiTokenRateLimitConfig, data []byte, endOfStream bool) (ret []byte) {
+	ret = data
 
-	if endOfStream {
-		if ctx.GetContext(tokenusage.CtxKeyTotalToken) == nil {
-			return data
-		}
-		totalToken := ctx.GetContext(tokenusage.CtxKeyTotalToken).(int64)
-		limitRedisContext, ok := ctx.GetContext(LimitRedisContextKey).(LimitRedisContext)
-		if !ok {
-			return data
+	if !ctx.GetBoolContext(ResponseUsageFoundKey, false) {
+		usage := int64(0)
+
+		if responseType, ok := ctx.GetContext(ResponseTypeKey).(ResponseType); ok {
+			switch responseType {
+			case ResponseTypeJson:
+				usage = getUsageFromStreamingBodyJson(ctx, data, endOfStream)
+			case ResponseTypeSse:
+				usage = getUsageFromStreamingBodySse(ctx, data, endOfStream)
+			default:
+				// Other unsupported content types, no need to read response body
+				ctx.DontReadResponseBody()
+				return
+			}
 		}
 
-		defer func() {
-			_ = ctx.WriteUserAttributeToLogWithKey(LogKey)
-		}()
+		if usage <= 0 {
+			return
+		}
 
-		usage := totalToken
+		ctx.SetContext(ResponseUsageFoundKey, true)
+
 		ctx.SetUserAttribute(UserAttrUsageKey, usage)
+		_ = ctx.WriteUserAttributeToLogWithKey(LogKey)
 
-		keys := []interface{}{limitRedisContext.key}
-		args := []interface{}{limitRedisContext.count, limitRedisContext.window, usage}
-		err := cfg.RedisClient.Eval(ResponsePhaseFixedWindowScript, 1, keys, args, nil)
-		if err != nil {
-			log.Errorf("redis call failed: %v", err)
+		if limitRedisContext, ok := ctx.GetContext(LimitRedisContextKey).(LimitRedisContext); ok {
+			key := limitRedisContext.key
+			args := []interface{}{limitRedisContext.count, limitRedisContext.window, usage}
+			if err := cfg.RedisClient.Eval(ResponsePhaseFixedWindowScript, 1, []interface{}{key}, args, func(response resp.Value) {
+				log.Debugf("=== redis response in response phase: %v ===", response)
+				if array := response.Array(); len(array) == 3 {
+					tokenRemaining := response.Array()[1].Integer()
+					ctx.SetUserAttribute(UserAttrRemainingKey, tokenRemaining)
+					_ = ctx.WriteUserAttributeToLogWithKey(LogKey)
+				}
+
+				// Inject all cached response body data into the filter chain and resume response processing.
+				buffer := getJoinedBufferData(ctx)
+				endOfStream := ctx.GetBoolContext(ResponseEndOfStreamKey, false)
+				_ = proxywasm.InjectEncodedDataToFilterChain(buffer, endOfStream)
+				_ = proxywasm.ResumeHttpResponse()
+
+				// We are done. There is no need to read response body anymore.
+				ctx.SetContext(ResponseNeedBuffer, false)
+				ctx.DontReadResponseBody()
+			}); err != nil {
+				log.Errorf("redis call in response phase failed with key %s and usage %d: %v", key, usage, err)
+			} else {
+				ctx.SetContext(ResponseNeedBuffer, true)
+			}
 		}
 	}
-	return data
+
+	if ctx.GetBoolContext(ResponseNeedBuffer, false) {
+		log.Debugf("=== buffering response data chunk of size %d with eof %t ===", len(data), endOfStream)
+
+		// It is used when resuming the process.
+		ctx.SetContext(ResponseEndOfStreamKey, endOfStream)
+
+		ctx.PushBuffer(data)
+		ctx.NeedPauseStreamingResponse()
+
+		// Response data is cached inside the plugin. Clear the envoy stream cache.
+		ret = []byte{}
+	}
+
+	return
+}
+
+func getUsageFromStreamingBodyJson(ctx wrapper.HttpContext, data []byte, endOfStream bool) int64 {
+	if ctx.GetBoolContext(SkipStreamingJsonProcessing, false) {
+		ctx.DontReadResponseBody()
+		return -1
+	}
+
+	buffer, _ := ctx.GetContext(StreamingBodyBufferKey).(json.ScrollableBuffer)
+	if buffer == nil {
+		buffer = json.NewScrollableBuffer()
+		ctx.SetContext(StreamingBodyBufferKey, buffer)
+	}
+
+	reader, _ := ctx.GetContext(StreamingJsonReaderKey).(json.JsonReader)
+	if reader == nil {
+		reader = json.NewJsonReader(buffer)
+		ctx.SetContext(StreamingJsonReaderKey, reader)
+	}
+
+	_ = buffer.Append(data, endOfStream)
+
+	usageObject, _ := ctx.GetContext(UsageObject).(map[string]interface{})
+	if usageObject == nil {
+		usageObject = make(map[string]interface{})
+		ctx.SetContext(UsageObject, usageObject)
+	}
+
+	var jsonToken json.JsonToken
+	var err error
+	for docEnded := false; !docEnded; {
+		jsonToken, err = reader.Peek()
+		if err != nil {
+			if !errors.Is(err, json.ErrEndOfBuffer) {
+				log.Errorf("error peeking json token: %v", err)
+				ctx.SetContext(SkipStreamingJsonProcessing, true)
+			}
+			return -1
+		}
+		switch jsonToken {
+		case json.JsonTokenBeginObject:
+			log.Tracef("==== Beginning JSON object at path %s ====", reader.GetPath())
+			_ = reader.BeginObject()
+		case json.JsonTokenEndObject:
+			log.Tracef("==== Ending JSON object at path %s ====", reader.GetPath())
+			_ = reader.EndObject()
+		case json.JsonTokenBeginArray:
+			log.Tracef("==== Beginning JSON array at path %s ====", reader.GetPath())
+			_ = reader.BeginArray()
+		case json.JsonTokenEndArray:
+			log.Tracef("==== Ending JSON array at path %s ====", reader.GetPath())
+			_ = reader.EndArray()
+		case json.JsonTokenName:
+			if _, err := reader.NextName(); err != nil {
+				log.Errorf("error reading json name: %v", err)
+				if !errors.Is(err, json.ErrEndOfBuffer) {
+					ctx.SetContext(SkipStreamingJsonProcessing, true)
+				}
+				return -1
+			} else if !strings.HasPrefix(reader.GetPath(), "$.usage") {
+				log.Tracef("skipping json token name: %s", reader.GetPath())
+				_ = reader.SkipValue()
+			}
+		case json.JsonTokenNumber:
+			if reader.GetPath() != "$.usage.total_tokens" {
+				log.Tracef("==== Skipping non-total_tokens numeric value at path %s ====", reader.GetPath())
+				_ = reader.SkipValue()
+			} else if value, err := reader.NextLong(); err != nil {
+				if !errors.Is(err, json.ErrEndOfBuffer) {
+					log.Errorf("error reading total_tokens value: %v", err)
+					ctx.SetContext(SkipStreamingJsonProcessing, true)
+				}
+				log.Tracef("error reading total_tokens value: %v", err)
+				return -1
+			} else {
+				log.Tracef("==== Extracted total_tokens from JSON response: %d ====", value)
+				return value
+			}
+		case json.JsonTokenString, json.JsonTokenNull, json.JsonTokenBoolean:
+			log.Tracef("==== Skipping non-numeric usage value at path %s ====", reader.GetPath())
+			_ = reader.SkipValue()
+		case json.JsonTokenEndDocument:
+			log.Tracef("==== End of JSON document reached ====")
+			docEnded = true
+		default:
+			// Unknown token, skip processing further
+		}
+	}
+
+	return 0
+}
+
+func getUsageFromStreamingBodySse(ctx wrapper.HttpContext, data []byte, endOfStream bool) int64 {
+	streamEvents := ExtractStreamingEvents(ctx, data)
+
+	for _, event := range streamEvents {
+		usage := gjson.Get(event.Data, "usage")
+		if !usage.Exists() || !usage.IsObject() {
+			continue
+		}
+		if totalTokens := usage.Get("total_tokens"); totalTokens.Exists() && totalTokens.Type == gjson.Number {
+			return totalTokens.Int()
+		}
+	}
+
+	return -1
+}
+
+func getJoinedBufferData(ctx wrapper.HttpContext) []byte {
+	joinedBuffer := make([]byte, 0)
+	for ctx.BufferQueueSize() > 0 {
+		buffer := ctx.PopBuffer()
+		joinedBuffer = append(joinedBuffer, buffer...)
+	}
+	return joinedBuffer
 }
 
 func checkRequestAgainstLimitRule(ctx wrapper.HttpContext, ruleItems []config.LimitRuleItem) (string, *config.LimitRuleItem, *config.LimitConfigItem) {
