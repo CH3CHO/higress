@@ -578,3 +578,44 @@ func GetMaxTokens(maxTokensCamelCase, maxCompletionTokensSnakeCase, maxTokensSna
 	}
 	return maxTokensSnakeCase
 }
+
+// GetAnthropicBetaFromHeaders extracts anthropic-beta header values and converts them to a list.
+// Supports comma-separated values from user headers.
+//
+// Used by both converse and invoke transformations for consistent handling
+// of anthropic-beta headers that should be passed to AWS Bedrock.
+//
+// This function corresponds to get_anthropic_beta_from_headers in Python's litellm:
+// litellm/llms/bedrock/common_utils.py
+//
+// Args:
+//
+//	headers (map[string]string): Request headers map
+//
+// Returns:
+//
+//	[]string: List of anthropic beta feature strings, empty list if no header
+func GetAnthropicBetaFromHeaders(headers map[string]string) []string {
+	if headers == nil {
+		return []string{}
+	}
+
+	anthropicBetaHeader, exists := headers["anthropic-beta"]
+	if !exists || anthropicBetaHeader == "" {
+		return []string{}
+	}
+
+	// Split comma-separated values and strip whitespace
+	values := strings.Split(anthropicBetaHeader, ",")
+	result := make([]string, 0, len(values))
+
+	processed := make(map[string]bool)
+	for _, item := range values {
+		trimmed := strings.TrimSpace(item)
+		if trimmed != "" && !processed[trimmed] { // remove duplicates while preserving order
+			result = append(result, trimmed)
+			processed[trimmed] = true
+		}
+	}
+	return result
+}
