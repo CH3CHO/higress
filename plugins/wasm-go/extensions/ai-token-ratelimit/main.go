@@ -41,11 +41,16 @@ func init() {
 		"ai-token-ratelimit",
 		wrapper.ParseOverrideConfig(parseGlobalConfig, parseOverrideRuleConfig),
 		wrapper.ProcessRequestHeaders(onHttpRequestHeaders),
+		wrapper.ProcessResponseHeaders(onHttpResponseHeaders),
 		wrapper.ProcessStreamingResponseBody(onHttpStreamingBody),
+		wrapper.WithRebuildAfterRequests[config.AiTokenRateLimitConfig](1000),
+		wrapper.WithRebuildMaxMemBytes[config.AiTokenRateLimitConfig](200*1024*1024),
 	)
 }
 
 const (
+	defaultMaxBodyBytes uint32 = 100 * 1024 * 1024
+
 	RedisKeyPrefix string = "higress-token-ratelimit"
 	// AiTokenGlobalRateLimitFormat  全局限流模式 redis key 为 RedisKeyPrefix:限流规则名称:global_threshold:时间窗口:窗口内限流数
 	AiTokenGlobalRateLimitFormat = RedisKeyPrefix + ":%s:global_threshold:%d:%d"
@@ -204,6 +209,31 @@ func onHttpRequestHeaders(ctx wrapper.HttpContext, cfg config.AiTokenRateLimitCo
 		return types.ActionContinue
 	}
 	return types.HeaderStopAllIterationAndWatermark
+}
+
+func onHttpResponseHeaders(ctx wrapper.HttpContext, cfg config.AiTokenRateLimitConfig) types.Action {
+	if status, err := proxywasm.GetHttpResponseHeader(":status"); err != nil || status != "200" {
+		if err != nil {
+			log.Errorf("unable to load :status header from response: %v", err)
+		}
+		ctx.DontReadResponseBody()
+		return types.ActionContinue
+	}
+
+	contentType, _ := proxywasm.GetHttpResponseHeader("content-type")
+
+	if strings.Contains(contentType, "application/json") {
+		// Non-streaming JSON response body will be processed in onHttpResponseBody
+		ctx.SetResponseBodyBufferLimit(defaultMaxBodyBytes)
+		ctx.BufferResponseBody()
+	} else if strings.Contains(contentType, "text/event-stream") {
+		// Do nothing, streaming body will be processed in onHttpStreamingResponseBody
+	} else {
+		// Other content types, no need to read response body
+		ctx.DontReadResponseBody()
+	}
+
+	return types.ActionContinue
 }
 
 func onHttpStreamingBody(ctx wrapper.HttpContext, cfg config.AiTokenRateLimitConfig, data []byte, endOfStream bool) []byte {
