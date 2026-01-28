@@ -266,6 +266,11 @@ func buildBedrockAdditionalModelRequestFields(request *chatCompletionRequest, ex
 		out["enable_thinking"] = extendedParams.EnableThinking
 	}
 
+	anthropicBeta := bedrock.GetAnthropicBetaFromHeaders(extendedParams.ExtraHeaders)
+	if len(anthropicBeta) > 0 {
+		out["anthropic_beta"] = anthropicBeta
+	}
+
 	return out, nil
 }
 
