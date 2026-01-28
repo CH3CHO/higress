@@ -147,7 +147,8 @@ void PluginRootContext::incrementRequestCount() {
 
 FilterHeadersStatus PluginRootContext::onHeader(
     PluginContext& ctx,
-    const ModelRouterConfigRule& rule) {
+    const ModelRouterConfigRule& rule,
+    bool end_stream) {
   // Default to bypass mode
   ctx.mode_ = MODE_BYPASS;
 
@@ -217,7 +218,8 @@ FilterHeadersStatus PluginRootContext::onHeader(
     tryProcessModelInQuery(rule, query);
   }
 
-  if (!Wasm::Common::Http::hasRequestBody()) {
+  if (end_stream) {
+    // end_stream in header phase means no body
     return FilterHeadersStatus::Continue;
   }
 
@@ -424,10 +426,10 @@ FilterDataStatus PluginRootContext::onMultipartBody(
   return FilterDataStatus::StopIterationAndBuffer;
 }
 
-FilterHeadersStatus PluginContext::onRequestHeaders(uint32_t, bool) {
+FilterHeadersStatus PluginContext::onRequestHeaders(uint32_t, bool end_stream) {
   auto* rootCtx = rootContext();
-  return rootCtx->onHeaders([rootCtx, this](const auto& config) {
-    auto ret = rootCtx->onHeader(*this, config);
+  return rootCtx->onHeaders([rootCtx, this, end_stream](const auto& config) {
+    auto ret = rootCtx->onHeader(*this, config, end_stream);
     if (ret == FilterHeadersStatus::StopIteration) {
       this->config_ = &config;
     }

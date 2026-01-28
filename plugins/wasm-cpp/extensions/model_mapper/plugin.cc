@@ -159,7 +159,8 @@ void PluginRootContext::incrementRequestCount() {
 }
 
 FilterHeadersStatus PluginRootContext::onHeader(
-    const ModelMapperConfigRule& rule) {
+    const ModelMapperConfigRule& rule,
+    bool end_stream) {
   // Increment request count and check for rebuild
   incrementRequestCount();
 
@@ -183,7 +184,8 @@ FilterHeadersStatus PluginRootContext::onHeader(
     LOG_ERROR("get vm memory size failed");
   }
 
-  if (!Wasm::Common::Http::hasRequestBody()) {
+  if (end_stream) {
+    // end_stream in header phase means no body
     return FilterHeadersStatus::Continue;
   }
   auto path = getRequestHeader(Wasm::Common::Http::Header::Path)->toString();
@@ -314,10 +316,10 @@ std::string PluginRootContext::doModelMapping(const ModelMapperConfigRule& rule,
   return model;
 }
 
-FilterHeadersStatus PluginContext::onRequestHeaders(uint32_t, bool) {
+FilterHeadersStatus PluginContext::onRequestHeaders(uint32_t, bool end_stream) {
   auto* rootCtx = rootContext();
-  return rootCtx->onHeaders([rootCtx, this](const auto& config) {
-    auto ret = rootCtx->onHeader(config);
+  return rootCtx->onHeaders([rootCtx, this, end_stream](const auto& config) {
+    auto ret = rootCtx->onHeader(config, end_stream);
     if (ret == FilterHeadersStatus::StopIteration) {
       this->config_ = &config;
     }

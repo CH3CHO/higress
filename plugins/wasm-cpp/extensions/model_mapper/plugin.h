@@ -60,7 +60,7 @@ class PluginRootContext : public RootContext,
       : RootContext(id, root_id) {}
   ~PluginRootContext() {}
   bool onConfigure(size_t) override;
-  FilterHeadersStatus onHeader(const ModelMapperConfigRule&);
+  FilterHeadersStatus onHeader(const ModelMapperConfigRule&, bool);
   FilterDataStatus onBody(const ModelMapperConfigRule&, std::string_view);
   bool configure(size_t);
   void incrementRequestCount();

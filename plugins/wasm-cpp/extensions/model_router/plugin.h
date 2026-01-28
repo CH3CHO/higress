@@ -68,7 +68,7 @@ class PluginRootContext : public RootContext,
       : RootContext(id, root_id) {}
   ~PluginRootContext() {}
   bool onConfigure(size_t) override;
-  FilterHeadersStatus onHeader(PluginContext& ctx, const ModelRouterConfigRule&);
+  FilterHeadersStatus onHeader(PluginContext& ctx, const ModelRouterConfigRule&, bool end_stream);
   FilterDataStatus onJsonBody(const ModelRouterConfigRule&, const std::string_view&);
   FilterDataStatus onMultipartBody(PluginContext& ctx, const ModelRouterConfigRule& rule, WasmDataPtr& body, bool end_stream);
   bool configure(size_t);
