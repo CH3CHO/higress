@@ -68,6 +68,8 @@ const (
 	ApiNameAnthropicMessages           ApiName = "anthropic/v1/messages"
 	ApiNameAnthropicComplete           ApiName = "anthropic/v1/complete"
 
+	ApiNameVertexOriginal ApiName = "/vertex/original"
+
 	// OpenAI
 	PathOpenAIPrefix                               = "/v1"
 	PathOpenAICompletions                          = "/v1/completions"

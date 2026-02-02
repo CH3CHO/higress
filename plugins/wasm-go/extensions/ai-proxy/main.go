@@ -191,7 +191,7 @@ func onHttpRequestHeader(ctx wrapper.HttpContext, pluginConfig config.PluginConf
 	activeProvider := pluginConfig.GetProvider()
 
 	if activeProvider == nil {
-		log.Debugf("[onHttpRequestHeader] no active provider, skip processing")
+		log.Debugf("[onHttpRequestHeader] no active provider, skip processing, path: %s", ctx.Path())
 		ctx.DontReadRequestBody()
 		return types.ActionContinue
 	}
@@ -379,6 +379,13 @@ func onHttpResponseHeaders(ctx wrapper.HttpContext, pluginConfig config.PluginCo
 		providerConfig.DefaultTransformResponseHeaders(ctx, headers)
 	}
 	util.ReplaceResponseHeaders(headers)
+
+	// For original mode, skip body processing
+	if providerConfig.IsOriginal() {
+		log.Tracef("[onHttpResponseHeaders] original mode detected, will skip body processing")
+		ctx.DontReadResponseBody()
+		return types.ActionContinue
+	}
 
 	_, needHandleBody := activeProvider.(provider.TransformResponseBodyHandler)
 	var needHandleStreamingBody bool

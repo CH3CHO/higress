@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -32,6 +33,7 @@ const (
 	vertexGlobalDomain = "aiplatform.googleapis.com"
 	// /v1/projects/{PROJECT_ID}/locations/{REGION}/publishers/google/models/{MODEL_ID}:{ACTION}
 	vertexPathTemplate               = "/v1/projects/%s/locations/%s/publishers/google/models/%s:%s"
+	vertexPathPrefixTemplateOriginal = "/v1/projects/%s/locations/%s/publishers/google"
 	vertexChatCompletionAction       = "generateContent"
 	vertexChatCompletionStreamAction = "streamGenerateContent?alt=sse"
 	vertexEmbeddingAction            = "predict"
@@ -91,13 +93,7 @@ func (v *vertexProvider) GetProviderType() string {
 }
 
 func (v *vertexProvider) GetApiName(path string) ApiName {
-	if strings.HasSuffix(path, vertexChatCompletionAction) || strings.HasSuffix(path, vertexChatCompletionStreamAction) {
-		return ApiNameChatCompletion
-	}
-	if strings.HasSuffix(path, vertexEmbeddingAction) {
-		return ApiNameEmbeddings
-	}
-	return ""
+	return ApiNameVertexOriginal
 }
 
 func (v *vertexProvider) OnRequestHeaders(ctx wrapper.HttpContext, apiName ApiName) error {
@@ -120,6 +116,7 @@ func (v *vertexProvider) TransformRequestHeaders(ctx wrapper.HttpContext, apiNam
 	} else {
 		headers.Set(vertexRequestTypeHeader, v.config.vertexRequestType)
 	}
+	log.Debugf("vertex: overwrite host header to %s", vertexRegionDomain)
 	util.OverwriteRequestHostHeader(headers, vertexRegionDomain)
 }
 
@@ -157,12 +154,10 @@ func (v *vertexProvider) getToken() (cached bool, err error) {
 }
 
 func (v *vertexProvider) OnRequestBody(ctx wrapper.HttpContext, apiName ApiName, body []byte) (types.Action, error) {
-	if !v.config.isSupportedAPI(apiName) {
+	if !v.config.IsOriginal() && !v.config.isSupportedAPI(apiName) {
 		return types.ActionContinue, errUnsupportedApiName
 	}
-	if v.config.IsOriginal() {
-		return types.ActionContinue, nil
-	}
+
 	headers := util.GetRequestHeaders()
 	body, err := v.TransformRequestBodyHeaders(ctx, apiName, body, headers)
 	util.ReplaceRequestHeaders(headers)
@@ -181,6 +176,17 @@ func (v *vertexProvider) OnRequestBody(ctx wrapper.HttpContext, apiName ApiName,
 }
 
 func (v *vertexProvider) TransformRequestBodyHeaders(ctx wrapper.HttpContext, apiName ApiName, body []byte, headers http.Header) ([]byte, error) {
+	if v.config.IsOriginal() {
+		requestPath, err := v.getRequestPathForOriginal()
+		if err != nil {
+			return nil, err
+		}
+
+		log.Debugf("vertex original provider: request path: %s", requestPath)
+		util.OverwriteRequestPathHeader(headers, requestPath)
+		return body, nil
+	}
+
 	if apiName == ApiNameCompletion {
 		var err error
 		body, err = translateCompletionRequestToChatCompletionRequest(body)
@@ -242,7 +248,6 @@ func (v *vertexProvider) onEmbeddingsRequestBody(ctx wrapper.HttpContext, body [
 }
 
 func (v *vertexProvider) OnStreamingEvent(ctx wrapper.HttpContext, name ApiName, event StreamEvent) ([]StreamEvent, error) {
-	log.Infof("[vertexProvider] receive stream event: %+v", event)
 	if name != ApiNameChatCompletion && name != ApiNameCompletion {
 		return nil, nil
 	}
@@ -616,6 +621,27 @@ func (v *vertexProvider) getRequestPath(apiName ApiName, modelId string, stream 
 		action = vertexChatCompletionAction
 	}
 	return fmt.Sprintf(vertexPathTemplate, v.config.vertexProjectId, v.config.vertexRegion, modelId, action)
+}
+
+func (v *vertexProvider) getRequestPathForOriginal() (string, error) {
+	pathPrefix := fmt.Sprintf(vertexPathPrefixTemplateOriginal, v.config.vertexProjectId, v.config.vertexRegion)
+	requestPath, err := proxywasm.GetHttpRequestHeader(":path")
+	if err != nil {
+		return "", fmt.Errorf("proxywasm.GetHttpRequestHeader failed: %v", err)
+	}
+	var pathSuffix string
+	if idx := strings.Index(requestPath, "/models"); idx != -1 {
+		pathSuffix = requestPath[idx:]
+	} else {
+		pathSuffix = requestPath
+	}
+	log.Debugf("vertex original provider: path=%s, pathSuffix=%s", requestPath, pathSuffix)
+
+	finalPath, err := url.JoinPath(pathPrefix, pathSuffix)
+	if err != nil {
+		return "", fmt.Errorf("vertex original provider: failed to join path: %v", err)
+	}
+	return finalPath, nil
 }
 
 func (v *vertexProvider) buildVertexChatRequest(request *chatCompletionRequest, extendedParams *vertexExtendedParams) (*vertexChatRequest, error) {
