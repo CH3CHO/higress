@@ -296,11 +296,10 @@ func extractAmazonEventStreamEvents(ctx wrapper.HttpContext, chunk []byte) []Con
 
 	r := bytes.NewReader(body)
 	var events []ConverseStreamEvent
-	var lastRead int64 = -1
+	var lastRead int64 = 0
 	messageBuffer := make([]byte, 1024)
 	defer func() {
-		log.Infof("extractAmazonEventStreamEvents: lastRead=%d, r.Size=%d", lastRead, r.Size())
-		ctx.SetContext(ctxKeyStreamingBody, nil)
+		log.Debugf("extractAmazonEventStreamEvents: lastRead=%d, r.Size=%d", lastRead, r.Size())
 	}()
 
 	for {
@@ -309,7 +308,7 @@ func extractAmazonEventStreamEvents(ctx wrapper.HttpContext, chunk []byte) []Con
 			if err == io.EOF {
 				break
 			}
-			log.Errorf("failed to decode message: %v", err)
+			log.Warnf("bedrock failed to decode message: %v, lastRead=%d, r.Size=%d", err, lastRead, r.Size())
 			break
 		}
 		var event ConverseStreamEvent
@@ -317,6 +316,11 @@ func extractAmazonEventStreamEvents(ctx wrapper.HttpContext, chunk []byte) []Con
 			events = append(events, event)
 		}
 		lastRead = r.Size() - int64(r.Len())
+	}
+	if lastRead < int64(len(body)) {
+		ctx.SetContext(ctxKeyStreamingBody, body[lastRead:])
+	} else {
+		ctx.SetContext(ctxKeyStreamingBody, nil)
 	}
 	return events
 }
