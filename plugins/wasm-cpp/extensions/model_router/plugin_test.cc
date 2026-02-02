@@ -345,6 +345,51 @@ TEST_F(ModelRouterTest, AzurePathModelToHeaderBadPath) {
   EXPECT_EQ(context_->onRequestBody(request_json.length(), true), FilterDataStatus::Continue);
 }
 
+TEST_F(ModelRouterTest, VertexPathModelToHeader) {
+  std::string configuration = R"(
+{
+  "modelToHeader": "x-higress-llm-model"
+})";
+
+  config_.set(configuration);
+  EXPECT_TRUE(root_context_->configure(configuration.size()));
+
+  path_ = "/llm/100012345/models/veo-3.1-generate-preview:predictLongRunning";
+  EXPECT_CALL(*mock_context_,
+              setBuffer(testing::_, testing::_, testing::_, testing::_))
+      .Times(0);
+
+  EXPECT_CALL(
+      *mock_context_,
+      replaceHeaderMapValue(testing::_, std::string_view("x-higress-llm-model"),
+                            std::string_view("veo-3.1-generate-preview")));
+
+  EXPECT_EQ(context_->onRequestHeaders(0, false),
+            FilterHeadersStatus::Continue);
+}
+
+TEST_F(ModelRouterTest, VertexPathModelToHeaderBadPath) {
+  std::string configuration = R"(
+{
+  "modelToHeader": "x-higress-llm-model"
+})";
+
+  config_.set(configuration);
+  EXPECT_TRUE(root_context_->configure(configuration.size()));
+
+  path_ = "/llm/100012345/models/:predictLongRunning";
+  EXPECT_CALL(*mock_context_,
+              setBuffer(testing::_, testing::_, testing::_, testing::_))
+      .Times(0);
+  EXPECT_CALL(
+      *mock_context_,
+      replaceHeaderMapValue(testing::_, std::string_view("x-higress-llm-model"),
+                            testing::_)).Times(0);
+
+  EXPECT_EQ(context_->onRequestHeaders(0, false),
+            FilterHeadersStatus::StopIteration);
+}
+
 TEST_F(ModelRouterTest, RewriteModelAndHeaderMultipartFormData) {
   std::string configuration = R"({
   "addProviderHeader": "x-higress-llm-provider"

@@ -48,11 +48,13 @@ struct ModelRouterConfigRule {
   std::string add_provider_header_;
   std::string model_to_header_;
   std::vector<std::string> enable_on_path_suffix_ = {
-      "/completions",  "/embeddings",       "/images/generations",
+      "/completions",  "/embeddings", "/images/generations",
       "/audio/speech", "/fine_tuning/jobs", "/moderations",
       "/image-synthesis", "/video-synthesis"};
-  std::vector<std::string> enable_on_path_keyword = {
-      "/llm/"
+  std::vector<std::string> enable_on_path_keyword_ = {
+      "/llm/", // Generic LLM path
+      "/tasks/", // For task-specific models, like multimodal-generation models including TongYi Wan
+      "/models/" // For Vertex AI style model specification
   };
 };
 
@@ -77,6 +79,7 @@ class PluginRootContext : public RootContext,
  private:
   bool parsePluginConfig(const json&, ModelRouterConfigRule&) override;
   bool tryProcessAzureApiPath(const ModelRouterConfigRule& rule, const std::string_view& path);
+  bool tryProcessVertexApiPath(const ModelRouterConfigRule& rule, const std::string_view& path);
   bool tryProcessModelInQuery(const ModelRouterConfigRule& rule, const std::string_view& query);
 
   uint64_t request_count_ = 0;

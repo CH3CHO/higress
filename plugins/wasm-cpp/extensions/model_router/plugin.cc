@@ -18,7 +18,9 @@
 #include <limits>
 #include <regex>
 
+#include "absl/algorithm/container.h"
 #include "absl/strings/str_cat.h"
+#include "absl/strings/str_join.h"
 #include "absl/strings/str_split.h"
 #include "common/http_util.h"
 #include "common/json_util.h"
@@ -48,6 +50,7 @@ constexpr std::string_view SetDecoderBufferLimitKey =
     "set_decoder_buffer_limit";
 constexpr std::string_view DefaultMaxBodyBytes = "104857600";
 constexpr std::string_view AzureDeploymentPathKeyword = "/openai/deployments/";
+constexpr std::string_view VertexModelsPathKeyword = "/models/";
 
 }  // namespace
 
@@ -85,7 +88,10 @@ bool PluginRootContext::parsePluginConfig(const json& configuration,
   if (!JsonArrayIterate(
           configuration, "enableOnPathSuffix", [&](const json& item) -> bool {
             if (item.is_string()) {
-              rule.enable_on_path_suffix_.emplace_back(item.get<std::string>());
+              auto value = item.get<std::string>();
+              if (absl::c_find(rule.enable_on_path_suffix_, value) == rule.enable_on_path_suffix_.end()) {
+                rule.enable_on_path_suffix_.emplace_back(value);
+              }
               return true;
             }
             return false;
@@ -97,7 +103,10 @@ bool PluginRootContext::parsePluginConfig(const json& configuration,
   if (!JsonArrayIterate(
           configuration, "enableOnPathKeyword", [&](const json& item) -> bool {
             if (item.is_string()) {
-              rule.enable_on_path_keyword.emplace_back(item.get<std::string>());
+              auto value = item.get<std::string>();
+              if (absl::c_find(rule.enable_on_path_keyword_, value) == rule.enable_on_path_keyword_.end()) {
+                rule.enable_on_path_keyword_.emplace_back(value);
+              }
               return true;
             }
             return false;
@@ -105,6 +114,14 @@ bool PluginRootContext::parsePluginConfig(const json& configuration,
     LOG_WARN("Invalid type for item in enableOnPathKeyword. Expected string.");
     return false;
   }
+
+  LOG_DEBUG(absl::StrCat(
+      "Parsed plugin config: model_key=", rule.model_key_,
+      ", add_provider_header=", rule.add_provider_header_,
+      ", model_to_header=", rule.model_to_header_,
+      ", enable_on_path_suffix=", absl::StrJoin(rule.enable_on_path_suffix_, ","),
+      ", enable_on_path_keyword=", absl::StrJoin(rule.enable_on_path_keyword_, ","),
+      ""));
 
   return true;
 }
@@ -196,7 +213,7 @@ FilterHeadersStatus PluginRootContext::onHeader(
     }
   }
   if (!enable) {
-    for (const auto& enable_keyword : rule.enable_on_path_keyword) {
+    for (const auto& enable_keyword : rule.enable_on_path_keyword_) {
       if (absl::StrContains({path.c_str(), uri_end}, enable_keyword)) {
         enable = true;
         break;
@@ -212,10 +229,15 @@ FilterHeadersStatus PluginRootContext::onHeader(
     return FilterHeadersStatus::Continue;
   }
 
+  if (tryProcessVertexApiPath(rule, path)) {
+    return FilterHeadersStatus::Continue;
+  }
+
   if (params_pos != std::string::npos && params_pos + 1 < path.size()) {
     auto query = path.substr(params_pos + 1);
     LOG_DEBUG(absl::StrCat("query: ", query));
     tryProcessModelInQuery(rule, query);
+    // Always continue after processing query because model in body may override it
   }
 
   if (end_stream) {
@@ -286,6 +308,28 @@ bool PluginRootContext::tryProcessAzureApiPath(const ModelRouterConfigRule& rule
     replaceRequestHeader(rule.model_to_header_, deployment_name);
   }
   // Azure deployment name does not contain provider info
+  return true;
+}
+
+bool PluginRootContext::tryProcessVertexApiPath(const ModelRouterConfigRule& rule, const std::string_view& path) {
+  auto pos = path.find(VertexModelsPathKeyword);
+  if (pos == std::string_view::npos) {
+    return false;
+  }
+  pos += VertexModelsPathKeyword.size();
+  auto end_pos = path.find(':', pos);
+  if (end_pos == std::string_view::npos) {
+    end_pos = path.size();
+  }
+  auto model_name = path.substr(pos, end_pos - pos);
+  if (model_name.empty()) {
+    return false;
+  }
+  LOG_DEBUG(absl::StrCat("Model name extracted from Vertex API path: ", model_name));
+  if (!rule.model_to_header_.empty()) {
+    replaceRequestHeader(rule.model_to_header_, model_name);
+  }
+  // Vertex model name does not contain provider info
   return true;
 }
 
