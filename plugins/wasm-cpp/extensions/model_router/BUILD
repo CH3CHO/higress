@@ -23,6 +23,7 @@ proxy_wasm_cc_binary(
     ],
     deps = [
         "@proxy_wasm_cpp_sdk//:proxy_wasm_intrinsics_higress",
+        "@com_google_absl//absl/algorithm:container",
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/time",
         "//common:json_util",
@@ -41,6 +42,7 @@ cc_library(
     ],
     copts = ["-DNULL_PLUGIN"],
     deps = [
+        "@com_google_absl//absl/algorithm:container",
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/time",
         "//common:json_util",
