@@ -685,6 +685,16 @@ func onHttpResponseHeaders(ctx wrapper.HttpContext, config AIStatisticsConfig) t
 	// Set user defined log & span attributes.
 	setAttributeBySource(ctx, config, ResponseHeader, nil, nil)
 
+	status, _ := proxywasm.GetHttpResponseHeader(":status")
+	if status != "200" && ctx.HasResponseBody() {
+		// Delay the header flushing to the next filter and buffer the entire body for logging.
+		// Because if we don't do this, following plugins may just break the chain when processing the header,
+		// such as triggering request fallback, which will cause us unable to log the response body at all.
+		// And usually non-200 responses are not that large, so we can afford buffering them.
+		ctx.BufferResponseBody()
+		return types.HeaderStopIteration
+	}
+
 	return types.ActionContinue
 }
 
