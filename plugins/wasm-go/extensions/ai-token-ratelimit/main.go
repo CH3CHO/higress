@@ -73,6 +73,7 @@ const (
 	return {ARGV[1], redis.call('decrby', KEYS[1], ARGV[3]), ttl}
 	`
 
+	Skip                   = "skip"
 	LimitRedisContextKey   = "LimitRedisContext"
 	ResponseTypeKey        = "ResponseType"
 	ResponseUsageFoundKey  = "ResponseUsageFound"
@@ -159,6 +160,9 @@ func onHttpRequestHeaders(ctx wrapper.HttpContext, cfg config.AiTokenRateLimitCo
 		val, ruleItem, configItem := checkRequestAgainstLimitRule(ctx, cfg.RuleItems)
 		if ruleItem == nil || configItem == nil {
 			// 没有匹配到限流规则直接返回
+			ctx.SetContext(Skip, true)
+			ctx.DontReadRequestBody()
+			ctx.DontReadResponseBody()
 			return types.ActionContinue
 		}
 
@@ -222,6 +226,11 @@ func onHttpRequestHeaders(ctx wrapper.HttpContext, cfg config.AiTokenRateLimitCo
 }
 
 func onHttpResponseHeaders(ctx wrapper.HttpContext, cfg config.AiTokenRateLimitConfig) types.Action {
+	if ctx.GetBoolContext(Skip, false) {
+		ctx.DontReadResponseBody()
+		return types.ActionContinue
+	}
+
 	if status, err := proxywasm.GetHttpResponseHeader(":status"); err != nil || status != "200" {
 		if err != nil {
 			log.Errorf("unable to load :status header from response: %v", err)
@@ -246,6 +255,11 @@ func onHttpResponseHeaders(ctx wrapper.HttpContext, cfg config.AiTokenRateLimitC
 
 func onHttpStreamingBody(ctx wrapper.HttpContext, cfg config.AiTokenRateLimitConfig, data []byte, endOfStream bool) (ret []byte) {
 	ret = data
+
+	if ctx.GetBoolContext(Skip, false) {
+		ctx.DontReadResponseBody()
+		return
+	}
 
 	if !ctx.GetBoolContext(ResponseUsageFoundKey, false) {
 		usage := int64(0)

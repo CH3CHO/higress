@@ -16,14 +16,15 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"testing"
-
-	"ai-token-ratelimit/config"
-	"ai-token-ratelimit/util"
 
 	"github.com/higress-group/proxy-wasm-go-sdk/proxywasm/types"
 	"github.com/higress-group/wasm-go/pkg/test"
 	"github.com/stretchr/testify/require"
+
+	"ai-token-ratelimit/config"
+	"ai-token-ratelimit/util"
 )
 
 // 测试配置：全局限流配置
@@ -804,15 +805,45 @@ func TestCompleteFlow(t *testing.T) {
 			resp := test.CreateRedisRespArray([]interface{}{100, 99, 60})
 			host.CallOnRedisCall(0, resp)
 
+			action = host.CallOnHttpResponseHeaders([][2]string{
+				{":status", "200"},
+				{"content-type", "application/json"},
+			})
+			require.Equal(t, types.ActionContinue, action)
+
 			// 3. 处理流式响应体
 			responseBody := []byte(`{"choices":[{"message":{"content":"AI response"}}],"usage":{"prompt_tokens":5,"completion_tokens":8,"total_tokens":13}}`)
-			action = host.CallOnHttpStreamingRequestBody(responseBody, true)
+			responseBodyLength := len(responseBody)
+			bufferedResponseBody := make([]byte, 0)
+			for i := 0; i < responseBodyLength; {
+				end := i + 1
+				if end > responseBodyLength {
+					end = responseBodyLength
+				}
+				chunk := responseBody[i:end]
+				isLast := end == responseBodyLength
+				action = host.CallOnHttpStreamingResponseBody(chunk, isLast)
+				if action != types.ActionContinue {
+					// 读取到 usage 数据后需要返回 DataStopIterationNoBuffer 等待 Redis 调用完成
+					require.Equal(t, types.DataStopIterationNoBuffer, action)
+					bufferedResponseBody = append(bufferedResponseBody, chunk...)
+				}
+				i = end
+			}
 
-			result := host.GetRequestBody()
-			require.Equal(t, responseBody, result)
+			// 此时应该返回 DataStopIterationNoBuffer，等待 Redis 调用完成
+			require.Equal(t, types.DataStopIterationNoBuffer, action)
 
-			// 应该返回 ActionContinue
-			require.Equal(t, types.ActionContinue, action)
+			// 模拟 Redis 调用响应，更新 token 统计
+			host.CallOnRedisCall(0, resp)
+
+			// 继续处理剩余的响应体
+			require.Equal(t, types.ActionContinue, host.GetHttpStreamAction())
+
+			// 验证最终的响应体内容，即缓存的响应体
+			result := host.GetResponseBody()
+			fmt.Println("Final response body:", string(result))
+			require.Equal(t, bufferedResponseBody, result)
 
 			// 4. 完成请求
 			host.CompleteHttp()
