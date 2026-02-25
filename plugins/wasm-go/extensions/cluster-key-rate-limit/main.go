@@ -15,6 +15,8 @@
 package main
 
 import (
+	"encoding/binary"
+	"errors"
 	"fmt"
 	"net"
 	"net/url"
@@ -75,6 +77,12 @@ const (
 	UserAttrRemainingKey = "qpx_remaining"
 )
 
+var (
+	requestRatelimitKeyPropertyPath        = []string{"cluster-key-rate-limit.key"}
+	requestRatelimitCountPropertyPath      = []string{"cluster-key-rate-limit.count"}
+	requestRatelimitTimeWindowPropertyPath = []string{"cluster-key-rate-limit.time_window"}
+)
+
 type LimitContext struct {
 	count     int
 	remaining int
@@ -115,7 +123,12 @@ func onHttpRequestHeaders(ctx wrapper.HttpContext, cfg config.ClusterKeyRateLimi
 	ctx.DisableReroute()
 	limitKey, count, timeWindow := "", int64(0), int64(0)
 
-	if cfg.GlobalThreshold != nil {
+	if limitKeyFromProperty, countFromProperty, timeWindowFromProperty, ok := getContextValuesFromProperty(); ok {
+		log.Debugf("got context values from properties: limitKey=%s count=%d timeWindow=%d", limitKeyFromProperty, countFromProperty, timeWindowFromProperty)
+		limitKey = limitKeyFromProperty
+		count = countFromProperty
+		timeWindow = timeWindowFromProperty
+	} else if cfg.GlobalThreshold != nil {
 		// 全局限流模式
 		limitKey = fmt.Sprintf(ClusterGlobalRateLimitFormat, cfg.RuleName, cfg.GlobalThreshold.TimeWindow, cfg.GlobalThreshold.Count)
 		count = cfg.GlobalThreshold.Count
@@ -329,4 +342,48 @@ func rejected(config config.ClusterKeyRateLimitConfig, context LimitContext) {
 	}
 	_ = proxywasm.SendHttpResponseWithDetail(
 		config.RejectedCode, "cluster-key-rate-limit.rejected", util.ReconvertHeaders(headers), []byte(config.RejectedMsg), -1)
+}
+
+func getContextValuesFromProperty() (limitKey string, count int64, timeWindow int64, succ bool) {
+	limitKey = ""
+	count = 0
+	timeWindow = 0
+	succ = false
+
+	if limitKeyBytes, err := proxywasm.GetProperty(requestRatelimitKeyPropertyPath); err == nil && limitKeyBytes != nil {
+		limitKey = string(limitKeyBytes)
+	} else {
+		if err != nil && !errors.Is(err, types.ErrorStatusNotFound) {
+			log.Warnf("failed to get limit key from property: %v", err)
+		}
+		return
+	}
+
+	if countBytes, err := proxywasm.GetProperty(requestRatelimitCountPropertyPath); err == nil && countBytes != nil {
+		count = int64(bytesToUint32(countBytes))
+	} else {
+		if err != nil && !errors.Is(err, types.ErrorStatusNotFound) {
+			log.Warnf("failed to get count from property: %v", err)
+		}
+		return
+	}
+
+	if timeWindowBytes, err := proxywasm.GetProperty(requestRatelimitTimeWindowPropertyPath); err == nil && timeWindowBytes != nil {
+		timeWindow = int64(bytesToUint32(timeWindowBytes))
+	} else {
+		if err != nil && !errors.Is(err, types.ErrorStatusNotFound) {
+			log.Warnf("failed to get time window from property: %v", err)
+		}
+		return
+	}
+
+	succ = true
+	return
+}
+
+func bytesToUint32(bs []byte) uint32 {
+	if len(bs) != 4 {
+		return 0
+	}
+	return binary.LittleEndian.Uint32(bs)
 }
