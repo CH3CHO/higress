@@ -81,6 +81,7 @@ var (
 	requestRatelimitKeyPropertyPath        = []string{"cluster-key-rate-limit.key"}
 	requestRatelimitCountPropertyPath      = []string{"cluster-key-rate-limit.count"}
 	requestRatelimitTimeWindowPropertyPath = []string{"cluster-key-rate-limit.time_window"}
+	requestRatelimitDryRunPropertyPath     = []string{"cluster-key-rate-limit.dry_run"}
 )
 
 type LimitContext struct {
@@ -122,12 +123,14 @@ func parseConfig(json gjson.Result, cfg *config.ClusterKeyRateLimitConfig) error
 func onHttpRequestHeaders(ctx wrapper.HttpContext, cfg config.ClusterKeyRateLimitConfig) types.Action {
 	ctx.DisableReroute()
 	limitKey, count, timeWindow := "", int64(0), int64(0)
+	dryRun := false
 
-	if limitKeyFromProperty, countFromProperty, timeWindowFromProperty, ok := getContextValuesFromProperty(); ok {
-		log.Debugf("got context values from properties: limitKey=%s count=%d timeWindow=%d", limitKeyFromProperty, countFromProperty, timeWindowFromProperty)
+	if limitKeyFromProperty, countFromProperty, timeWindowFromProperty, dryRunFromProperty, ok := getContextValuesFromProperty(); ok {
+		log.Debugf("got context values from properties: limitKey=%s count=%d timeWindow=%d dryRun=%t", limitKeyFromProperty, countFromProperty, timeWindowFromProperty, dryRunFromProperty)
 		limitKey = limitKeyFromProperty
 		count = countFromProperty
 		timeWindow = timeWindowFromProperty
+		dryRun = dryRunFromProperty
 	} else if cfg.GlobalThreshold != nil {
 		// 全局限流模式
 		limitKey = fmt.Sprintf(ClusterGlobalRateLimitFormat, cfg.RuleName, cfg.GlobalThreshold.TimeWindow, cfg.GlobalThreshold.Count)
@@ -178,18 +181,19 @@ func onHttpRequestHeaders(ctx wrapper.HttpContext, cfg config.ClusterKeyRateLimi
 			remaining: resultArray[1].Integer(),
 			reset:     resultArray[2].Integer(),
 		}
+		ctx.SetContext(LimitContextKey, context)
 		ctx.SetUserAttribute(UserAttrRemainingKey, context.remaining)
 		if context.remaining < 0 {
-			ctx.SetUserAttribute(UserAttrResultKey, "reject")
-
-			// 触发限流
-			rejected(cfg, context)
+			if dryRun {
+				ctx.SetUserAttribute(UserAttrResultKey, "reject-dryrun")
+			} else {
+				ctx.SetUserAttribute(UserAttrResultKey, "reject")
+				rejected(cfg, context)
+			}
 		} else {
 			ctx.SetUserAttribute(UserAttrResultKey, "pass")
-
-			ctx.SetContext(LimitContextKey, context)
-			_ = proxywasm.ResumeHttpRequest()
 		}
+		_ = proxywasm.ResumeHttpRequest()
 	})
 
 	if err != nil {
@@ -333,18 +337,26 @@ func getDownStreamIp(rule config.LimitRuleItem) (net.IP, error) {
 	return realIP, nil
 }
 
-func rejected(config config.ClusterKeyRateLimitConfig, context LimitContext) {
+func rejected(cfg config.ClusterKeyRateLimitConfig, context LimitContext) {
 	headers := make(map[string][]string)
 	headers[RateLimitResetHeader] = []string{strconv.Itoa(context.reset)}
-	if config.ShowLimitQuotaHeader {
+	if cfg.ShowLimitQuotaHeader {
 		headers[RateLimitLimitHeader] = []string{strconv.Itoa(context.count)}
 		headers[RateLimitRemainingHeader] = []string{strconv.Itoa(0)}
 	}
+	rejectedCode := cfg.RejectedCode
+	if rejectedCode == 0 {
+		rejectedCode = config.DefaultRejectedCode
+	}
+	rejectedMsg := cfg.RejectedMsg
+	if rejectedMsg == "" {
+		rejectedMsg = config.DefaultRejectedMsg
+	}
 	_ = proxywasm.SendHttpResponseWithDetail(
-		config.RejectedCode, "cluster-key-rate-limit.rejected", util.ReconvertHeaders(headers), []byte(config.RejectedMsg), -1)
+		rejectedCode, "cluster-key-rate-limit.rejected", util.ReconvertHeaders(headers), []byte(rejectedMsg), -1)
 }
 
-func getContextValuesFromProperty() (limitKey string, count int64, timeWindow int64, succ bool) {
+func getContextValuesFromProperty() (limitKey string, count int64, timeWindow int64, dryRun bool, succ bool) {
 	limitKey = ""
 	count = 0
 	timeWindow = 0
@@ -375,6 +387,16 @@ func getContextValuesFromProperty() (limitKey string, count int64, timeWindow in
 			log.Warnf("failed to get time window from property: %v", err)
 		}
 		return
+	}
+
+	if dryRunBytes, err := proxywasm.GetProperty(requestRatelimitDryRunPropertyPath); err == nil && dryRunBytes != nil {
+		dryRun = bytesToUint32(dryRunBytes) != 0
+	} else {
+		if err != nil && !errors.Is(err, types.ErrorStatusNotFound) {
+			log.Warnf("failed to get dry-run flag from property: %v", err)
+		}
+		// dry-run flag is optional, we can proceed even if it's not found
+		dryRun = false
 	}
 
 	succ = true
