@@ -798,6 +798,13 @@ func TestOnHttpStreamingBody(t *testing.T) {
 }
 
 func TestCompleteFlow(t *testing.T) {
+	streamingResponseBodyEnabled := false
+
+	expectedPauseAction := types.ActionPause
+	if streamingResponseBodyEnabled {
+		expectedPauseAction = types.DataStopIterationNoBuffer
+	}
+
 	test.RunTest(t, func(t *testing.T) {
 		// 测试完整的限流流程
 		t.Run("complete rate limit flow", func(t *testing.T) {
@@ -839,15 +846,16 @@ func TestCompleteFlow(t *testing.T) {
 				isLast := end == responseBodyLength
 				action = host.CallOnHttpStreamingResponseBody(chunk, isLast)
 				if action != types.ActionContinue {
-					// 读取到 usage 数据后需要返回 DataStopIterationNoBuffer 等待 Redis 调用完成
-					require.Equal(t, types.DataStopIterationNoBuffer, action)
+					// 流式状态：读取到 usage 数据后需要暂停响应体处理流程，等待 Redis 调用完成
+					// 非流式状态：直接暂停响应体处理流程，等待响应体全部读取完成后再进行解析
+					require.Equal(t, expectedPauseAction, action)
 					bufferedResponseBody = append(bufferedResponseBody, chunk...)
 				}
 				i = end
 			}
 
-			// 此时应该返回 DataStopIterationNoBuffer，等待 Redis 调用完成
-			require.Equal(t, types.DataStopIterationNoBuffer, action)
+			// 此时应该暂停响应体处理流程，等待 Redis 调用完成
+			require.Equal(t, expectedPauseAction, action)
 
 			// 模拟 Redis 调用响应，更新 token 统计
 			host.CallOnRedisCall(0, resp)
@@ -916,15 +924,16 @@ func TestCompleteFlow(t *testing.T) {
 				isLast := end == responseBodyLength
 				action = host.CallOnHttpStreamingResponseBody(chunk, isLast)
 				if action != types.ActionContinue {
-					// 读取到 usage 数据后需要返回 DataStopIterationNoBuffer 等待 Redis 调用完成
-					require.Equal(t, types.DataStopIterationNoBuffer, action)
+					// 流式状态：读取到 usage 数据后需要暂停响应体处理流程，等待 Redis 调用完成
+					// 非流式状态：直接暂停响应体处理流程，等待响应体全部读取完成后再进行解析
+					require.Equal(t, expectedPauseAction, action)
 					bufferedResponseBody = append(bufferedResponseBody, chunk...)
 				}
 				i = end
 			}
 
-			// 此时应该返回 DataStopIterationNoBuffer，等待 Redis 调用完成
-			require.Equal(t, types.DataStopIterationNoBuffer, action)
+			// 此时应该暂停响应体处理流程，等待 Redis 调用完成
+			require.Equal(t, expectedPauseAction, action)
 
 			redisCalls = host.GetRedisCalloutAttributes()
 			require.Len(t, redisCalls, 1, "Should have only one Redis callout")
@@ -1062,15 +1071,16 @@ func TestCompleteFlow(t *testing.T) {
 				isLast := end == responseBodyLength
 				action = host.CallOnHttpStreamingResponseBody(chunk, isLast)
 				if action != types.ActionContinue {
-					// 读取到 usage 数据后需要返回 DataStopIterationNoBuffer 等待 Redis 调用完成
-					require.Equal(t, types.DataStopIterationNoBuffer, action)
+					// 流式状态：读取到 usage 数据后需要暂停响应体处理流程，等待 Redis 调用完成
+					// 非流式状态：直接暂停响应体处理流程，等待响应体全部读取完成后再进行解析
+					require.Equal(t, expectedPauseAction, action)
 					bufferedResponseBody = append(bufferedResponseBody, chunk...)
 				}
 				i = end
 			}
 
-			// 此时应该返回 DataStopIterationNoBuffer，等待 Redis 调用完成
-			require.Equal(t, types.DataStopIterationNoBuffer, action)
+			// 此时应该暂停响应体处理流程，等待 Redis 调用完成
+			require.Equal(t, expectedPauseAction, action)
 
 			redisCalls = host.GetRedisCalloutAttributes()
 			require.Len(t, redisCalls, 1, "Should have only one Redis callout")

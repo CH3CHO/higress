@@ -44,6 +44,7 @@ func init() {
 		wrapper.ProcessRequestHeaders(onHttpRequestHeaders),
 		wrapper.ProcessResponseHeaders(onHttpResponseHeaders),
 		wrapper.ProcessStreamingResponseBody(onHttpStreamingBody),
+		wrapper.ProcessResponseBody(onHttpResponseBody),
 		wrapper.WithRebuildAfterRequests[config.AiTokenRateLimitConfig](1000),
 		wrapper.WithRebuildMaxMemBytes[config.AiTokenRateLimitConfig](200*1024*1024),
 	)
@@ -101,6 +102,8 @@ const (
 	UserAttrResultKey    = "tpx_result"
 	UserAttrRemainingKey = "tpx_remaining"
 	UserAttrUsageKey     = "tpx_usage"
+
+	defaultMaxBodyBytes uint32 = 100 * 1024 * 1024
 )
 
 var (
@@ -263,6 +266,9 @@ func onHttpResponseHeaders(ctx wrapper.HttpContext, cfg config.AiTokenRateLimitC
 
 	if strings.Contains(contentType, "application/json") {
 		ctx.SetContext(ResponseTypeKey, ResponseTypeJson)
+		// TODO: add a config option to control whether to buffer the response body for json content type or use the streaming parsing approach.
+		ctx.BufferResponseBody()
+		ctx.SetResponseBodyBufferLimit(defaultMaxBodyBytes)
 	} else if strings.Contains(contentType, "text/event-stream") {
 		ctx.SetContext(ResponseTypeKey, ResponseTypeSse)
 	} else {
@@ -348,6 +354,40 @@ func onHttpStreamingBody(ctx wrapper.HttpContext, cfg config.AiTokenRateLimitCon
 	}
 
 	return
+}
+
+func onHttpResponseBody(ctx wrapper.HttpContext, cfg config.AiTokenRateLimitConfig, body []byte) types.Action {
+	var usage int64
+	if totalTokens := gjson.GetBytes(body, "usage.total_tokens"); totalTokens.Exists() && totalTokens.Type == gjson.Number {
+		usage = totalTokens.Int()
+	} else {
+		log.Debugf("usage.total_tokens field not found in response body or is not a number, skipping usage extraction")
+		return types.ActionContinue
+	}
+
+	ctx.SetUserAttribute(UserAttrUsageKey, usage)
+	_ = ctx.WriteUserAttributeToLogWithKey(LogKey)
+
+	if limitRedisContext, ok := ctx.GetContext(LimitRedisContextKey).(LimitRedisContext); !ok {
+		return types.ActionContinue
+	} else {
+		key := limitRedisContext.key
+		args := []interface{}{limitRedisContext.count, limitRedisContext.window, usage}
+		if err := cfg.RedisClient.Eval(ResponsePhaseFixedWindowScript, 1, []interface{}{key}, args, func(response resp.Value) {
+			log.Debugf("=== redis response in response phase: %v ===", response)
+			if array := response.Array(); len(array) == 3 {
+				tokenRemaining := response.Array()[1].Integer()
+				ctx.SetUserAttribute(UserAttrRemainingKey, tokenRemaining)
+				_ = ctx.WriteUserAttributeToLogWithKey(LogKey)
+			}
+			_ = proxywasm.ResumeHttpResponse()
+		}); err != nil {
+			log.Errorf("redis call in response phase failed with key %s and usage %d: %v", key, usage, err)
+			return types.ActionContinue
+		} else {
+			return types.ActionPause
+		}
+	}
 }
 
 func getUsageFromStreamingBodyJson(ctx wrapper.HttpContext, data []byte, endOfStream bool) int64 {
