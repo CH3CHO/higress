@@ -107,6 +107,7 @@ var (
 	tokenRatelimitKeyPropertyPath        = []string{"ai-token-ratelimit.key"}
 	tokenRatelimitCountPropertyPath      = []string{"ai-token-ratelimit.count"}
 	tokenRatelimitTimeWindowPropertyPath = []string{"ai-token-ratelimit.time_window"}
+	tokenRatelimitDryRunPropertyPath     = []string{"ai-token-ratelimit.dry_run"}
 )
 
 type LimitContext struct {
@@ -156,12 +157,14 @@ func parseConfig(json gjson.Result, cfg *config.AiTokenRateLimitConfig) error {
 func onHttpRequestHeaders(ctx wrapper.HttpContext, cfg config.AiTokenRateLimitConfig) types.Action {
 	ctx.DisableReroute()
 	limitKey, count, timeWindow := "", int64(0), int64(0)
+	dryRun := false
 
-	if limitKeyFromProperty, countFromProperty, timeWindowFromProperty, ok := getContextValuesFromProperty(); ok {
-		log.Debugf("got context values from properties: limitKey=%s count=%d timeWindow=%d", limitKeyFromProperty, countFromProperty, timeWindowFromProperty)
+	if limitKeyFromProperty, countFromProperty, timeWindowFromProperty, dryRunFromProperty, ok := getContextValuesFromProperty(); ok {
+		log.Debugf("got context values from properties: limitKey=%s count=%d timeWindow=%d dryRun=%t", limitKeyFromProperty, countFromProperty, timeWindowFromProperty, dryRunFromProperty)
 		limitKey = limitKeyFromProperty
 		count = countFromProperty
 		timeWindow = timeWindowFromProperty
+		dryRun = dryRunFromProperty
 	} else if cfg.GlobalThreshold != nil {
 		// 全局限流模式
 		limitKey = fmt.Sprintf(AiTokenGlobalRateLimitFormat, cfg.RuleName, cfg.GlobalThreshold.TimeWindow, cfg.GlobalThreshold.Count)
@@ -221,13 +224,18 @@ func onHttpRequestHeaders(ctx wrapper.HttpContext, cfg config.AiTokenRateLimitCo
 			remaining: resultArray[1].Integer(),
 			reset:     resultArray[2].Integer(),
 		}
+		ctx.SetUserAttribute(UserAttrRemainingKey, context.remaining)
 		if context.remaining < 0 {
-			ctx.SetUserAttribute(UserAttrResultKey, "reject")
-			rejected(cfg, context)
+			if dryRun {
+				ctx.SetUserAttribute(UserAttrResultKey, "reject-dryrun")
+			} else {
+				ctx.SetUserAttribute(UserAttrResultKey, "reject")
+				rejected(cfg, context)
+			}
 		} else {
 			ctx.SetUserAttribute(UserAttrResultKey, "pass")
-			_ = proxywasm.ResumeHttpRequest()
 		}
+		_ = proxywasm.ResumeHttpRequest()
 	})
 	if err != nil {
 		ctx.SetUserAttribute(UserAttrResultKey, "call_error")
@@ -585,8 +593,16 @@ func generateMetricName(route, cluster, model, consumer, metricName string) stri
 func rejected(cfg config.AiTokenRateLimitConfig, context LimitContext) {
 	headers := make(map[string][]string)
 	headers[RateLimitResetHeader] = []string{strconv.Itoa(context.reset)}
+	rejectedCode := cfg.RejectedCode
+	if rejectedCode == 0 {
+		rejectedCode = config.DefaultRejectedCode
+	}
+	rejectedMsg := cfg.RejectedMsg
+	if rejectedMsg == "" {
+		rejectedMsg = config.DefaultRejectedMsg
+	}
 	_ = proxywasm.SendHttpResponseWithDetail(
-		cfg.RejectedCode, "ai-token-ratelimit.rejected", util.ReconvertHeaders(headers), []byte(cfg.RejectedMsg), -1)
+		rejectedCode, "ai-token-ratelimit.rejected", util.ReconvertHeaders(headers), []byte(rejectedMsg), -1)
 
 	//route, _ := util.GetRouteName()
 	//cluster, _ := util.GetClusterName()
@@ -594,7 +610,7 @@ func rejected(cfg config.AiTokenRateLimitConfig, context LimitContext) {
 	//cfg.IncrementCounter(generateMetricName(route, cluster, "none", consumer, TokenRateLimitCount), 1)
 }
 
-func getContextValuesFromProperty() (limitKey string, count int64, timeWindow int64, succ bool) {
+func getContextValuesFromProperty() (limitKey string, count int64, timeWindow int64, dryRun bool, succ bool) {
 	limitKey = ""
 	count = 0
 	timeWindow = 0
@@ -625,6 +641,16 @@ func getContextValuesFromProperty() (limitKey string, count int64, timeWindow in
 			log.Warnf("failed to get time window from property: %v", err)
 		}
 		return
+	}
+
+	if dryRunBytes, err := proxywasm.GetProperty(tokenRatelimitDryRunPropertyPath); err == nil && dryRunBytes != nil {
+		dryRun = bytesToUint32(dryRunBytes) != 0
+	} else {
+		if err != nil && !errors.Is(err, types.ErrorStatusNotFound) {
+			log.Warnf("failed to get dry-run flag from property: %v", err)
+		}
+		// dry-run flag is optional, we can proceed even if it's not found
+		dryRun = false
 	}
 
 	succ = true

@@ -15,14 +15,19 @@
 package main
 
 import (
+	"encoding/binary"
 	"encoding/json"
+	"fmt"
 	"testing"
 
 	"cluster-key-rate-limit/config"
 
+	"github.com/higress-group/proxy-wasm-go-sdk/proxywasm"
 	"github.com/higress-group/proxy-wasm-go-sdk/proxywasm/types"
 	"github.com/higress-group/wasm-go/pkg/test"
+	"github.com/higress-group/wasm-go/pkg/wrapper"
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 )
 
 // 测试配置：全局限流配置
@@ -284,6 +289,17 @@ var globalRouteMixedLimitWithRedisConfig = func() json.RawMessage {
 					"timeout":      2000,
 				},
 			},
+		},
+	})
+	return data
+}()
+
+// 测试配置：基于 Property 获取限流配置的插件配置
+var propertyLimitConfig = func() json.RawMessage {
+	data, _ := json.Marshal(map[string]interface{}{
+		"redis": map[string]interface{}{
+			"service_name": "redis.static",
+			"service_port": 6379,
 		},
 	})
 	return data
@@ -814,5 +830,187 @@ func TestCompleteFlow(t *testing.T) {
 
 			host.CompleteHttp()
 		})
+
+		t.Run("complete rate limit flow with property", func(t *testing.T) {
+			host, status := test.NewTestHost(propertyLimitConfig)
+			defer host.Reset()
+			require.Equal(t, types.OnPluginStartStatusOK, status)
+
+			_ = proxywasm.SetProperty(requestRatelimitKeyPropertyPath, []byte("test-key-123"))
+			_ = proxywasm.SetProperty(requestRatelimitCountPropertyPath, uint32ToBytes(10))
+			_ = proxywasm.SetProperty(requestRatelimitTimeWindowPropertyPath, uint32ToBytes(60))
+
+			// 1. 处理请求头
+			action := host.CallOnHttpRequestHeaders([][2]string{
+				{":authority", "example.com"},
+				{":path", "/api/test"},
+				{":method", "GET"},
+			})
+
+			// 由于需要调用 Redis，应该返回 HeaderStopAllIterationAndWatermark
+			require.Equal(t, types.HeaderStopAllIterationAndWatermark, action)
+
+			redisCalls := host.GetRedisCalloutAttributes()
+			require.Len(t, redisCalls, 1, "Should have only one Redis callout")
+
+			redisCall := redisCalls[0]
+			require.Equal(t, "outbound|6379||redis.static", redisCall.Upstream)
+			fmt.Println("Redis call query:\n", string(redisCall.Query))
+			require.Equal(t, string(test.CreateRedisRespArray([]interface{}{"eval", FixedWindowScript, "1", "test-key-123", "10", "60"})), string(redisCall.Query))
+
+			// 2. 模拟 Redis 调用响应
+			host.CallOnRedisCall(0, test.CreateRedisRespArray([]interface{}{10, 9, 60}))
+
+			// 3. 处理响应头
+			action = host.CallOnHttpResponseHeaders([][2]string{
+				{":status", "200"},
+				{"content-type", "application/json"},
+			})
+
+			// 应该返回 ActionContinue
+			require.Equal(t, types.ActionContinue, action)
+
+			// 验证完整的限流流程（最简配置下，限流头不会返回）
+			//responseHeaders := host.GetResponseHeaders()
+			//require.True(t, test.HasHeader(responseHeaders, "x-ratelimit-limit"))
+			//limit, _ := test.GetHeaderValue(responseHeaders, "x-ratelimit-limit")
+			//require.Equal(t, "10", limit)
+			//require.True(t, test.HasHeader(responseHeaders, "x-ratelimit-remaining"))
+			//remaining, _ := test.GetHeaderValue(responseHeaders, "x-ratelimit-remaining")
+			//require.Equal(t, "9", remaining)
+
+			logBytes, _ := proxywasm.GetProperty([]string{LogKey})
+			logJson := wrapper.UnmarshalStr(fmt.Sprintf(`"%s"`, string(logBytes)))
+			fmt.Println("Logged attributes:", logJson)
+			require.Equal(t, `"test-key-123"`, gjson.Get(logJson, UserAttrKeyKey).Raw)
+			require.Equal(t, "10", gjson.Get(logJson, UserAttrThresholdKey).Raw)
+			require.Equal(t, `"pass"`, gjson.Get(logJson, UserAttrResultKey).Raw)
+			require.Equal(t, "9", gjson.Get(logJson, UserAttrRemainingKey).Raw)
+
+			host.CompleteHttp()
+		})
+
+		t.Run("complete rate limit flow with property (rejected)", func(t *testing.T) {
+			host, status := test.NewTestHost(propertyLimitConfig)
+			defer host.Reset()
+			require.Equal(t, types.OnPluginStartStatusOK, status)
+
+			_ = proxywasm.SetProperty(requestRatelimitKeyPropertyPath, []byte("test-key-123"))
+			_ = proxywasm.SetProperty(requestRatelimitCountPropertyPath, uint32ToBytes(10))
+			_ = proxywasm.SetProperty(requestRatelimitTimeWindowPropertyPath, uint32ToBytes(60))
+
+			// 1. 处理请求头
+			action := host.CallOnHttpRequestHeaders([][2]string{
+				{":authority", "example.com"},
+				{":path", "/api/test"},
+				{":method", "GET"},
+			})
+
+			// 由于需要调用 Redis，应该返回 HeaderStopAllIterationAndWatermark
+			require.Equal(t, types.HeaderStopAllIterationAndWatermark, action)
+
+			redisCalls := host.GetRedisCalloutAttributes()
+			require.Len(t, redisCalls, 1, "Should have only one Redis callout")
+
+			redisCall := redisCalls[0]
+			require.Equal(t, "outbound|6379||redis.static", redisCall.Upstream)
+			fmt.Println("Redis call query:\n", string(redisCall.Query))
+			require.Equal(t, string(test.CreateRedisRespArray([]interface{}{"eval", FixedWindowScript, "1", "test-key-123", "10", "60"})), string(redisCall.Query))
+
+			// 2. 模拟 Redis 调用响应
+			host.CallOnRedisCall(0, test.CreateRedisRespArray([]interface{}{10, -2, 60}))
+
+			localResponse := host.GetLocalResponse()
+			require.NotNil(t, localResponse)
+			require.Equal(t, uint32(429), localResponse.StatusCode)
+			require.Equal(t, "Too many requests", string(localResponse.Data))
+
+			// 验证完整的限流流程（最简配置下，限流头不会返回）
+			//responseHeaders := localResponse.Headers
+			//require.True(t, test.HasHeader(responseHeaders, "x-ratelimit-limit"))
+			//limit, _ := test.GetHeaderValue(responseHeaders, "x-ratelimit-limit")
+			//require.Equal(t, "10", limit)
+			//require.True(t, test.HasHeader(responseHeaders, "x-ratelimit-remaining"))
+			//remaining, _ := test.GetHeaderValue(responseHeaders, "x-ratelimit-remaining")
+			//require.Equal(t, "0", remaining)
+
+			logBytes, _ := proxywasm.GetProperty([]string{LogKey})
+			logJson := wrapper.UnmarshalStr(fmt.Sprintf(`"%s"`, string(logBytes)))
+			fmt.Println("Logged attributes:", logJson)
+			require.Equal(t, `"test-key-123"`, gjson.Get(logJson, UserAttrKeyKey).Raw)
+			require.Equal(t, "10", gjson.Get(logJson, UserAttrThresholdKey).Raw)
+			require.Equal(t, `"reject"`, gjson.Get(logJson, UserAttrResultKey).Raw)
+			require.Equal(t, "-2", gjson.Get(logJson, UserAttrRemainingKey).Raw)
+
+			host.CompleteHttp()
+		})
+
+		t.Run("complete rate limit flow with property (rejected dry-run)", func(t *testing.T) {
+			host, status := test.NewTestHost(propertyLimitConfig)
+			defer host.Reset()
+			require.Equal(t, types.OnPluginStartStatusOK, status)
+
+			_ = proxywasm.SetProperty(requestRatelimitKeyPropertyPath, []byte("test-key-123"))
+			_ = proxywasm.SetProperty(requestRatelimitCountPropertyPath, uint32ToBytes(10))
+			_ = proxywasm.SetProperty(requestRatelimitTimeWindowPropertyPath, uint32ToBytes(60))
+			_ = proxywasm.SetProperty(requestRatelimitDryRunPropertyPath, uint32ToBytes(1))
+
+			// 1. 处理请求头
+			action := host.CallOnHttpRequestHeaders([][2]string{
+				{":authority", "example.com"},
+				{":path", "/api/test"},
+				{":method", "GET"},
+			})
+
+			// 由于需要调用 Redis，应该返回 HeaderStopAllIterationAndWatermark
+			require.Equal(t, types.HeaderStopAllIterationAndWatermark, action)
+
+			redisCalls := host.GetRedisCalloutAttributes()
+			require.Len(t, redisCalls, 1, "Should have only one Redis callout")
+
+			redisCall := redisCalls[0]
+			require.Equal(t, "outbound|6379||redis.static", redisCall.Upstream)
+			fmt.Println("Redis call query:\n", string(redisCall.Query))
+			require.Equal(t, string(test.CreateRedisRespArray([]interface{}{"eval", FixedWindowScript, "1", "test-key-123", "10", "60"})), string(redisCall.Query))
+
+			// 2. 模拟 Redis 调用响应
+			host.CallOnRedisCall(0, test.CreateRedisRespArray([]interface{}{10, -2, 60}))
+
+			require.Nil(t, host.GetLocalResponse())
+
+			// 3. 处理响应头
+			action = host.CallOnHttpResponseHeaders([][2]string{
+				{":status", "200"},
+				{"content-type", "application/json"},
+			})
+
+			// 应该返回 ActionContinue
+			require.Equal(t, types.ActionContinue, action)
+
+			// 验证完整的限流流程（最简配置下，限流头不会返回）
+			//responseHeaders := host.GetResponseHeaders()
+			//require.True(t, test.HasHeader(responseHeaders, "x-ratelimit-limit"))
+			//limit, _ := test.GetHeaderValue(responseHeaders, "x-ratelimit-limit")
+			//require.Equal(t, "10", limit)
+			//require.True(t, test.HasHeader(responseHeaders, "x-ratelimit-remaining"))
+			//remaining, _ := test.GetHeaderValue(responseHeaders, "x-ratelimit-remaining")
+			//require.Equal(t, "-2", remaining)
+
+			logBytes, _ := proxywasm.GetProperty([]string{LogKey})
+			logJson := wrapper.UnmarshalStr(fmt.Sprintf(`"%s"`, string(logBytes)))
+			fmt.Println("Logged attributes:", logJson)
+			require.Equal(t, `"test-key-123"`, gjson.Get(logJson, UserAttrKeyKey).Raw)
+			require.Equal(t, "10", gjson.Get(logJson, UserAttrThresholdKey).Raw)
+			require.Equal(t, `"reject-dryrun"`, gjson.Get(logJson, UserAttrResultKey).Raw)
+			require.Equal(t, "-2", gjson.Get(logJson, UserAttrRemainingKey).Raw)
+
+			host.CompleteHttp()
+		})
 	})
+}
+
+func uint32ToBytes(i uint32) []byte {
+	bs := make([]byte, 4)
+	binary.LittleEndian.PutUint32(bs, i)
+	return bs
 }
