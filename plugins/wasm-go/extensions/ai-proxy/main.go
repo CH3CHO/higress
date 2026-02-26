@@ -157,6 +157,11 @@ func parseOverrideRuleConfig(json gjson.Result, global config.PluginConfig, plug
 }
 
 func initContext(ctx wrapper.HttpContext) {
+	processed, _ := proxywasm.GetHttpRequestHeader(util.HeaderOriginalProcessed)
+	if processed == util.HeaderOriginalProcessedValue {
+		return
+	}
+
 	for header, ctxKey := range headersCtxKeyMapping {
 		value, _ := proxywasm.GetHttpRequestHeader(header)
 		ctx.SetContext(ctxKey, value)
@@ -167,6 +172,11 @@ func initContext(ctx wrapper.HttpContext) {
 }
 
 func saveContextsToHeaders(ctx wrapper.HttpContext) {
+	processed, _ := proxywasm.GetHttpRequestHeader(util.HeaderOriginalProcessed)
+	if processed == util.HeaderOriginalProcessedValue {
+		return
+	}
+
 	for header, ctxKey := range headersCtxKeyMapping {
 		originalValue := ctx.GetStringContext(ctxKey, "")
 		if originalValue == "" {
