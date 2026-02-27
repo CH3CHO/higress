@@ -33,48 +33,67 @@ func transformMessagesToVertexContents(messages []chatMessage) ([]*vertex.Conten
 	return geminiConvertMessagesWithHistory(messages)
 }
 
-func buildVertexReqTools(tools []*vertexExtendedTool, functions []*vertexFunction) ([]*vertex.Tools, error) {
-	if len(tools) == 0 && len(functions) == 0 {
-		return nil, nil
+func buildVertexTools(toolChoice interface{}, tools []*vertexExtendedTool, functions []*vertexFunction) ([]*vertex.Tools, *vertex.ToolConfig, error) {
+	// Build toolConfig from toolChoice
+	toolConfig, err := mapToolChoiceValues(toolChoice)
+	if err != nil {
+		return nil, nil, err
 	}
 
-	out := &vertex.Tools{}
+	if len(tools) == 0 && len(functions) == 0 {
+		return nil, toolConfig, nil
+	}
+
+	// Build vertex tools and collect any retrieval configs
+	vertexTool := &vertex.Tools{}
 	var functionDeclarations []*vertex.FunctionDeclaration
+
+	builder := &vertexToolBuilder{tool: vertexTool}
 
 	if tools != nil {
 		for _, t := range tools {
 			if t.Function != nil {
 				fd, err := buildVertexFunctionDeclaration(t.Function.Name, t.Function.Description, t.Function.Parameters)
 				if err != nil {
-					return nil, err
+					return nil, toolConfig, err
 				}
 				functionDeclarations = append(functionDeclarations, fd)
 			}
-
-			collectVertexExtendTools(out, t.SpecificTool)
+			builder.addTool(t.SpecificTool)
 		}
 	} else if functions != nil {
 		for _, f := range functions {
 			if f.Name != "" {
 				fd, err := buildVertexFunctionDeclaration(f.Name, f.Description, f.Parameters)
 				if err != nil {
-					return nil, err
+					return nil, toolConfig, err
 				}
 				functionDeclarations = append(functionDeclarations, fd)
 			}
-
-			collectVertexExtendTools(out, vertex.SpecificTool{
+			builder.addTool(vertex.SpecificTool{
 				GoogleSearch:          f.GoogleSearch,
 				GoogleSearchRetrieval: f.GoogleSearchRetrieval,
 				EnterpriseWebSearch:   f.EnterpriseWebSearch,
 				CodeExecution:         f.CodeExecution,
+				GoogleMaps:            f.GoogleMaps,
 				URLContext:            f.URLContext,
 			})
 		}
 	}
 
-	out.FunctionDeclarations = functionDeclarations
-	return []*vertex.Tools{out}, nil
+	vertexTool.FunctionDeclarations = functionDeclarations
+
+	// Apply retrieval config to toolConfig if needed
+	if retrievalConfig := builder.getRetrievalConfig(); retrievalConfig != nil {
+		if toolConfig == nil {
+			toolConfig = &vertex.ToolConfig{}
+		}
+		if toolConfig.RetrievalConfig == nil {
+			toolConfig.RetrievalConfig = retrievalConfig
+		}
+	}
+
+	return []*vertex.Tools{vertexTool}, toolConfig, nil
 }
 
 // buildVertexFunctionDeclaration processes function parameters and creates a FunctionDeclaration
@@ -96,23 +115,41 @@ func buildVertexFunctionDeclaration(name, description string, parameters map[str
 	}, nil
 }
 
-// collectVertexExtendTools collects non-nil extension tools into the Tools struct
-func collectVertexExtendTools(out *vertex.Tools, ext vertex.SpecificTool) {
+// vertexToolBuilder helps build Tools and collect retrieval configs
+type vertexToolBuilder struct {
+	tool            *vertex.Tools
+	retrievalConfig *map[string]interface{}
+}
+
+func (b *vertexToolBuilder) addTool(ext vertex.SpecificTool) {
 	if ext.GoogleSearch != nil {
-		out.GoogleSearch = ext.GoogleSearch
+		b.tool.GoogleSearch = ext.GoogleSearch
 	}
 	if ext.GoogleSearchRetrieval != nil {
-		out.GoogleSearchRetrieval = ext.GoogleSearchRetrieval
+		b.tool.GoogleSearchRetrieval = ext.GoogleSearchRetrieval
 	}
 	if ext.EnterpriseWebSearch != nil {
-		out.EnterpriseWebSearch = ext.EnterpriseWebSearch
+		b.tool.EnterpriseWebSearch = ext.EnterpriseWebSearch
 	}
 	if ext.CodeExecution != nil {
-		out.CodeExecution = ext.CodeExecution
+		b.tool.CodeExecution = ext.CodeExecution
+	}
+	if ext.GoogleMaps != nil {
+		cleanedConfig, retrievalConfig := vertex.ExtractGoogleMapsRetrievalConfig(*ext.GoogleMaps)
+		b.tool.GoogleMaps = &cleanedConfig
+		// Store retrieval config for toolConfig
+		if len(retrievalConfig) > 0 {
+			b.retrievalConfig = &retrievalConfig
+		}
 	}
 	if ext.URLContext != nil {
-		out.URLContext = ext.URLContext
+		b.tool.URLContext = ext.URLContext
 	}
+}
+
+// getRetrievalConfig returns the collected retrieval config, or nil if none
+func (b *vertexToolBuilder) getRetrievalConfig() *map[string]interface{} {
+	return b.retrievalConfig
 }
 
 func mapToolChoiceValues(toolChoice interface{}) (*vertex.ToolConfig, error) {

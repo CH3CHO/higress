@@ -645,10 +645,6 @@ func (v *vertexProvider) getRequestPathForOriginal() (string, error) {
 }
 
 func (v *vertexProvider) buildVertexChatRequest(request *chatCompletionRequest, extendedParams *vertexExtendedParams) (*vertexChatRequest, error) {
-	toolConfig, err := mapToolChoiceValues(request.ToolChoice)
-	if err != nil {
-		return nil, fmt.Errorf("unable to build vertex request: %w", err)
-	}
 	safetySettings := make([]*vertex.SafetySettingsConfig, 0)
 	for category, threshold := range v.config.geminiSafetySetting {
 		safetySettings = append(safetySettings, &vertex.SafetySettingsConfig{
@@ -666,7 +662,7 @@ func (v *vertexProvider) buildVertexChatRequest(request *chatCompletionRequest, 
 		return nil, fmt.Errorf("unable to build vertex request: %w", err)
 	}
 
-	tools, err := buildVertexReqTools(extendedParams.tools, extendedParams.functions)
+	tools, toolConfig, err := buildVertexTools(request.ToolChoice, extendedParams.tools, extendedParams.functions)
 	if err != nil {
 		return nil, fmt.Errorf("unable to build vertex request: %w", err)
 	}

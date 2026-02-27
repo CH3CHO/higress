@@ -114,10 +114,12 @@ type SpecificTool struct {
 	EnterpriseWebSearch   *map[string]interface{} `json:"enterpriseWebSearch,omitempty"`
 	URLContext            *map[string]interface{} `json:"urlContext,omitempty"`
 	CodeExecution         *map[string]interface{} `json:"codeExecution,omitempty"`
+	GoogleMaps            *map[string]interface{} `json:"googleMaps,omitempty"`
 }
 
 type ToolConfig struct {
-	FunctionCallingConfig *FunctionCallingConfig `json:"functionCallingConfig,omitempty"`
+	FunctionCallingConfig *FunctionCallingConfig  `json:"functionCallingConfig,omitempty"`
+	RetrievalConfig       *map[string]interface{} `json:"retrievalConfig,omitempty"`
 }
 
 type FunctionCallingConfig struct {
