@@ -702,3 +702,62 @@ func DeleteInvalidRequestFields(body []byte) ([]byte, error) {
 
 	return body, nil
 }
+
+// ExtractGoogleMapsRetrievalConfig extracts location configuration from googleMaps tool for Vertex AI toolConfig.
+//
+// Input (flat structure):
+//
+//	{"enableWidget": "...", "latitude": ..., "longitude": ..., "languageCode": "..."}
+//
+// Output:
+//   - cleanedConfig: {"enableWidget": true} (enableWidget normalized to boolean)
+//   - retrievalConfig: {"latLng": {"latitude": ..., "longitude": ...}, "languageCode": "..."}
+//
+// Parameters:
+//   - googleMapsConfig: The googleMaps tool configuration
+//
+// Returns:
+//   - cleanedGoogleMapsConfig: googleMaps config without location fields, with enableWidget normalized
+//   - retrievalConfig: Location config for toolConfig.retrievalConfig or nil
+//
+// Based on Python's _extract_google_maps_retrieval_config from vertex_ai.py
+func ExtractGoogleMapsRetrievalConfig(googleMapsConfig map[string]interface{}) (map[string]interface{}, map[string]interface{}) {
+	var retrievalConfig map[string]interface{}
+
+	// Extract location fields
+	latitude := googleMapsConfig["latitude"]
+	longitude := googleMapsConfig["longitude"]
+	languageCode := googleMapsConfig["languageCode"]
+
+	// Build retrieval config if both latitude and longitude are present
+	if latitude != nil && longitude != nil {
+		retrievalConfig = map[string]interface{}{
+			"latLng": map[string]interface{}{
+				"latitude":  latitude,
+				"longitude": longitude,
+			},
+		}
+
+		// Add language code if present
+		if languageCode != nil {
+			retrievalConfig["languageCode"] = languageCode
+		}
+	}
+
+	googleMaps := make(map[string]interface{})
+	if googleMapsConfig["enableWidget"] != nil {
+		googleMaps["enableWidget"] = normalizeBool(googleMapsConfig["enableWidget"])
+	}
+
+	return googleMaps, retrievalConfig
+}
+
+func normalizeBool(value any) bool {
+	switch v := value.(type) {
+	case bool:
+		return v
+	case string:
+		return v == "true"
+	}
+	return false
+}
