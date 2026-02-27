@@ -706,6 +706,9 @@ func (m *azureProvider) handleChatCompletionsStreamingEvent(ctx wrapper.HttpCont
 
 func isEmptyChatCompletionChunk(event StreamEvent) bool {
 	if delta := gjson.Get(event.Data, "choices.0.delta"); delta.Exists() {
+		if role := delta.Get("role"); len(role.Str) != 0 {
+			return false
+		}
 		if content := delta.Get("content"); len(content.Str) != 0 {
 			return false
 		}
