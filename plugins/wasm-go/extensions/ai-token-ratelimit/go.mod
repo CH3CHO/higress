@@ -4,7 +4,7 @@ go 1.24.1
 
 toolchain go1.24.4
 
-replace github.com/higress-group/wasm-go => git.dev.sh.ctripcorp.com/framework/ai-gateway-wasm-go-sdk v0.0.0-20251103120604-f363ebe746e8
+replace github.com/higress-group/wasm-go => git.dev.sh.ctripcorp.com/framework/ai-gateway-wasm-go-sdk v1.0.10-0-trip.2
 
 require (
 	github.com/higress-group/proxy-wasm-go-sdk v0.0.0-20251103120604-77e9cce339d2
