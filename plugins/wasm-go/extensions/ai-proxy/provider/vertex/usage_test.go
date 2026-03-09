@@ -8,7 +8,58 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestCalculateVertexUsage(t *testing.T) {
+func TestBuildModalityTokensDetails(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    []*ModalityTokenCount
+		expected ModalityTokensDetails
+	}{
+		{
+			name:     "known modality text",
+			input:    []*ModalityTokenCount{{Modality: ModalityText, TokenCount: 10}},
+			expected: ModalityTokensDetails{"text_tokens": 10},
+		},
+		{
+			name:     "known modality image",
+			input:    []*ModalityTokenCount{{Modality: ModalityImage, TokenCount: 20}},
+			expected: ModalityTokensDetails{"image_tokens": 20},
+		},
+		{
+			name:     "future unknown modality 1",
+			input:    []*ModalityTokenCount{{Modality: "HOLOGRAM", TokenCount: 99}},
+			expected: ModalityTokensDetails{"hologram_tokens": 99},
+		},
+		{
+			name:     "future unknown modality 2",
+			input:    []*ModalityTokenCount{{Modality: "COMPUTER_USE", TokenCount: 99}},
+			expected: ModalityTokensDetails{"computer_use_tokens": 99},
+		},
+		{
+			name: "mixed known and future modalities",
+			input: []*ModalityTokenCount{
+				{Modality: ModalityText, TokenCount: 5},
+				{Modality: "COMPUTER_USE", TokenCount: 15},
+			},
+			expected: ModalityTokensDetails{
+				"text_tokens":         5,
+				"computer_use_tokens": 15,
+			},
+		},
+		{
+			name:     "nil entry skipped",
+			input:    []*ModalityTokenCount{nil, {Modality: ModalityAudio, TokenCount: 30}},
+			expected: ModalityTokensDetails{"audio_tokens": 30},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.expected, buildModalityTokensDetails(tt.input))
+		})
+	}
+}
+
+func TestConvertVertexUsage(t *testing.T) {
 	inputJSON := `{
 		"promptTokenCount": 4,
 		"candidatesTokenCount": 1120,
