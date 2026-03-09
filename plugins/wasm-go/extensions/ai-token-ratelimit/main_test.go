@@ -1116,6 +1116,117 @@ func TestCompleteFlow(t *testing.T) {
 	})
 }
 
+func TestRuntimeEnabledConfig(t *testing.T) {
+	test.RunTest(t, func(t *testing.T) {
+		t.Run("global enabled", func(t *testing.T) {
+			pluginConfig, _ := json.Marshal(map[string]interface{}{
+				"rule_name": "ai-token-global-limit",
+				"global_threshold": map[string]interface{}{
+					"token_per_minute": 1000,
+				},
+				"redis": map[string]interface{}{
+					"service_name": "redis.static",
+					"service_port": 6379,
+				},
+				"_config_": map[string]interface{}{
+					"enabled.global":                  true,
+					"enabled.consumer.1":              false,
+					"enabled.model.gpt-4o":            false,
+					"enabled.consumer.1.model.gpt-4o": true,
+				},
+			})
+			host, status := test.NewTestHost(pluginConfig)
+			defer host.Reset()
+			require.Equal(t, types.OnPluginStartStatusOK, status)
+
+			// No consumer or model info, global enabled should take effect
+			action := host.CallOnHttpRequestHeaders([][2]string{
+				{":authority", "example.com"},
+				{":path", "/api/test"},
+				{":method", "POST"},
+				{"x-api-key", "test-key-123"},
+			})
+			require.Equal(t, types.HeaderStopAllIterationAndWatermark, action)
+
+			// Consumer only, consumer config should take effect
+			action = host.CallOnHttpRequestHeaders([][2]string{
+				{":authority", "example.com"},
+				{":path", "/api/test"},
+				{":method", "POST"},
+				{"x-mse-consumer", "1"},
+			})
+			require.Equal(t, types.ActionContinue, action)
+
+			// Consumer only but unconfigured, global config should take effect
+			action = host.CallOnHttpRequestHeaders([][2]string{
+				{":authority", "example.com"},
+				{":path", "/api/test"},
+				{":method", "POST"},
+				{"x-mse-consumer", "2"},
+			})
+			require.Equal(t, types.HeaderStopAllIterationAndWatermark, action)
+
+			// Model only but unconfigured, model config should take effect
+			action = host.CallOnHttpRequestHeaders([][2]string{
+				{":authority", "example.com"},
+				{":path", "/api/test"},
+				{":method", "POST"},
+				{"x-higress-llm-model", "gpt-4o"},
+			})
+			require.Equal(t, types.ActionContinue, action)
+
+			// Model only but unconfigured, global config should take effect
+			action = host.CallOnHttpRequestHeaders([][2]string{
+				{":authority", "example.com"},
+				{":path", "/api/test"},
+				{":method", "POST"},
+				{"x-higress-llm-model", "qwen-plus"},
+			})
+			require.Equal(t, types.HeaderStopAllIterationAndWatermark, action)
+
+			// Consumer (configured) and model (configured), consumer&model config should take effect
+			action = host.CallOnHttpRequestHeaders([][2]string{
+				{":authority", "example.com"},
+				{":path", "/api/test"},
+				{":method", "POST"},
+				{"x-mse-consumer", "1"},
+				{"x-higress-llm-model", "gpt-4o"},
+			})
+			require.Equal(t, types.HeaderStopAllIterationAndWatermark, action)
+
+			// Consumer (configured) and model (unconfigured), consumer config should take effect
+			action = host.CallOnHttpRequestHeaders([][2]string{
+				{":authority", "example.com"},
+				{":path", "/api/test"},
+				{":method", "POST"},
+				{"x-mse-consumer", "1"},
+				{"x-higress-llm-model", "qwen-plus"},
+			})
+			require.Equal(t, types.ActionContinue, action)
+
+			// Consumer (unconfigured) and model (configured), model config should take effect
+			action = host.CallOnHttpRequestHeaders([][2]string{
+				{":authority", "example.com"},
+				{":path", "/api/test"},
+				{":method", "POST"},
+				{"x-mse-consumer", "2"},
+				{"x-higress-llm-model", "gpt-4o"},
+			})
+			require.Equal(t, types.ActionContinue, action)
+
+			// Consumer (unconfigured) and model (unconfigured), global config should take effect
+			action = host.CallOnHttpRequestHeaders([][2]string{
+				{":authority", "example.com"},
+				{":path", "/api/test"},
+				{":method", "POST"},
+				{"x-mse-consumer", "2"},
+				{"x-higress-llm-model", "qwen-plus"},
+			})
+			require.Equal(t, types.HeaderStopAllIterationAndWatermark, action)
+		})
+	})
+}
+
 func uint32ToBytes(i uint32) []byte {
 	bs := make([]byte, 4)
 	binary.LittleEndian.PutUint32(bs, i)

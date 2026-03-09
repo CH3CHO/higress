@@ -95,6 +95,9 @@ const (
 	SkipStreamingJsonProcessing = "skip_streaming_json_processing"
 	UsageObject                 = "usage_object"
 
+	consumerHeader = "x-mse-consumer"
+	modelHeader    = "x-higress-llm-model"
+
 	LogKey               = "rate_limit_log"
 	UserAttrKeyKey       = "tpx_key"
 	UserAttrThresholdKey = "tpx_threshold"
@@ -104,6 +107,12 @@ const (
 	UserAttrUsageKey     = "tpx_usage"
 
 	defaultMaxBodyBytes uint32 = 100 * 1024 * 1024
+
+	enabledGlobalKey                = "enabled.global"
+	enabledByConsumerKeyFormat      = "enabled.consumer.%s"
+	enabledByModelKeyFormat         = "enabled.model.%s"
+	enabledByConsumerModelKeyFormat = "enabled.consumer.%s.model.%s"
+	enabledDefaultValue             = false
 )
 
 var (
@@ -161,6 +170,14 @@ func onHttpRequestHeaders(ctx wrapper.HttpContext, cfg config.AiTokenRateLimitCo
 	ctx.DisableReroute()
 	limitKey, count, timeWindow := "", int64(0), int64(0)
 	dryRun := false
+
+	if !isEnabled(ctx) {
+		log.Debugf("plugin is not enabled for this request, skip processing")
+		ctx.SetContext(Skip, true)
+		ctx.DontReadRequestBody()
+		ctx.DontReadResponseBody()
+		return types.ActionContinue
+	}
 
 	if limitKeyFromProperty, countFromProperty, timeWindowFromProperty, dryRunFromProperty, ok := getContextValuesFromProperty(); ok {
 		log.Debugf("got context values from properties: limitKey=%s count=%d timeWindow=%d dryRun=%t", limitKeyFromProperty, countFromProperty, timeWindowFromProperty, dryRunFromProperty)
@@ -246,6 +263,32 @@ func onHttpRequestHeaders(ctx wrapper.HttpContext, cfg config.AiTokenRateLimitCo
 		return types.ActionContinue
 	}
 	return types.HeaderStopAllIterationAndWatermark
+}
+
+func isEnabled(ctx wrapper.HttpContext) bool {
+	consumerId, _ := proxywasm.GetHttpRequestHeader(consumerHeader)
+	model, _ := proxywasm.GetHttpRequestHeader(modelHeader)
+
+	enabledKeys := []string{}
+	if consumerId != "" {
+		if model != "" {
+			enabledKeys = append(enabledKeys, fmt.Sprintf(enabledByConsumerModelKeyFormat, consumerId, model))
+		}
+		enabledKeys = append(enabledKeys, fmt.Sprintf(enabledByConsumerKeyFormat, consumerId))
+	}
+	if model != "" {
+		enabledKeys = append(enabledKeys, fmt.Sprintf(enabledByModelKeyFormat, model))
+	}
+	enabledKeys = append(enabledKeys, enabledGlobalKey)
+
+	for _, key := range enabledKeys {
+		if enabled, ok := ctx.GetGlobalConfig(key).(bool); ok {
+			log.Debugf("got enabled value from global config with key %s: %t", key, enabled)
+			return enabled
+		}
+	}
+
+	return enabledDefaultValue
 }
 
 func onHttpResponseHeaders(ctx wrapper.HttpContext, cfg config.AiTokenRateLimitConfig) types.Action {
