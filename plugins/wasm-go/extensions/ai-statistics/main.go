@@ -63,6 +63,7 @@ const (
 	SseStreamStopped                       = "sse_stream_stopped"
 	NeedDropAdditionalUsageChunk           = "need_drop_additional_usage_chunk"
 	RequestApiName                         = "request_api_name"
+	IsRawRequest                           = "is_original_request"
 
 	// AI API Paths
 	PathOpenAIChatCompletions       = "/chat/completions"
@@ -71,6 +72,8 @@ const (
 	PathOpenAIModels                = "/models"
 	PathGeminiGenerateContent       = "/generateContent"
 	PathGeminiStreamGenerateContent = "/streamGenerateContent"
+
+	rawRequestPathKeyword = "/raw/"
 
 	// Source Type
 	FixedValue            = "fixed_value"
@@ -92,8 +95,9 @@ const (
 	RequestModelFinal      = "request_model_final"
 	Usage                  = "usage"
 
-	ResponseTypeNormal = "normal"
-	ResponseTypeStream = "stream"
+	ResponseTypeNormal  = "normal"
+	ResponseTypeStream  = "stream"
+	ResponseTypeUnknown = "unknown"
 
 	// Inner span attributes
 	ArmsSpanKind     = "gen_ai.span.kind"
@@ -401,6 +405,10 @@ func onHttpRequestHeaders(ctx wrapper.HttpContext, config AIStatisticsConfig) ty
 		return types.ActionContinue
 	}
 
+	if strings.Contains(requestPath, rawRequestPathKeyword) {
+		ctx.SetContext(IsRawRequest, true)
+	}
+
 	apiName := ApiNameUndetermined
 	if strings.HasSuffix(requestPath, PathOpenAIChatCompletions) {
 		apiName = ApiNameChatCompletions
@@ -536,6 +544,12 @@ func onHttpRequestBody(ctx wrapper.HttpContext, config AIStatisticsConfig, body 
 	ctx.SetUserAttribute(ChatRound, userPromptCount)
 
 	responseType := ResponseTypeNormal
+	if ctx.GetBoolContext(IsRawRequest, false) {
+		// For raw request, we may not be able to determine the API type from the request body,
+		// so we set response type as unknown and let the response body processing logic determine the response type
+		// based on the content type.
+		responseType = ResponseTypeUnknown
+	}
 	if stream := gjson.GetBytes(body, "stream"); stream.Exists() && stream.IsBool() {
 		if stream.Bool() {
 			responseType = ResponseTypeStream
@@ -864,9 +878,14 @@ func getResponseBodyToLogForCompletions(body []byte, limit int) string {
 }
 
 func setResponseType(ctx wrapper.HttpContext, responseType string, overwrite bool) {
-	if overwrite || ctx.GetUserAttribute(ResponseType) == nil {
-		ctx.SetUserAttribute(ResponseType, responseType)
+	if !overwrite {
+		existedResponseType := ctx.GetUserAttribute(ResponseType)
+		if existedResponseType != nil && existedResponseType != ResponseTypeUnknown {
+			log.Debugf("response type already set to %s, skip overwriting with %s", existedResponseType, responseType)
+			return
+		}
 	}
+	ctx.SetUserAttribute(ResponseType, responseType)
 }
 
 // fetches the tracing span value from the specified source.
