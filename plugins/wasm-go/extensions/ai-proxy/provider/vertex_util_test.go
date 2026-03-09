@@ -6,8 +6,6 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-
-	"github.com/alibaba/higress/plugins/wasm-go/extensions/ai-proxy/provider/vertex"
 )
 
 // TestGeminiConvertMessagesWithHistory_ToolCallWeather tests the conversion of messages with tool calls
@@ -407,57 +405,4 @@ func testGeminiConvertMessages(t *testing.T, inputJSON string) string {
 	require.NoError(t, err, "Failed to marshal result")
 
 	return string(resultJSON)
-}
-
-func TestCalculateVertexUsage(t *testing.T) {
-	inputJSON := `{
-		"promptTokenCount": 4,
-		"candidatesTokenCount": 1120,
-		"totalTokenCount": 1356,
-		"thoughtsTokenCount": 232,
-		"promptTokensDetails": [
-			{
-				"modality": "TEXT",
-				"tokenCount": 4
-			}
-		],
-		"candidatesTokensDetails": [
-			{
-				"modality": "IMAGE",
-				"tokenCount": 1120
-			}
-		],
-		"trafficType": "ON_DEMAND"
-	}`
-
-	expectedJSON := `{
-		"prompt_tokens": 4,
-		"completion_tokens": 1352,
-		"total_tokens": 1356,
-		"prompt_tokens_details": {
-			"text_tokens": 4
-		},
-		"completion_tokens_details": {
-			"reasoning_tokens": 232,
-			"text_tokens": 1120,
-			"image_tokens": 1120
-		},
-		"traffic_type": "ON_DEMAND"
-	}`
-
-	// Parse input JSON to vertex.UsageMetadata
-	var usageMetadata vertex.UsageMetadata
-	err := json.Unmarshal([]byte(inputJSON), &usageMetadata)
-	require.NoError(t, err, "Failed to parse input JSON")
-
-	// Call the function
-	result := calculateVertexUsage(&usageMetadata)
-	require.NotNil(t, result, "Result should not be nil")
-
-	// Marshal result to JSON string
-	resultJSON, err := json.Marshal(result)
-	require.NoError(t, err, "Failed to marshal result")
-
-	// Compare JSON strings
-	assert.JSONEq(t, expectedJSON, string(resultJSON))
 }

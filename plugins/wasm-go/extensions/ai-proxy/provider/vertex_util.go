@@ -667,147 +667,24 @@ func handleVertexBlockedResponse(ctx wrapper.HttpContext, response *vertexChatRe
 	return out
 }
 
-func calculateVertexUsage(usageMetadata *vertex.UsageMetadata) *usage {
-	if usageMetadata == nil {
-		return nil
+// setVertexUsageToResponse sets Vertex AI usage metadata to the response body using sjson
+func setVertexUsageToResponse(respBytes []byte, usageMetadata *vertex.UsageMetadata) ([]byte, error) {
+	if usageMetadata == nil || usageMetadata.TotalTokenCount == 0 {
+		return respBytes, nil
 	}
 
-	var cachedTokens *int
-	var audioTokens *int
-	var textTokens *int
-	var reasoningTokens *int
-	var responseTokens *int
-	var responseTokensDetails *completionTokensDetails
-	var promptTokensDetailsPtr *promptTokensDetails
-
-	// Handle cached content token count
-	if usageMetadata.CachedContentTokenCount > 0 {
-		count := usageMetadata.CachedContentTokenCount
-		cachedTokens = &count
+	openaiFormatUsage := vertex.ConvertVertexUsage(usageMetadata)
+	openaiFormatUsageBytes, err := json.Marshal(openaiFormatUsage)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal usage: %w", err)
 	}
 
-	// GEMINI LIVE API ONLY PARAMS
-	if usageMetadata.ResponseTokenCount > 0 {
-		count := usageMetadata.ResponseTokenCount
-		responseTokens = &count
-	}
-	if len(usageMetadata.ResponseTokensDetails) > 0 {
-		responseTokensDetails = &completionTokensDetails{}
-		for _, detail := range usageMetadata.ResponseTokensDetails {
-			switch detail.Modality {
-			case vertex.ModalityText:
-				responseTokensDetails.TextTokens = detail.TokenCount
-			case vertex.ModalityAudio:
-				responseTokensDetails.AudioTokens = detail.TokenCount
-			}
-		}
+	respBytes, err = sjson.SetRawBytes(respBytes, "usage", openaiFormatUsageBytes)
+	if err != nil {
+		return nil, fmt.Errorf("failed to set usage field: %w", err)
 	}
 
-	// CANDIDATES TOKEN DETAILS (e.g., for image generation models)
-	if len(usageMetadata.CandidatesTokensDetails) > 0 {
-		if responseTokensDetails == nil {
-			responseTokensDetails = &completionTokensDetails{}
-		}
-		textTokensSet := false
-		for _, detail := range usageMetadata.CandidatesTokensDetails {
-			switch detail.Modality {
-			case vertex.ModalityText:
-				responseTokensDetails.TextTokens = detail.TokenCount
-				textTokensSet = true
-			case vertex.ModalityAudio:
-				responseTokensDetails.AudioTokens = detail.TokenCount
-			case vertex.ModalityImage:
-				responseTokensDetails.ImageTokens = detail.TokenCount
-			}
-		}
-
-		// Calculate text_tokens if not explicitly provided in candidatesTokensDetails
-		// candidatesTokenCount includes all modalities, so: text = total - (image + audio)
-		if !textTokensSet {
-			calculatedTextTokens := usageMetadata.CandidatesTokenCount - responseTokensDetails.ImageTokens - responseTokensDetails.AudioTokens
-			responseTokensDetails.TextTokens = calculatedTextTokens
-		}
-	}
-
-	// Process prompt tokens details
-	if len(usageMetadata.PromptTokensDetails) > 0 {
-		for _, detail := range usageMetadata.PromptTokensDetails {
-			switch detail.Modality {
-			case vertex.ModalityAudio:
-				count := detail.TokenCount
-				audioTokens = &count
-			case vertex.ModalityText:
-				count := detail.TokenCount
-				textTokens = &count
-			}
-		}
-	}
-
-	// Handle thinking/reasoning tokens
-	if usageMetadata.ThoughtsTokenCount > 0 {
-		count := usageMetadata.ThoughtsTokenCount
-		reasoningTokens = &count
-		// Also add reasoning tokens to response_tokens_details
-		if responseTokensDetails == nil {
-			responseTokensDetails = &completionTokensDetails{}
-		}
-		responseTokensDetails.ReasoningTokens = count
-	}
-
-	// Adjust 'text_tokens' to subtract cached tokens
-	if (audioTokens == nil || *audioTokens == 0) &&
-		textTokens != nil && *textTokens > 0 &&
-		cachedTokens != nil {
-		adjusted := *textTokens - *cachedTokens
-		textTokens = &adjusted
-	}
-
-	// Build prompt tokens details
-	promptTokensDetailsPtr = &promptTokensDetails{}
-	if cachedTokens != nil {
-		promptTokensDetailsPtr.CachedTokens = *cachedTokens
-	}
-	if audioTokens != nil {
-		promptTokensDetailsPtr.AudioTokens = *audioTokens
-	}
-	if textTokens != nil {
-		promptTokensDetailsPtr.TextTokens = *textTokens
-	}
-
-	// Calculate completion tokens
-	completionTokens := 0
-	if responseTokens != nil {
-		completionTokens = *responseTokens
-	} else {
-		completionTokens = usageMetadata.CandidatesTokenCount
-	}
-
-	// based on litellm's Usage __init__, adjust text tokens in completion details
-	if reasoningTokens != nil {
-		textTokensAdjusted := completionTokens - *reasoningTokens
-		textTokens = &textTokensAdjusted
-		// Preserve existing responseTokensDetails (image, audio tokens) and update with reasoning tokens
-		if responseTokensDetails == nil {
-			responseTokensDetails = &completionTokensDetails{}
-		}
-		responseTokensDetails.TextTokens = textTokensAdjusted
-		responseTokensDetails.ReasoningTokens = *reasoningTokens
-	}
-
-	result := &usage{
-		PromptTokens:            usageMetadata.PromptTokenCount,
-		CompletionTokens:        completionTokens,
-		TotalTokens:             usageMetadata.TotalTokenCount,
-		PromptTokensDetails:     promptTokensDetailsPtr,
-		CompletionTokensDetails: responseTokensDetails,
-	}
-
-	// Add trafficType if present
-	if usageMetadata.TrafficType != "" {
-		result.TrafficType = usageMetadata.TrafficType
-	}
-
-	return result
+	return respBytes, nil
 }
 
 // mapThinkingParam maps Claude-style thinking parameter to Vertex AI ThinkingConfig.

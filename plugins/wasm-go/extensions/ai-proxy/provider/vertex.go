@@ -268,6 +268,13 @@ func (v *vertexProvider) OnStreamingEvent(ctx wrapper.HttpContext, name ApiName,
 			return nil, fmt.Errorf("unable to marshal transformed vertex response: %w", err)
 		}
 
+		if vertexResp.UsageMetadata != nil { // usage chunk
+			responseBodyBytes, err = setVertexUsageToResponse(responseBodyBytes, vertexResp.UsageMetadata)
+			if err != nil {
+				return nil, err
+			}
+		}
+
 		if includeUsage {
 			modifiedBody, err := sjson.SetBytes(responseBodyBytes, "stream_options.include_usage", true)
 			if err != nil {
@@ -331,6 +338,11 @@ func (v *vertexProvider) onChatCompletionResponseBody(ctx wrapper.HttpContext, b
 		return nil, err
 	}
 
+	respBytes, err = setVertexUsageToResponse(respBytes, vertexResponse.UsageMetadata)
+	if err != nil {
+		return nil, err
+	}
+
 	// Add vertex-specific fields to response
 	respBytes, err = setVertexExtraFieldsToResponse(respBytes, groundingMetadataList, urlContextMetadataList, safetyRatingsList, citationMetadataList)
 	if err != nil {
@@ -353,7 +365,7 @@ func (v *vertexProvider) buildChatCompletionResponse(ctx wrapper.HttpContext, re
 		Created: time.Now().UnixMilli() / 1000,
 		Model:   ctx.GetStringContext(ctxKeyFinalRequestModel, ""),
 		Choices: make([]chatCompletionChoice, 0, len(response.Candidates)),
-		Usage:   calculateVertexUsage(response.UsageMetadata),
+		Usage:   nil, // Will be set later via sjson
 	}
 
 	var groundingMetadataList []*vertex.GroundingMetadata
@@ -575,15 +587,7 @@ func (v *vertexProvider) buildChatCompletionStreamResponse(ctx wrapper.HttpConte
 
 		usageMetadata := vertexResp.UsageMetadata
 		if usageMetadata != nil && usageMetadata.TotalTokenCount > 0 {
-			finalUsage := &usage{
-				PromptTokens:     usageMetadata.PromptTokenCount,
-				CompletionTokens: usageMetadata.CandidatesTokenCount,
-				TotalTokens:      usageMetadata.TotalTokenCount,
-				CompletionTokensDetails: &completionTokensDetails{
-					ReasoningTokens: usageMetadata.ThoughtsTokenCount,
-				},
-			}
-
+			// Create a placeholder response for usage - actual usage will be set via sjson in OnStreamingEvent
 			out = append(out, &chatCompletionResponse{
 				Id:      vertexResp.ResponseId,
 				Object:  objectChatCompletionChunk,
@@ -595,7 +599,7 @@ func (v *vertexProvider) buildChatCompletionStreamResponse(ctx wrapper.HttpConte
 						Delta: &chatMessage{},
 					},
 				},
-				Usage: finalUsage,
+				Usage: nil, // Will be set via sjson in OnStreamingEvent
 			})
 		}
 	}

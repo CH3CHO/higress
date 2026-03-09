@@ -4,6 +4,8 @@ const (
 	ModalityText        = "TEXT"
 	ModalityAudio       = "AUDIO"
 	ModalityImage       = "IMAGE"
+	ModalityVideo       = "VIDEO"
+	ModalityDocument    = "DOCUMENT"
 	ModalityUnspecified = "MODALITY_UNSPECIFIED"
 )
 
@@ -63,16 +65,17 @@ type Part struct {
 }
 
 type UsageMetadata struct {
-	PromptTokenCount        int                   `json:"promptTokenCount,omitempty"`
-	CandidatesTokenCount    int                   `json:"candidatesTokenCount,omitempty"`
-	TotalTokenCount         int                   `json:"totalTokenCount,omitempty"`
-	ThoughtsTokenCount      int                   `json:"thoughtsTokenCount,omitempty"`
-	CachedContentTokenCount int                   `json:"cachedContentTokenCount,omitempty"`
-	ResponseTokenCount      int                   `json:"responseTokenCount,omitempty"`
-	PromptTokensDetails     []*ModalityTokenCount `json:"promptTokensDetails,omitempty"`
-	ResponseTokensDetails   []*ModalityTokenCount `json:"responseTokensDetails,omitempty"`
-	CandidatesTokensDetails []*ModalityTokenCount `json:"candidatesTokensDetails,omitempty"`
-	TrafficType             string                `json:"trafficType,omitempty"`
+	PromptTokenCount           int                   `json:"promptTokenCount,omitempty"`
+	CandidatesTokenCount       int                   `json:"candidatesTokenCount,omitempty"`
+	TotalTokenCount            int                   `json:"totalTokenCount,omitempty"`
+	ThoughtsTokenCount         int                   `json:"thoughtsTokenCount,omitempty"`
+	CachedContentTokenCount    int                   `json:"cachedContentTokenCount,omitempty"`
+	ToolUsePromptTokenCount    int                   `json:"toolUsePromptTokenCount,omitempty"`
+	PromptTokensDetails        []*ModalityTokenCount `json:"promptTokensDetails,omitempty"`
+	CandidatesTokensDetails    []*ModalityTokenCount `json:"candidatesTokensDetails,omitempty"`
+	CacheTokensDetails         []*ModalityTokenCount `json:"cacheTokensDetails,omitempty"`
+	ToolUsePromptTokensDetails []*ModalityTokenCount `json:"toolUsePromptTokensDetails,omitempty"`
+	TrafficType                string                `json:"trafficType,omitempty"`
 }
 
 type ModalityTokenCount struct {
