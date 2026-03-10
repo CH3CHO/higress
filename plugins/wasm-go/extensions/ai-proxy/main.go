@@ -222,7 +222,8 @@ func onHttpRequestHeader(ctx wrapper.HttpContext, pluginConfig config.PluginConf
 	path, _ := url.Parse(rawPath)
 	apiName := getApiName(path.Path)
 	providerConfig := pluginConfig.GetProviderConfig()
-	if providerConfig.IsOriginal() {
+	provider.SaveProtocolToContext(ctx, providerConfig)
+	if provider.IsOriginalProtocol(ctx) {
 		if handler, ok := activeProvider.(provider.ApiNameHandler); ok {
 			apiName = handler.GetApiName(path.Path)
 		}
@@ -391,7 +392,7 @@ func onHttpResponseHeaders(ctx wrapper.HttpContext, pluginConfig config.PluginCo
 	util.ReplaceResponseHeaders(headers)
 
 	// For original mode, skip body processing
-	if providerConfig.IsOriginal() {
+	if provider.IsOriginalProtocol(ctx) {
 		log.Tracef("[onHttpResponseHeaders] original mode detected, will skip body processing")
 		ctx.DontReadResponseBody()
 		return types.ActionContinue

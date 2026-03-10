@@ -1036,7 +1036,7 @@ func (c *ProviderConfig) handleRequestBody(
 	}
 
 	// use original protocol
-	if c.IsOriginal() {
+	if IsOriginalProtocol(ctx) {
 		return types.ActionContinue, nil
 	}
 
