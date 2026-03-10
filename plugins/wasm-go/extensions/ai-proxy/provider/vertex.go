@@ -154,7 +154,7 @@ func (v *vertexProvider) getToken() (cached bool, err error) {
 }
 
 func (v *vertexProvider) OnRequestBody(ctx wrapper.HttpContext, apiName ApiName, body []byte) (types.Action, error) {
-	if !v.config.IsOriginal() && !v.config.isSupportedAPI(apiName) {
+	if !IsOriginalProtocol(ctx) && !v.config.isSupportedAPI(apiName) {
 		return types.ActionContinue, errUnsupportedApiName
 	}
 
@@ -176,13 +176,13 @@ func (v *vertexProvider) OnRequestBody(ctx wrapper.HttpContext, apiName ApiName,
 }
 
 func (v *vertexProvider) TransformRequestBodyHeaders(ctx wrapper.HttpContext, apiName ApiName, body []byte, headers http.Header) ([]byte, error) {
-	if v.config.IsOriginal() {
+	if IsOriginalProtocol(ctx) {
 		requestPath, err := v.getRequestPathForOriginal()
 		if err != nil {
 			return nil, err
 		}
 
-		log.Debugf("vertex original provider: request path: %s", requestPath)
+		log.Debugf("vertex original protocol: request path: %s", requestPath)
 		util.OverwriteRequestPathHeader(headers, requestPath)
 		return body, nil
 	}
@@ -641,10 +641,20 @@ func (v *vertexProvider) getRequestPathForOriginal() (string, error) {
 	}
 	log.Debugf("vertex original provider: path=%s, pathSuffix=%s", requestPath, pathSuffix)
 
+	// Separate query string from path suffix if it exists,
+	// as url.JoinPath will have query string content escaped which is not expected.
+	// We will append the query string back to the final path after joining.
+	queryString := ""
+	if queryStringIndex := strings.Index(pathSuffix, "?"); queryStringIndex != -1 {
+		queryString = pathSuffix[queryStringIndex:]
+		pathSuffix = pathSuffix[:queryStringIndex]
+	}
+
 	finalPath, err := url.JoinPath(pathPrefix, pathSuffix)
 	if err != nil {
 		return "", fmt.Errorf("vertex original provider: failed to join path: %v", err)
 	}
+	finalPath += queryString
 	return finalPath, nil
 }
 
