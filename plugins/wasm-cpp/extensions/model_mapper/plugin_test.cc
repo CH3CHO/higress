@@ -343,6 +343,52 @@ TEST_F(ModelMapperTest, AzureApiModelMappingTest) {
   EXPECT_EQ(context_->onRequestBody(20, true), FilterDataStatus::Continue);
 }
 
+TEST_F(ModelMapperTest, RawRequestModelMappingTest) {
+  std::string configuration = R"(
+{
+  "modelMapping": {
+     "*": "qwen-long",
+     "gpt-4*": "qwen-max",
+     "gpt-4o": "qwen-turbo",
+     "gpt-4o-mini": "qwen-plus",
+     "text-embedding-v1": ""
+  }
+})";
+
+  config_.set(configuration);
+  EXPECT_TRUE(root_context_->configure(configuration.size()));
+
+  path_ = "/llm/123456/raw/aigc/text-generation/generation";
+  std::string request_json = R"({"model": "gpt-4"})";
+  EXPECT_CALL(*mock_context_,
+              replaceHeaderMapValue(testing::_, testing::_, testing::_)).Times(0);
+  EXPECT_CALL(*mock_context_,
+              setBuffer(testing::_, testing::_, testing::_, testing::_))
+      .WillOnce([&](WasmBufferType, size_t, size_t, std::string_view body) {
+        EXPECT_EQ(body, R"({"model":"qwen-max"})");
+        return WasmResult::Ok;
+      });
+
+  body_.set(request_json);
+  EXPECT_EQ(context_->onRequestHeaders(0, false),
+            FilterHeadersStatus::StopIteration);
+  EXPECT_EQ(context_->onRequestBody(20, true), FilterDataStatus::Continue);
+
+  path_ = "/llm/123456/raw/models/gemini-2.5-pro:generateContent";
+  request_json = R"({"messages": "hello world!"})";
+  EXPECT_CALL(*mock_context_,
+              replaceHeaderMapValue(testing::_, testing::_, testing::_))
+      .Times(0);
+  EXPECT_CALL(*mock_context_,
+              setBuffer(testing::_, testing::_, testing::_, testing::_))
+      .Times(0);
+
+  body_.set(request_json);
+  EXPECT_EQ(context_->onRequestHeaders(0, false),
+            FilterHeadersStatus::StopIteration);
+  EXPECT_EQ(context_->onRequestBody(28, true), FilterDataStatus::Continue);
+}
+
 }  // namespace model_mapper
 }  // namespace null_plugin
 }  // namespace proxy_wasm

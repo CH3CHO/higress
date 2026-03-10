@@ -47,6 +47,7 @@ constexpr std::string_view SetDecoderBufferLimitKey =
     "set_decoder_buffer_limit";
 constexpr std::string_view DefaultMaxBodyBytes = "104857600";
 constexpr std::string_view AzureDeploymentPathKeyword = "/openai/deployments/";
+constexpr std::string_view RawRequestPathKeyword = "/raw/";
 
 }  // namespace
 
@@ -245,6 +246,10 @@ FilterDataStatus PluginRootContext::onBody(const ModelMapperConfigRule& rule,
   } else if (body_json.contains(model_key)) {
     // If model is extracted from Azure API path, override the model in body
     old_model = body_json[model_key];
+  } else if (absl::StrContains(path, RawRequestPathKeyword)) {
+    // For raw request not containing mode key in the body,
+    // skip the model mapping and just pass through
+    return FilterDataStatus::Continue;
   }
   std::string model = doModelMapping(rule, old_model);
   if (!model.empty() && model != old_model) {
