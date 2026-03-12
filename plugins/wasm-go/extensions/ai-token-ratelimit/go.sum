@@ -1,5 +1,5 @@
-git.dev.sh.ctripcorp.com/framework/ai-gateway-wasm-go-sdk v0.0.0-20251103120604-f363ebe746e8 h1:O4+IfNn58PIXIwS0QWRUAQdPtNlo43FmsWV7nUyRTCM=
-git.dev.sh.ctripcorp.com/framework/ai-gateway-wasm-go-sdk v0.0.0-20251103120604-f363ebe746e8/go.mod h1:uKVYICbRaxTlKqdm8E0dpjbysxM8uCPb9LV26hF3Km8=
+git.dev.sh.ctripcorp.com/framework/ai-gateway-wasm-go-sdk v1.0.10-0-trip.2 h1:tlSsdhkIiPKCN134nK0dqJvopABrv36g0ctNOARYQ8o=
+git.dev.sh.ctripcorp.com/framework/ai-gateway-wasm-go-sdk v1.0.10-0-trip.2/go.mod h1:uKVYICbRaxTlKqdm8E0dpjbysxM8uCPb9LV26hF3Km8=
 github.com/asergeyev/nradix v0.0.0-20170505151046-3872ab85bb56 h1:Wi5Tgn8K+jDcBYL+dIMS1+qXYH2r7tpRAyBgqrWfQtw=
 github.com/asergeyev/nradix v0.0.0-20170505151046-3872ab85bb56/go.mod h1:8BhOLuqtSuT5NZtZMwfvEibi09RO3u79uqfHZzfDTR4=
 github.com/davecgh/go-spew v1.1.1 h1:vj9j/u1bqnvCEfJOwUhtlOARqs3+rkHYY13jYWTU97c=
