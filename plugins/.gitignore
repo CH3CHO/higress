@@ -1,0 +1,7 @@
+*.bat
+*.cmd
+*.ps1
+*.sh
+*.wasm
+**/out
+**/test
