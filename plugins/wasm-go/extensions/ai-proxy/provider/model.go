@@ -121,8 +121,15 @@ type streamOptions struct {
 }
 
 type tool struct {
-	Type     string   `json:"type"`
-	Function function `json:"function"`
+	Type                string        `json:"type"`
+	Function            function      `json:"function"`
+	CacheControl        *cacheControl `json:"cache_control,omitempty"`
+	// EagerInputStreaming is an ai-proxy extension field, not part of the standard OpenAI tool schema.
+	// Bedrock Anthropic fine-grained tool streaming is enabled via a Bedrock-native anthropic_beta setting,
+	// but OpenAI-style tool definitions have no standard field for that capability.
+	// This flag lets clients request the feature on a tool, and ai-proxy translates it to the
+	// corresponding Bedrock anthropic_beta configuration when sending the upstream request.
+	EagerInputStreaming bool `json:"eager_input_streaming,omitempty"`
 }
 
 type function struct {
@@ -199,7 +206,8 @@ type chatMessage struct {
 }
 
 type cacheControl struct {
-	Type string `json:"type"` // currently only "ephemeral" is supported
+	Type string `json:"type"`          // currently only "ephemeral" is supported
+	TTL  string `json:"ttl,omitempty"` // optional Bedrock cache point ttl, e.g. "5m" or "1h"
 }
 
 func (m *chatMessage) handleNonStreamingReasoningContent(reasoningContentMode string) {
@@ -350,7 +358,11 @@ func extractCacheControl(contentMap map[string]any) *cacheControl {
 	if ccInterface, ok := contentMap["cache_control"]; ok {
 		if ccMap, ok := ccInterface.(map[string]any); ok {
 			if ccType, ok := ccMap["type"].(string); ok {
-				return &cacheControl{Type: ccType}
+				cc := &cacheControl{Type: ccType}
+				if ttl, ok := ccMap["ttl"].(string); ok {
+					cc.TTL = ttl
+				}
+				return cc
 			}
 		}
 	}
@@ -469,6 +481,8 @@ type toolCall struct {
 	Id       string       `json:"id,omitempty"`
 	Type     string       `json:"type"`
 	Function functionCall `json:"function"`
+	// Bedrock prompt caching support for tool use blocks.
+	CacheControl *cacheControl `json:"cache_control,omitempty"`
 
 	ProviderSpecificFields map[string]interface{} `json:"provider_specific_fields,omitempty"`
 }

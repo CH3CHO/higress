@@ -60,7 +60,8 @@ type ToolSpecBlock struct {
 
 // ToolBlock wraps a tool specification
 type ToolBlock struct {
-	ToolSpec *ToolSpecBlock `json:"toolSpec,omitempty"`
+	ToolSpec   *ToolSpecBlock   `json:"toolSpec,omitempty"`
+	CachePoint *CachePointBlock `json:"cachePoint,omitempty"`
 }
 
 // SpecificToolChoiceBlock specifies a particular tool to use
@@ -204,7 +205,8 @@ type MetricsBlock struct {
 // CachePointBlock represents a cache point for prompt caching
 // This is used in Bedrock's prompt caching feature
 type CachePointBlock struct {
-	Type string `json:"type"` // "default"
+	Type string `json:"type"`          // "default"
+	TTL  string `json:"ttl,omitempty"` // optional "5m" or "1h"
 }
 
 // Request-related types for Bedrock Converse API

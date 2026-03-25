@@ -3,6 +3,7 @@ package provider
 import (
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -267,11 +268,27 @@ func buildBedrockAdditionalModelRequestFields(request *chatCompletionRequest, ex
 	}
 
 	anthropicBeta := bedrock.GetAnthropicBetaFromHeaders(extendedParams.ExtraHeaders)
+	if hasBedrockEagerInputStreamingTool(request) &&
+		!slices.Contains(anthropicBeta, bedrockFineGrainedToolStreamingBeta) {
+		anthropicBeta = append(anthropicBeta, bedrockFineGrainedToolStreamingBeta)
+	}
 	if len(anthropicBeta) > 0 {
 		out["anthropic_beta"] = anthropicBeta
 	}
 
 	return out, nil
+}
+
+func hasBedrockEagerInputStreamingTool(request *chatCompletionRequest) bool {
+	if request == nil {
+		return false
+	}
+	for _, tool := range request.Tools {
+		if tool.EagerInputStreaming {
+			return true
+		}
+	}
+	return false
 }
 
 // transformBedrockTools converts OpenAI-style tools to Bedrock ToolBlock format.
@@ -336,6 +353,11 @@ func transformBedrockTools(tools []tool) ([]*bedrock.ToolBlock, error) {
 				Description: &description,
 			},
 		})
+		if cachePoint := newBedrockDefaultCachePointBlock(t.CacheControl); cachePoint != nil {
+			out = append(out, &bedrock.ToolBlock{
+				CachePoint: cachePoint,
+			})
+		}
 	}
 
 	return out, nil
@@ -344,6 +366,7 @@ func transformBedrockTools(tools []tool) ([]*bedrock.ToolBlock, error) {
 // Default continue messages for Bedrock
 const (
 	defaultUserContinueMessage = "Please continue."
+	bedrockFineGrainedToolStreamingBeta = "fine-grained-tool-streaming-2025-05-14"
 )
 
 // transformMessagesToBedrockMessageBlocks converts OpenAI-style messages to Bedrock Converse API format.
@@ -423,11 +446,15 @@ func transformMessagesToBedrockMessageBlocks(messages []chatMessage, opts *bedro
 		// MERGE CONSECUTIVE TOOL CALL MESSAGES
 		var toolContentBlocks []*bedrock.ContentBlock
 		for msgIdx < len(messages) && messages[msgIdx].Role == roleTool {
-			toolResult, err := convertToBedrockToolCallResult(messages[msgIdx])
+			currentMsg := messages[msgIdx]
+			toolResult, err := convertToBedrockToolCallResult(currentMsg)
 			if err != nil {
 				return nil, fmt.Errorf("failed to convert to bedrock tool call result: %w", err)
 			}
 			toolContentBlocks = append(toolContentBlocks, toolResult)
+			if shouldAddCachePointForToolResult(currentMsg) {
+				toolContentBlocks = append(toolContentBlocks, newBedrockCachePointContentBlock(getToolResultCacheControl(currentMsg)))
+			}
 			msgIdx++
 		}
 		if len(toolContentBlocks) > 0 {
@@ -489,9 +516,7 @@ func convertUserMessageToContentBlocks(msg chatMessage) ([]*bedrock.ContentBlock
 			blocks = append(blocks, &bedrock.ContentBlock{Text: &content})
 			// Add cache point if cache_control is present at message level
 			if msg.CacheControl != nil {
-				blocks = append(blocks, &bedrock.ContentBlock{
-					CachePoint: &bedrock.CachePointBlock{Type: "default"},
-				})
+				blocks = append(blocks, newBedrockCachePointContentBlock(msg.CacheControl))
 			}
 		}
 		return blocks, nil
@@ -528,9 +553,7 @@ func convertUserMessageToContentBlocks(msg chatMessage) ([]*bedrock.ContentBlock
 
 		// Add cache point if cache_control is present
 		if part.CacheControl != nil {
-			blocks = append(blocks, &bedrock.ContentBlock{
-				CachePoint: &bedrock.CachePointBlock{Type: "default"},
-			})
+			blocks = append(blocks, newBedrockCachePointContentBlock(part.CacheControl))
 		}
 	}
 
@@ -554,6 +577,9 @@ func convertAssistantMessageToContentBlocks(msg chatMessage) ([]*bedrock.Content
 		content := msg.StringContent()
 		if content != "" {
 			blocks = append(blocks, &bedrock.ContentBlock{Text: &content})
+			if msg.CacheControl != nil {
+				blocks = append(blocks, newBedrockCachePointContentBlock(msg.CacheControl))
+			}
 		}
 	} else {
 		assistantContent := msg.ParseContent()
@@ -579,6 +605,9 @@ func convertAssistantMessageToContentBlocks(msg chatMessage) ([]*bedrock.Content
 				} else {
 					return nil, err
 				}
+			}
+			if element.CacheControl != nil {
+				blocks = append(blocks, newBedrockCachePointContentBlock(element.CacheControl))
 			}
 		}
 	}
@@ -621,6 +650,9 @@ func convertToBedrockToolCallInvoke(toolCalls []toolCall) []*bedrock.ContentBloc
 			},
 		}
 		blocks = append(blocks, block)
+		if tc.CacheControl != nil {
+			blocks = append(blocks, newBedrockCachePointContentBlock(tc.CacheControl))
+		}
 	}
 
 	return blocks
@@ -680,6 +712,32 @@ func convertToBedrockToolCallResult(msg chatMessage) (*bedrock.ContentBlock, err
 	}, nil
 }
 
+func shouldAddCachePointForToolResult(msg chatMessage) bool {
+	if msg.CacheControl != nil {
+		return true
+	}
+
+	for _, part := range msg.ParseContent() {
+		if part.CacheControl != nil {
+			return true
+		}
+	}
+
+	return false
+}
+
+func getToolResultCacheControl(msg chatMessage) *cacheControl {
+	if msg.CacheControl != nil {
+		return msg.CacheControl
+	}
+	for _, part := range msg.ParseContent() {
+		if part.CacheControl != nil {
+			return part.CacheControl
+		}
+	}
+	return nil
+}
+
 // transformSystemMessage extracts system messages from the message list and converts them to SystemContentBlocks.
 // This function corresponds to _transform_system_message in Python's litellm:
 // litellm/llms/bedrock/chat/converse_transformation.py
@@ -703,7 +761,7 @@ func transformSystemMessage(messages []chatMessage) ([]chatMessage, []*bedrock.S
 					// Add cache point if cache_control is present at message level
 					if msg.CacheControl != nil {
 						systemBlocks = append(systemBlocks, &bedrock.SystemContentBlock{
-							CachePoint: &bedrock.CachePointBlock{Type: "default"},
+							CachePoint: newBedrockDefaultCachePointBlock(msg.CacheControl),
 						})
 					}
 				}
@@ -719,7 +777,7 @@ func transformSystemMessage(messages []chatMessage) ([]chatMessage, []*bedrock.S
 						// Add cache point if cache_control is present on content block
 						if part.CacheControl != nil {
 							systemBlocks = append(systemBlocks, &bedrock.SystemContentBlock{
-								CachePoint: &bedrock.CachePointBlock{Type: "default"},
+								CachePoint: newBedrockDefaultCachePointBlock(part.CacheControl),
 							})
 						}
 					}
@@ -731,6 +789,25 @@ func transformSystemMessage(messages []chatMessage) ([]chatMessage, []*bedrock.S
 	}
 
 	return remaining, systemBlocks
+}
+
+func newBedrockDefaultCachePointBlock(cacheControl *cacheControl) *bedrock.CachePointBlock {
+	if cacheControl == nil {
+		return nil
+	}
+	cachePoint := &bedrock.CachePointBlock{Type: "default"}
+	if cacheControl.TTL != "" {
+		cachePoint.TTL = cacheControl.TTL
+	}
+	return cachePoint
+}
+
+func newBedrockCachePointContentBlock(cacheControl *cacheControl) *bedrock.ContentBlock {
+	cachePoint := newBedrockDefaultCachePointBlock(cacheControl)
+	if cachePoint == nil {
+		return nil
+	}
+	return &bedrock.ContentBlock{CachePoint: cachePoint}
 }
 
 // buildBedrockInferenceConfig converts OpenAI request parameters to Bedrock InferenceConfig.
