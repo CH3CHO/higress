@@ -828,7 +828,7 @@ func (b *bedrockProvider) buildBedrockTextGenerationRequest(ctx wrapper.HttpCont
 	}
 
 	requestBytes, err := json.Marshal(request)
-	log.Debugf("bedrock request body after transformation: %s", requestBytes)
+	log.Debugf("[bedrock] transformed request body: %s", requestBytes)
 
 	if extendedParams.ExtraHeaders != nil {
 		setBedrockExtraHeaders(headers, extendedParams.ExtraHeaders)

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"testing"
 
+	"github.com/alibaba/higress/plugins/wasm-go/extensions/ai-proxy/provider/bedrock"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -75,6 +76,63 @@ func TestTransformBedrockTools(t *testing.T) {
 	// Use JSONEq to compare ignoring formatting differences
 	assert.JSONEq(t, expectedBedrockJSON, string(resultJSON),
 		"Bedrock tools output should match expected format from Python comment")
+}
+
+func TestTransformBedrockToolsAddsCachePoint(t *testing.T) {
+	tools := []tool{
+		{
+			Type: "function",
+			Function: function{
+				Name:        "list_tables",
+				Description: "List all available tables",
+				Parameters: map[string]interface{}{
+					"type":       "object",
+					"properties": map[string]interface{}{},
+				},
+			},
+			CacheControl: &cacheControl{
+				Type: "ephemeral",
+			},
+		},
+	}
+
+	result, err := transformBedrockTools(tools)
+	assert.NoError(t, err)
+	if assert.Len(t, result, 2) {
+		assert.NotNil(t, result[0].ToolSpec)
+		assert.Equal(t, "list_tables", result[0].ToolSpec.Name)
+		assert.Nil(t, result[0].CachePoint)
+		assert.NotNil(t, result[1].CachePoint)
+		assert.Equal(t, "default", result[1].CachePoint.Type)
+	}
+}
+
+func TestTransformBedrockToolsAddsCachePointTTL(t *testing.T) {
+	tools := []tool{
+		{
+			Type: "function",
+			Function: function{
+				Name:        "list_tables",
+				Description: "List all available tables",
+				Parameters: map[string]interface{}{
+					"type":       "object",
+					"properties": map[string]interface{}{},
+				},
+			},
+			CacheControl: &cacheControl{
+				Type: "ephemeral",
+				TTL:  "5m",
+			},
+		},
+	}
+
+	result, err := transformBedrockTools(tools)
+	assert.NoError(t, err)
+	if assert.Len(t, result, 2) {
+		assert.NotNil(t, result[1].CachePoint)
+		assert.Equal(t, "default", result[1].CachePoint.Type)
+		assert.Equal(t, "5m", result[1].CachePoint.TTL)
+	}
 }
 
 // TestHandleBedrockResponseFormat tests the handleBedrockResponseFormat function
@@ -406,5 +464,159 @@ func TestHandleBedrockResponseFormat(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestConvertAssistantMessageToContentBlocksAddsCachePointForStringContent(t *testing.T) {
+	msg := chatMessage{
+		Role:    roleAssistant,
+		Content: "cached assistant content",
+		CacheControl: &cacheControl{
+			Type: "ephemeral",
+		},
+	}
+
+	blocks, err := convertAssistantMessageToContentBlocks(msg)
+	assert.NoError(t, err)
+	if assert.Len(t, blocks, 2) {
+		assert.Equal(t, "cached assistant content", *blocks[0].Text)
+		assert.NotNil(t, blocks[1].CachePoint)
+		assert.Equal(t, "default", blocks[1].CachePoint.Type)
+	}
+}
+
+func TestConvertToBedrockToolCallInvokeAddsCachePoint(t *testing.T) {
+	blocks := convertToBedrockToolCallInvoke([]toolCall{
+		{
+			Id:   "tool_1",
+			Type: "function",
+			Function: functionCall{
+				Name:      "lookup_weather",
+				Arguments: `{"location":"hangzhou"}`,
+			},
+			CacheControl: &cacheControl{
+				Type: "ephemeral",
+			},
+		},
+	})
+
+	if assert.Len(t, blocks, 2) {
+		assert.NotNil(t, blocks[0].ToolUse)
+		assert.Equal(t, "lookup_weather", blocks[0].ToolUse.Name)
+		assert.NotNil(t, blocks[1].CachePoint)
+		assert.Equal(t, "default", blocks[1].CachePoint.Type)
+	}
+}
+
+func TestTransformMessagesToBedrockMessageBlocksAddsCachePointForToolResults(t *testing.T) {
+	t.Run("message_level_cache_control", func(t *testing.T) {
+		messages := []chatMessage{
+			{
+				Role: roleTool,
+				Content: []any{
+					map[string]any{
+						"type": "text",
+						"text": "tool output",
+					},
+				},
+				ToolCallId: "tool_1",
+				CacheControl: &cacheControl{
+					Type: "ephemeral",
+				},
+			},
+		}
+
+		result, err := transformMessagesToBedrockMessageBlocks(messages, &bedrock.TransformMessagesOptions{})
+		assert.NoError(t, err)
+		if assert.Len(t, result, 1) && assert.Len(t, result[0].Content, 2) {
+			assert.NotNil(t, result[0].Content[0].ToolResult)
+			assert.NotNil(t, result[0].Content[1].CachePoint)
+			assert.Equal(t, "default", result[0].Content[1].CachePoint.Type)
+		}
+	})
+
+	t.Run("content_level_cache_control", func(t *testing.T) {
+		messages := []chatMessage{
+			{
+				Role: roleTool,
+				Content: []any{
+					map[string]any{
+						"type": "text",
+						"text": "tool output",
+						"cache_control": map[string]any{
+							"type": "ephemeral",
+						},
+					},
+				},
+				ToolCallId: "tool_2",
+			},
+		}
+
+		result, err := transformMessagesToBedrockMessageBlocks(messages, &bedrock.TransformMessagesOptions{})
+		assert.NoError(t, err)
+		if assert.Len(t, result, 1) && assert.Len(t, result[0].Content, 2) {
+			assert.NotNil(t, result[0].Content[0].ToolResult)
+			assert.NotNil(t, result[0].Content[1].CachePoint)
+			assert.Equal(t, "default", result[0].Content[1].CachePoint.Type)
+		}
+	})
+}
+
+func TestBuildBedrockAdditionalModelRequestFieldsAddsAnthropicBetaForEagerInputStreaming(t *testing.T) {
+	request := &chatCompletionRequest{
+		Tools: []tool{
+			{
+				Type: "function",
+				Function: function{
+					Name: "get_weather",
+				},
+				EagerInputStreaming: true,
+			},
+		},
+	}
+
+	fields, err := buildBedrockAdditionalModelRequestFields(request, &bedrockExtendedParams{})
+	assert.NoError(t, err)
+	assert.Equal(t, []string{bedrockFineGrainedToolStreamingBeta}, fields["anthropic_beta"])
+}
+
+func TestBuildBedrockAdditionalModelRequestFieldsPreservesExistingAnthropicBeta(t *testing.T) {
+	request := &chatCompletionRequest{
+		Tools: []tool{
+			{
+				Type: "function",
+				Function: function{
+					Name: "get_weather",
+				},
+				EagerInputStreaming: true,
+			},
+		},
+	}
+
+	fields, err := buildBedrockAdditionalModelRequestFields(request, &bedrockExtendedParams{
+		ExtraHeaders: map[string]string{
+			"anthropic-beta": "test-beta," + bedrockFineGrainedToolStreamingBeta,
+		},
+	})
+	assert.NoError(t, err)
+	assert.Equal(t, []string{"test-beta", bedrockFineGrainedToolStreamingBeta}, fields["anthropic_beta"])
+}
+
+func TestConvertAssistantMessageToContentBlocksAddsCachePointTTL(t *testing.T) {
+	msg := chatMessage{
+		Role:    roleAssistant,
+		Content: "cached assistant content",
+		CacheControl: &cacheControl{
+			Type: "ephemeral",
+			TTL:  "1h",
+		},
+	}
+
+	blocks, err := convertAssistantMessageToContentBlocks(msg)
+	assert.NoError(t, err)
+	if assert.Len(t, blocks, 2) {
+		assert.NotNil(t, blocks[1].CachePoint)
+		assert.Equal(t, "default", blocks[1].CachePoint.Type)
+		assert.Equal(t, "1h", blocks[1].CachePoint.TTL)
 	}
 }

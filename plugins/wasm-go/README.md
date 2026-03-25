@@ -47,6 +47,8 @@ output wasm file: extensions/request-block/plugin.wasm
 
 - Go 版本: >= 1.24 (需要支持 wasm 构建特性)
 
+如果你使用 `asdf` 或 `mise`，可以直接复用当前目录下的 `.go-version` / `.tool-versions`，仓库已经为 `plugins/wasm-go` 固定到 `Go 1.24.4`。
+
 下面是本地多步骤构建 [request-block](extensions/request-block) 的例子。
 
 ### step1. 编译 wasm
