@@ -7,10 +7,70 @@
 - 绑定本地 `8080` 端口
 - 配置 Bedrock 本地路由
 - 查看 Higress / wasm 日志
-- 用 `curl` 验证普通调用、`cache_control`、`eager_input_streaming`
+- 用 `curl` 验证普通调用、`cache_control`、fine-grained tool streaming
 - 补充本地 `local/` Envoy 配置的写法
 
 这份文档优先推荐 **Higress 本地链路**。`local/` 目录下的 Envoy 配置作为可选补充，仅用于配置参考。
+
+## 快速开始
+
+如果你只想最快复现本地 Bedrock 调试，按下面顺序走：
+
+先设置通用变量：
+
+```bash
+export AI_GATEWAY_REPO="<ai-gateway-repo>"
+export AI_PROXY_DIR="$AI_GATEWAY_REPO/plugins/wasm-go/extensions/ai-proxy"
+export WASM_OUT="$AI_PROXY_DIR/plugin.wasm"
+export KIND_NODE="<kind-node-container>"
+```
+
+1. 编译 wasm：
+
+```bash
+cd "$AI_PROXY_DIR"
+GOOS=wasip1 GOARCH=wasm go build -buildmode=c-shared -o ./plugin.wasm .
+```
+
+2. 拷到 kind 节点并重启 Higress：
+
+```bash
+docker cp "$WASM_OUT" \
+  "$KIND_NODE:/opt/plugins/wasm-go/extensions/ai-proxy/plugin.wasm"
+
+kubectl -n higress-system rollout restart deployment/higress-gateway
+kubectl -n higress-system rollout status deployment/higress-gateway --timeout=180s
+```
+
+3. 确认本地 Bedrock 路由资源已经存在：
+
+```bash
+kubectl -n higress-system get mcpbridge
+kubectl -n higress-system get ingress bedrock-local
+kubectl -n higress-system get wasmplugin ai-proxy-local
+```
+
+4. 本地绑定 `8080`：
+
+```bash
+kubectl -n higress-system port-forward svc/higress-gateway 8080:80
+```
+
+5. 看日志：
+
+```bash
+kubectl -n higress-system get pod -l app=higress-gateway -o wide
+kubectl -n higress-system logs pod/<gateway-pod> -c higress-gateway -f
+```
+
+6. 发请求：
+
+```bash
+curl http://127.0.0.1:8080/v1/chat/completions \
+  -H 'Host: bedrock.local' \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"claude-sonnet-4-5","messages":[{"role":"user","content":"你好，你是谁？"}]}'
+```
 
 ## 1. 前置条件
 
@@ -43,11 +103,11 @@ docker version
 
 以下目录是本地开发的核心路径：
 
-- 插件目录：`/Users/jkma/programfiles/codinghere/ailabgo/ai-gateway/plugins/wasm-go/extensions/ai-proxy`
-- 本地 wasm 产物：`/Users/jkma/programfiles/codinghere/ailabgo/ai-gateway/plugins/wasm-go/extensions/ai-proxy/plugin.wasm`
-- 本地 Envoy 配置目录：`/Users/jkma/programfiles/codinghere/ailabgo/ai-gateway/plugins/wasm-go/extensions/ai-proxy/local`
-- 本地 Envoy 配置：`/Users/jkma/programfiles/codinghere/ailabgo/ai-gateway/plugins/wasm-go/extensions/ai-proxy/local/envoy.local.yaml`
-- 本地 Bedrock Envoy 配置：`/Users/jkma/programfiles/codinghere/ailabgo/ai-gateway/plugins/wasm-go/extensions/ai-proxy/local/envoy-bedrock.yaml`
+- 插件目录：`<ai-gateway-repo>/plugins/wasm-go/extensions/ai-proxy`
+- 本地 wasm 产物：`<ai-gateway-repo>/plugins/wasm-go/extensions/ai-proxy/plugin.wasm`
+- 本地 Envoy 配置目录：`<ai-gateway-repo>/plugins/wasm-go/extensions/ai-proxy/local`
+- 本地 Envoy 配置：`<ai-gateway-repo>/plugins/wasm-go/extensions/ai-proxy/local/envoy.local.yaml`
+- 本地 Bedrock Envoy 配置：`<ai-gateway-repo>/plugins/wasm-go/extensions/ai-proxy/local/envoy-bedrock.yaml`
 
 注意：
 
@@ -58,7 +118,7 @@ docker version
 进入插件目录：
 
 ```bash
-cd /Users/jkma/programfiles/codinghere/ailabgo/ai-gateway/plugins/wasm-go/extensions/ai-proxy
+cd <ai-gateway-repo>/plugins/wasm-go/extensions/ai-proxy
 ```
 
 直接在宿主机编译：
@@ -79,7 +139,7 @@ GOOS=wasip1 GOARCH=wasm go build -buildmode=c-shared -o ./plugin.wasm .
 先在插件目录生成 wasm：
 
 ```bash
-cd /Users/jkma/programfiles/codinghere/ailabgo/ai-gateway/plugins/wasm-go/extensions/ai-proxy
+cd <ai-gateway-repo>/plugins/wasm-go/extensions/ai-proxy
 go mod tidy
 GOOS=wasip1 GOARCH=wasm go build -buildmode=c-shared -o main.wasm ./
 ```
@@ -126,7 +186,7 @@ kubectl create namespace higress-system
 在仓库根目录安装 Higress：
 
 ```bash
-cd /Users/jkma/programfiles/codinghere/ailabgo/ai-gateway
+cd <ai-gateway-repo>
 helm install higress helm/core \
   -n higress-system \
   --set controller.tag=2.1.9 \
@@ -140,7 +200,7 @@ helm install higress helm/core \
 确认网关 ready：
 
 ```bash
-kubectl -n higress-system rollout status deployment/higress-gateway
+kubectl -n higress-system rollout status deployment/higress-gateway --timeout=180s
 kubectl -n higress-system get pod -l app=higress-gateway -o wide
 ```
 
@@ -170,22 +230,23 @@ kubectl -n higress-system get deployment higress-gateway -o yaml
 docker ps --format '{{.Names}}'
 ```
 
-当前本地环境使用的是：
+当前本地环境使用的是 kind 控制面节点容器，可以先确认名字：
 
-- `higress-control-plane`
+- `docker ps --format '{{.Names}}'`
+- 常见示例：`higress-control-plane`
 
 把最新的 wasm 拷进去：
 
 ```bash
-docker cp /Users/jkma/programfiles/codinghere/ailabgo/ai-gateway/plugins/wasm-go/extensions/ai-proxy/plugin.wasm \
-  higress-control-plane:/opt/plugins/wasm-go/extensions/ai-proxy/plugin.wasm
+docker cp <ai-gateway-repo>/plugins/wasm-go/extensions/ai-proxy/plugin.wasm \
+  <kind-node-container>:/opt/plugins/wasm-go/extensions/ai-proxy/plugin.wasm
 ```
 
 然后重启网关：
 
 ```bash
 kubectl -n higress-system rollout restart deployment/higress-gateway
-kubectl -n higress-system rollout status deployment/higress-gateway
+kubectl -n higress-system rollout status deployment/higress-gateway --timeout=180s
 ```
 
 ## 7. 配置本地 Bedrock 路由
@@ -195,6 +256,14 @@ kubectl -n higress-system rollout status deployment/higress-gateway
 - `McpBridge` 指向 `bedrock-runtime.us-west-2.amazonaws.com:443`
 - `Ingress` 暴露本地 host：`bedrock.local`
 - `WasmPlugin` 绑定到 `bedrock-local`
+
+最小必要性说明：
+
+- 如果你要走这份文档推荐的 Higress 本地链路，并且请求最终要从 Higress 转发到真实 Bedrock，那么这三项都需要。
+- `McpBridge` 负责给 Higress 提供外部 Bedrock 域名对应的上游目标。
+- `Ingress` 负责把本地 `Host: bedrock.local` 路由到这个上游，同时作为 `WasmPlugin.matchRules.ingress` 的绑定对象。
+- `WasmPlugin` 负责加载本地 wasm，并把 OpenAI 风格请求转换成 Bedrock 请求。
+- 如果你只是做本地 Envoy 调试、单测，或者只验证 wasm 编译产物本身，那就不一定需要这三项。
 
 ### 7.1 McpBridge
 
@@ -390,7 +459,7 @@ kubectl -n higress-system patch deployment higress-gateway --type='json' -p='[
 等待 rollout：
 
 ```bash
-kubectl -n higress-system rollout status deployment/higress-gateway
+kubectl -n higress-system rollout status deployment/higress-gateway --timeout=180s
 ```
 
 ## 10. curl 调用示例
@@ -402,7 +471,7 @@ curl http://127.0.0.1:8080/v1/messages \
   -H 'Host: bedrock.local' \
   -H 'Content-Type: application/json' \
   -d '{
-    "model": "anything",
+    "model": "claude-sonnet-4-5",
     "max_tokens": 64,
     "messages": [
       {
@@ -420,7 +489,7 @@ curl http://127.0.0.1:8080/v1/chat/completions \
   -H 'Host: bedrock.local' \
   -H 'Content-Type: application/json' \
   -d '{
-    "model": "anything",
+    "model": "claude-sonnet-4-5",
     "stream": false,
     "messages": [
       {
@@ -438,7 +507,7 @@ curl http://127.0.0.1:8080/v1/chat/completions \
   -H 'Host: bedrock.local' \
   -H 'Content-Type: application/json' \
   -d '{
-    "model": "anything",
+    "model": "claude-sonnet-4-5",
     "stream": false,
     "max_tokens": 64,
     "tools": [
@@ -489,21 +558,23 @@ curl http://127.0.0.1:8080/v1/chat/completions \
 - `usage.cache_read_input_tokens`
 - `usage.prompt_tokens_details.cached_tokens`
 
-### 10.4 `eager_input_streaming` 调试示例
+### 10.4 fine-grained tool streaming 调试示例
 
-OpenAI 协议里直接写在 tool 上：
+通过 OpenAI 协议里的 `extra_headers.anthropic-beta` 开启：
 
 ```bash
 curl http://127.0.0.1:8080/v1/chat/completions \
   -H 'Host: bedrock.local' \
   -H 'Content-Type: application/json' \
   -d '{
-    "model": "anything",
+    "model": "claude-sonnet-4-5",
     "stream": true,
+    "extra_headers": {
+      "anthropic-beta": "fine-grained-tool-streaming-2025-05-14"
+    },
     "tools": [
       {
         "type": "function",
-        "eager_input_streaming": true,
         "function": {
           "name": "get_weather",
           "description": "Get weather by city",
@@ -530,7 +601,14 @@ curl http://127.0.0.1:8080/v1/chat/completions \
 
 当前 ai-proxy 的 Bedrock 行为是：
 
-- 接收 OpenAI body 里的 `tools[*].eager_input_streaming = true`
+- 接收 OpenAI body 里的：
+
+```json
+"extra_headers": {
+  "anthropic-beta": "fine-grained-tool-streaming-2025-05-14"
+}
+```
+
 - 自动转换成：
 
 ```json
@@ -553,8 +631,8 @@ curl http://127.0.0.1:8080/v1/chat/completions \
 
 文件路径：
 
-- [local/envoy.local.yaml](/Users/jkma/programfiles/codinghere/ailabgo/ai-gateway/plugins/wasm-go/extensions/ai-proxy/local/envoy.local.yaml)
-- [local/envoy-bedrock.yaml](/Users/jkma/programfiles/codinghere/ailabgo/ai-gateway/plugins/wasm-go/extensions/ai-proxy/local/envoy-bedrock.yaml)
+- `local/envoy.local.yaml`
+- `local/envoy-bedrock.yaml`
 
 这些文件适合做结构参考，当前内容已经是本地调试版本，主要字段包括：
 
@@ -615,46 +693,3 @@ curl http://127.0.0.1:8080/v1/chat/completions \
 ### 12.5 `No rule to make target help`
 
 这个仓库的 `make` 目标不是统一提供 `help`，直接用明确的命令即可，不需要先跑 `make help`。
-
-## 13. 推荐的最短调试路径
-
-如果你只想最快复现本地 Bedrock 调试，按下面顺序走：
-
-1. 编译 wasm：
-
-```bash
-cd /Users/jkma/programfiles/codinghere/ailabgo/ai-gateway/plugins/wasm-go/extensions/ai-proxy
-GOOS=wasip1 GOARCH=wasm go build -buildmode=c-shared -o ./plugin.wasm .
-```
-
-2. 拷到 kind 节点并重启 Higress：
-
-```bash
-docker cp /Users/jkma/programfiles/codinghere/ailabgo/ai-gateway/plugins/wasm-go/extensions/ai-proxy/plugin.wasm \
-  higress-control-plane:/opt/plugins/wasm-go/extensions/ai-proxy/plugin.wasm
-
-kubectl -n higress-system rollout restart deployment/higress-gateway
-kubectl -n higress-system rollout status deployment/higress-gateway
-```
-
-3. 本地绑定 `8080`：
-
-```bash
-kubectl -n higress-system port-forward svc/higress-gateway 8080:80
-```
-
-4. 看日志：
-
-```bash
-kubectl -n higress-system get pod -l app=higress-gateway -o wide
-kubectl -n higress-system logs pod/<gateway-pod> -c higress-gateway -f
-```
-
-5. 发请求：
-
-```bash
-curl http://127.0.0.1:8080/v1/chat/completions \
-  -H 'Host: bedrock.local' \
-  -H 'Content-Type: application/json' \
-  -d '{"model":"anything","messages":[{"role":"user","content":"你好，你是谁？"}]}'
-```
