@@ -562,46 +562,6 @@ func TestTransformMessagesToBedrockMessageBlocksAddsCachePointForToolResults(t *
 	})
 }
 
-func TestBuildBedrockAdditionalModelRequestFieldsAddsAnthropicBetaForEagerInputStreaming(t *testing.T) {
-	request := &chatCompletionRequest{
-		Tools: []tool{
-			{
-				Type: "function",
-				Function: function{
-					Name: "get_weather",
-				},
-				EagerInputStreaming: true,
-			},
-		},
-	}
-
-	fields, err := buildBedrockAdditionalModelRequestFields(request, &bedrockExtendedParams{})
-	assert.NoError(t, err)
-	assert.Equal(t, []string{bedrockFineGrainedToolStreamingBeta}, fields["anthropic_beta"])
-}
-
-func TestBuildBedrockAdditionalModelRequestFieldsPreservesExistingAnthropicBeta(t *testing.T) {
-	request := &chatCompletionRequest{
-		Tools: []tool{
-			{
-				Type: "function",
-				Function: function{
-					Name: "get_weather",
-				},
-				EagerInputStreaming: true,
-			},
-		},
-	}
-
-	fields, err := buildBedrockAdditionalModelRequestFields(request, &bedrockExtendedParams{
-		ExtraHeaders: map[string]string{
-			"anthropic-beta": "test-beta," + bedrockFineGrainedToolStreamingBeta,
-		},
-	})
-	assert.NoError(t, err)
-	assert.Equal(t, []string{"test-beta", bedrockFineGrainedToolStreamingBeta}, fields["anthropic_beta"])
-}
-
 func TestConvertAssistantMessageToContentBlocksAddsCachePointTTL(t *testing.T) {
 	msg := chatMessage{
 		Role:    roleAssistant,

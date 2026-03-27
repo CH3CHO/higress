@@ -3,7 +3,6 @@ package provider
 import (
 	"encoding/json"
 	"fmt"
-	"slices"
 	"strings"
 	"time"
 
@@ -268,27 +267,11 @@ func buildBedrockAdditionalModelRequestFields(request *chatCompletionRequest, ex
 	}
 
 	anthropicBeta := bedrock.GetAnthropicBetaFromHeaders(extendedParams.ExtraHeaders)
-	if hasBedrockEagerInputStreamingTool(request) &&
-		!slices.Contains(anthropicBeta, bedrockFineGrainedToolStreamingBeta) {
-		anthropicBeta = append(anthropicBeta, bedrockFineGrainedToolStreamingBeta)
-	}
 	if len(anthropicBeta) > 0 {
 		out["anthropic_beta"] = anthropicBeta
 	}
 
 	return out, nil
-}
-
-func hasBedrockEagerInputStreamingTool(request *chatCompletionRequest) bool {
-	if request == nil {
-		return false
-	}
-	for _, tool := range request.Tools {
-		if tool.EagerInputStreaming {
-			return true
-		}
-	}
-	return false
 }
 
 // transformBedrockTools converts OpenAI-style tools to Bedrock ToolBlock format.
@@ -366,7 +349,6 @@ func transformBedrockTools(tools []tool) ([]*bedrock.ToolBlock, error) {
 // Default continue messages for Bedrock
 const (
 	defaultUserContinueMessage = "Please continue."
-	bedrockFineGrainedToolStreamingBeta = "fine-grained-tool-streaming-2025-05-14"
 )
 
 // transformMessagesToBedrockMessageBlocks converts OpenAI-style messages to Bedrock Converse API format.

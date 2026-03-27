@@ -121,15 +121,9 @@ type streamOptions struct {
 }
 
 type tool struct {
-	Type                string        `json:"type"`
-	Function            function      `json:"function"`
-	CacheControl        *cacheControl `json:"cache_control,omitempty"`
-	// EagerInputStreaming is an ai-proxy extension field, not part of the standard OpenAI tool schema.
-	// Bedrock Anthropic fine-grained tool streaming is enabled via a Bedrock-native anthropic_beta setting,
-	// but OpenAI-style tool definitions have no standard field for that capability.
-	// This flag lets clients request the feature on a tool, and ai-proxy translates it to the
-	// corresponding Bedrock anthropic_beta configuration when sending the upstream request.
-	EagerInputStreaming bool `json:"eager_input_streaming,omitempty"`
+	Type         string        `json:"type"`
+	Function     function      `json:"function"`
+	CacheControl *cacheControl `json:"cache_control,omitempty"`
 }
 
 type function struct {
