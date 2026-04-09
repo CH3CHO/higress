@@ -11,7 +11,10 @@ require (
 	github.com/tidwall/gjson v1.18.0
 )
 
-require github.com/tidwall/sjson v1.2.5 // indirect
+require (
+	github.com/stretchr/objx v0.5.3 // indirect
+	github.com/tidwall/sjson v1.2.5 // indirect
+)
 
 require (
 	github.com/benbjohnson/clock v1.3.5 // indirect
