@@ -211,7 +211,7 @@ func executeRoute(ctx wrapper.HttpContext, pluginConfig *PluginConfig, consumerI
 	routeId := routeConfig.ID
 
 	defer func() {
-		ctx.SetUserAttribute("routeId", routeId)
+		ctx.SetUserAttribute("trip_route_id", "llm-"+routeId)
 		ctx.SetContext(routeIdKey, routeId)
 		if targetService != nil {
 			ctx.SetContext(serviceIdKey, targetService.ID)
