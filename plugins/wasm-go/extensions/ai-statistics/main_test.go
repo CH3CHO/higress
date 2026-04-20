@@ -21,6 +21,7 @@ import (
 
 	"github.com/higress-group/proxy-wasm-go-sdk/proxywasm/types"
 	"github.com/higress-group/wasm-go/pkg/test"
+	"github.com/tidwall/gjson"
 	"github.com/stretchr/testify/require"
 )
 
@@ -798,6 +799,133 @@ func TestMetrics(t *testing.T) {
 			require.NoError(t, err)
 			require.Equal(t, uint64(13), totalTokenValue)
 		})
+
+		t.Run("anthropic_messages_metrics", func(t *testing.T) {
+			host, status := test.NewTestHost(basicConfig)
+			defer host.Reset()
+			require.Equal(t, types.OnPluginStartStatusOK, status)
+
+			host.SetRouteName("api-v1")
+			host.SetClusterName("cluster-1")
+
+			host.CallOnHttpRequestHeaders([][2]string{
+				{":authority", "example.com"},
+				{":path", "/v1/messages"},
+				{":method", "POST"},
+				{"x-mse-consumer", "user3"},
+			})
+
+			requestBody := []byte(`{
+				"model": "claude-sonnet-4-5",
+				"messages": [{"role": "user", "content": "Hello"}],
+				"max_tokens": 128
+			}`)
+			host.CallOnHttpRequestBody(requestBody)
+
+			time.Sleep(10 * time.Millisecond)
+
+			host.CallOnHttpResponseHeaders([][2]string{
+				{":status", "200"},
+				{"content-type", "application/json; charset=utf-8"},
+			})
+
+			responseBody := []byte(`{
+				"id": "msg_123",
+				"type": "message",
+				"role": "assistant",
+				"model": "claude-sonnet-4-5",
+				"content": [{"type": "text", "text": "Hello back"}],
+				"usage": {"input_tokens": 5, "output_tokens": 8, "cache_creation_input_tokens": 2, "cache_read_input_tokens": 1}
+			}`)
+			host.CallOnHttpResponseBody(responseBody)
+			host.CompleteHttp()
+
+			inputTokenMetric := "route.api-v1.upstream.cluster-1.model.claude-sonnet-4-5.consumer.user3.metric.input_token"
+			inputTokenValue, err := host.GetCounterMetric(inputTokenMetric)
+			require.NoError(t, err)
+			require.Equal(t, uint64(5), inputTokenValue)
+
+			outputTokenMetric := "route.api-v1.upstream.cluster-1.model.claude-sonnet-4-5.consumer.user3.metric.output_token"
+			outputTokenValue, err := host.GetCounterMetric(outputTokenMetric)
+			require.NoError(t, err)
+			require.Equal(t, uint64(8), outputTokenValue)
+
+			totalTokenMetric := "route.api-v1.upstream.cluster-1.model.claude-sonnet-4-5.consumer.user3.metric.total_token"
+			totalTokenValue, err := host.GetCounterMetric(totalTokenMetric)
+			require.NoError(t, err)
+			require.Equal(t, uint64(16), totalTokenValue)
+		})
+
+		t.Run("anthropic_messages_streaming_metrics", func(t *testing.T) {
+			host, status := test.NewTestHost(streamingBodyConfig)
+			defer host.Reset()
+			require.Equal(t, types.OnPluginStartStatusOK, status)
+
+			host.SetRouteName("api-v1")
+			host.SetClusterName("cluster-1")
+
+			host.CallOnHttpRequestHeaders([][2]string{
+				{":authority", "example.com"},
+				{":path", "/messages"},
+				{":method", "POST"},
+				{"x-mse-consumer", "user4"},
+			})
+
+			requestBody := []byte(`{
+				"model": "claude-sonnet-4-5",
+				"messages": [{"role": "user", "content": "Hello"}],
+				"stream": true,
+				"max_tokens": 128
+			}`)
+			action := host.CallOnHttpRequestBody(requestBody)
+			require.Equal(t, types.ActionContinue, action)
+
+			time.Sleep(10 * time.Millisecond)
+
+			action = host.CallOnHttpResponseHeaders([][2]string{
+				{":status", "200"},
+				{"content-type", "text/event-stream"},
+			})
+			require.Equal(t, types.ActionContinue, action)
+
+			firstChunk := []byte("event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"model\":\"claude-sonnet-4-5-20250929\",\"id\":\"msg_bdrk_01UiSs8fzPz4UzPCLBZur21X\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[],\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{\"input_tokens\":23,\"cache_creation_input_tokens\":0,\"cache_read_input_tokens\":0,\"cache_creation\":{\"ephemeral_5m_input_tokens\":0,\"ephemeral_1h_input_tokens\":0},\"output_tokens\":2}}}\n\n")
+			action = host.CallOnHttpStreamingResponseBody(firstChunk, false)
+			require.Equal(t, types.ActionContinue, action)
+			require.Equal(t, firstChunk, host.GetResponseBody())
+
+			lastChunk := []byte("event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\",\"stop_sequence\":null},\"usage\":{\"input_tokens\":23,\"cache_creation_input_tokens\":0,\"cache_read_input_tokens\":0,\"output_tokens\":21}}\n\n")
+			action = host.CallOnHttpStreamingResponseBody(lastChunk, true)
+			require.Equal(t, types.ActionContinue, action)
+			require.Equal(t, lastChunk, host.GetResponseBody())
+
+			time.Sleep(10 * time.Millisecond)
+			host.CompleteHttp()
+
+			firstTokenDurationMetric := "route.api-v1.upstream.cluster-1.model.claude-sonnet-4-5-20250929.consumer.user4.metric.llm_first_token_duration"
+			firstTokenDurationValue, err := host.GetCounterMetric(firstTokenDurationMetric)
+			require.NoError(t, err)
+			require.Greater(t, firstTokenDurationValue, uint64(0))
+
+			streamDurationCountMetric := "route.api-v1.upstream.cluster-1.model.claude-sonnet-4-5-20250929.consumer.user4.metric.llm_stream_duration_count"
+			streamDurationCountValue, err := host.GetCounterMetric(streamDurationCountMetric)
+			require.NoError(t, err)
+			require.Equal(t, uint64(1), streamDurationCountValue)
+
+			inputTokenMetric := "route.api-v1.upstream.cluster-1.model.claude-sonnet-4-5-20250929.consumer.user4.metric.input_token"
+			inputTokenValue, err := host.GetCounterMetric(inputTokenMetric)
+			require.NoError(t, err)
+			require.Equal(t, uint64(23), inputTokenValue)
+
+			outputTokenMetric := "route.api-v1.upstream.cluster-1.model.claude-sonnet-4-5-20250929.consumer.user4.metric.output_token"
+			outputTokenValue, err := host.GetCounterMetric(outputTokenMetric)
+			require.NoError(t, err)
+			require.Equal(t, uint64(21), outputTokenValue)
+
+			totalTokenMetric := "route.api-v1.upstream.cluster-1.model.claude-sonnet-4-5-20250929.consumer.user4.metric.total_token"
+			totalTokenValue, err := host.GetCounterMetric(totalTokenMetric)
+			require.NoError(t, err)
+			require.Equal(t, uint64(44), totalTokenValue)
+		})
 	})
 }
 
@@ -1055,4 +1183,59 @@ func TestExtractStreamingBodyByJsonPath(t *testing.T) {
 			require.Equal(t, tc.expect, got)
 		})
 	}
+}
+
+func TestCombineAnthropicStreamingEventForLog(t *testing.T) {
+	body := ""
+	events := []StreamEvent{
+		{
+			Event: "message_start",
+			Data:  `{"type":"message_start","message":{"model":"claude-haiku-4-5-20251001","id":"msg_bdrk_01EF5Y5ZVQRtKNfh3kUW1NqZ","type":"message","role":"assistant","content":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":23,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0},"output_tokens":8}}}`,
+		},
+		{
+			Event: "content_block_start",
+			Data:  `{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`,
+		},
+		{
+			Event: "content_block_delta",
+			Data:  `{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"我是Claude，一个由"}}`,
+		},
+		{
+			Event: "content_block_delta",
+			Data:  `{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Anthropic公"}}`,
+		},
+		{
+			Event: "content_block_delta",
+			Data:  `{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"司开发的AI助手。"}}`,
+		},
+		{
+			Event: "content_block_stop",
+			Data:  `{"type":"content_block_stop","index":0}`,
+		},
+		{
+			Event: "message_delta",
+			Data:  `{"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"input_tokens":23,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":23}}`,
+		},
+		{
+			Event: "message_stop",
+			Data:  `{"type":"message_stop","amazon-bedrock-invocationMetrics":{"inputTokenCount":23,"outputTokenCount":20,"invocationLatency":3101,"firstByteLatency":2948}}`,
+		},
+	}
+
+	for _, event := range events {
+		body = combineAnthropicStreamingEventForLog(body, &event)
+	}
+
+	require.Equal(t, "msg_bdrk_01EF5Y5ZVQRtKNfh3kUW1NqZ", gjson.Get(body, "id").String())
+	require.Equal(t, "claude-haiku-4-5-20251001", gjson.Get(body, "model").String())
+	require.Equal(t, "message", gjson.Get(body, "type").String())
+	require.Equal(t, "assistant", gjson.Get(body, "role").String())
+	require.Equal(t, "我是Claude，一个由Anthropic公司开发的AI助手。", gjson.Get(body, "content.0.text").String())
+	require.Equal(t, "text", gjson.Get(body, "content.0.type").String())
+	require.Equal(t, "end_turn", gjson.Get(body, "stop_reason").String())
+	require.True(t, gjson.Get(body, "stop_sequence").Exists())
+	require.Equal(t, int64(23), gjson.Get(body, "usage.input_tokens").Int())
+	require.Equal(t, int64(23), gjson.Get(body, "usage.output_tokens").Int())
+	require.Equal(t, int64(3101), gjson.Get(body, "amazon-bedrock-invocationMetrics.invocationLatency").Int())
+	require.Equal(t, int64(2948), gjson.Get(body, "amazon-bedrock-invocationMetrics.firstByteLatency").Int())
 }
