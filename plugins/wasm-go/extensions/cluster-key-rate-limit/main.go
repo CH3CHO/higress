@@ -42,6 +42,8 @@ func init() {
 		wrapper.ParseOverrideConfig(parseGlobalConfig, parseOverrideRuleConfig),
 		wrapper.ProcessRequestHeaders(onHttpRequestHeaders),
 		wrapper.ProcessResponseHeaders(onHttpResponseHeaders),
+		wrapper.WithRebuildAfterRequests[config.ClusterKeyRateLimitConfig](1000),
+		wrapper.WithRebuildMaxMemBytes[config.ClusterKeyRateLimitConfig](200*1024*1024),
 	)
 }
 
