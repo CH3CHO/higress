@@ -355,6 +355,41 @@ spec:
 kubectl apply -f wasmplugin-ai-proxy-local.yaml
 ```
 
+### 7.4 可选：叠加 ai-statistics
+
+如果你希望在本地 Higress 链路里同时观察 `ai_log`、token 指标、流式首包耗时等信息，可以再挂一个 `ai-statistics` 本地插件：
+
+```yaml
+apiVersion: extensions.higress.io/v1alpha1
+kind: WasmPlugin
+metadata:
+  name: ai-statistics-local
+  namespace: higress-system
+spec:
+  url: file:///opt/plugins/wasm-go/extensions/ai-statistics/plugin.wasm
+  priority: 200
+  phase: UNSPECIFIED_PHASE
+  defaultConfigDisable: false
+  defaultConfig:
+    enable: true
+  matchRules:
+    - ingress:
+        - bedrock-local
+```
+
+应用：
+
+```bash
+kubectl apply -f wasmplugin-ai-statistics-local.yaml
+```
+
+说明：
+
+- `ai-proxy-local` 当前优先级是 `100`
+- `ai-statistics-local` 当前优先级是 `200`
+- 两者都绑定到 `bedrock-local`
+- `ai-statistics` 默认按请求路径后缀工作；现在本地也支持 `/messages` 和 `/v1/messages`
+
 重要说明：
 
 - `matchRules.ingress` 必须写 `bedrock-local`
@@ -366,6 +401,7 @@ kubectl apply -f wasmplugin-ai-proxy-local.yaml
 kubectl -n higress-system get mcpbridge -o yaml
 kubectl -n higress-system get ingress bedrock-local -o yaml
 kubectl -n higress-system get wasmplugin ai-proxy-local -o yaml
+kubectl -n higress-system get wasmplugin ai-statistics-local -o yaml
 ```
 
 ## 8. 绑定本地 8080 端口
@@ -654,9 +690,91 @@ curl http://127.0.0.1:8080/v1/chat/completions \
 - Bedrock upstream/SNI 示例
 - 本地快速改配置的参考文件
 
-## 12. 常见问题
+## 12. FAT 发布流程
 
-### 12.1 `route_not_found`
+代码开发完成后，如果需要把插件发布到 FAT 环境，当前使用的流程如下。
+
+### 12.1 更新 ai-gateway-plugin-server
+
+先在本地把对应插件的 wasm 打好。
+
+然后打开：
+
+- `https://git.dev.sh.ctripcorp.com/framework/ai-gateway-plugin-server`
+
+处理步骤：
+
+1. 替换 `plugins/` 目录下对应插件产物。
+2. 修改对应插件的 metadata，把版本标识改成 `ai-gateway` 项目里的当前 commit id。
+3. push 到远端。
+
+### 12.2 生成插件镜像
+
+如果有多人在不同分支开发 `ai-proxy` 的不同功能，但这些功能需要一起发 NTZ / FAT 验证，当前做法是把这些功能分支都配置到 `light merge`。
+
+配置完成后，这些分支的变更会被合并到 `dev` 分支。
+
+因此实际打包时，不是直接在各自功能分支上打，而是：
+
+1. 切到 `dev` 分支。
+2. 确认 `dev` 已经包含当前配置到 `light merge` 的多个分支合并结果。
+3. 在本地基于 `dev` 分支代码打插件。
+4. 再到插件仓库 pipeline 中找到 `buildimage` 任务，拿到构建出的镜像 tag。
+
+换句话说，这一步的 `dev` 分支代码，是一个联调基线，包含了多个已经配置进 `light merge` 的功能分支改动。
+
+常见镜像 tag 形态：
+
+- `dev-f5b068ba-20260415211115`
+- `release-xxxx-xxxxxx`
+
+其中：
+
+- `dev-*` 通常用于测试环境
+- `release-*` 通常用于生产环境
+
+### 12.3 更新 configs-infra-v2
+
+打开：
+
+- `https://git.dev.sh.ctripcorp.com/cloudnative/configs-infra-v2/-/pipelines/54997104`
+
+然后在本地处理：
+
+1. 拉取 `master` 最新代码。
+2. 基于最新 `master` checkout 一个新的工作分支。
+3. 找到 `components/ai-gateway/values.yaml`。
+4. 把镜像 tag 改成上一步 `buildimage` 产出的镜像 id。
+5. commit 这个配置变更。
+
+当前本地参考路径：
+
+- `/Users/jkma/programfiles/codinghere/ailabgo/configs-infra-v2/components/ai-gateway/values.yaml`
+
+### 12.4 打 tag 并触发发布
+
+在 `configs-infra-v2` 仓库基于刚才这次配置变更打发布 tag。
+
+tag 命名示例：
+
+- `ai-gateway-v20260416-beta-2`
+
+然后 push tag。
+
+接着到 `configs-infra-v2` 的 pipeline 中生成测试环境发布计划，并发布到 `-z` 集群。
+
+### 12.5 重启 FAT `-z` 集群网关
+
+配置发布完成后，还需要在 FAT `-z` 集群上手动重启对应 workload，确保拉取到新的镜像。
+
+实际操作按当时环境里的 k8s 资源名执行，核心目标是：
+
+- 让 `-z` 集群网关重新拉取新镜像
+- 不要只停留在配置已发布但 Pod 未重建的状态
+
+## 13. 常见问题
+
+### 13.1 `route_not_found`
 
 通常是 host 不对。
 
@@ -668,7 +786,7 @@ curl http://127.0.0.1:8080/v1/chat/completions \
 
 - `Host: bedrock.local`
 
-### 12.2 请求打通了，但没有缓存命中字段
+### 13.2 请求打通了，但没有缓存命中字段
 
 优先排查：
 
@@ -678,11 +796,11 @@ curl http://127.0.0.1:8080/v1/chat/completions \
 
 不是只要带了 `cache_control` 就一定会看到缓存 token 字段。
 
-### 12.3 access log 里 `ai_log` 是 `"-"`
+### 13.3 access log 里 `ai_log` 是 `"-"`
 
 表示当前请求没有往 `wasm.ai_log` 写内容，不代表插件没生效。
 
-### 12.4 看到 access log，但看不到 wasm 业务日志
+### 13.4 看到 access log，但看不到 wasm 业务日志
 
 优先检查：
 
@@ -690,6 +808,6 @@ curl http://127.0.0.1:8080/v1/chat/completions \
 - 当前请求是否真的命中 ai-proxy
 - 是否只是在看 access log，而不是完整容器日志
 
-### 12.5 `No rule to make target help`
+### 13.5 `No rule to make target help`
 
 这个仓库的 `make` 目标不是统一提供 `help`，直接用明确的命令即可，不需要先跑 `make help`。

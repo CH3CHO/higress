@@ -40,6 +40,7 @@ const (
 	ApiNameUndetermined    ApiName = "undetermined"
 	ApiNameChatCompletions         = "chat_completions"
 	ApiNameCompletions             = "completions"
+	ApiNameAnthropicMessages       = "anthropic_messages"
 )
 
 const (
@@ -68,6 +69,7 @@ const (
 	// AI API Paths
 	PathOpenAIChatCompletions       = "/chat/completions"
 	PathOpenAICompletions           = "/completions"
+	PathAnthropicMessages           = "/messages"
 	PathOpenAIEmbeddings            = "/embeddings"
 	PathOpenAIModels                = "/models"
 	PathGeminiGenerateContent       = "/generateContent"
@@ -170,6 +172,7 @@ type Attribute struct {
 var (
 	defaultEnablePathSuffixes = []string{
 		"/completions",
+		PathAnthropicMessages,
 		"/embeddings",
 		"/images/generations",
 		"/audio/speech",
@@ -414,6 +417,8 @@ func onHttpRequestHeaders(ctx wrapper.HttpContext, config AIStatisticsConfig) ty
 		apiName = ApiNameChatCompletions
 	} else if strings.HasSuffix(requestPath, PathOpenAICompletions) {
 		apiName = ApiNameCompletions
+	} else if strings.HasSuffix(requestPath, PathAnthropicMessages) {
+		apiName = ApiNameAnthropicMessages
 	}
 	ctx.SetContext(RequestApiName, apiName)
 
@@ -576,6 +581,8 @@ func getRequestBodyToLog(ctx wrapper.HttpContext, body []byte, config *AIStatist
 	switch apiName {
 	case ApiNameChatCompletions:
 		return getRequestBodyToLogForChatCompletions(body, requestBodyLengthLimit)
+	case ApiNameAnthropicMessages:
+		return getRequestBodyToLogForAnthropicMessages(body, requestBodyLengthLimit)
 	case ApiNameCompletions:
 		return getRequestBodyToLogForCompletions(body, requestBodyLengthLimit)
 	default:
@@ -622,6 +629,46 @@ func getRequestBodyToLogForChatCompletions(body []byte, limit int) string {
 				if len(redactedBody) <= limit {
 					return string(body)
 				}
+			}
+		}
+	}
+
+	return bodyToLongPlaceholder
+}
+
+func getRequestBodyToLogForAnthropicMessages(body []byte, limit int) string {
+	if tools := gjson.GetBytes(body, "tools"); tools.Exists() {
+		if redactedBody, err := sjson.SetBytesOptions(body, "tools", bodyToLongPlaceholderBytes, bodyRedactingOptions); err != nil {
+			log.Errorf("failed to redact anthropic request body 'tools' field: %v", err)
+		} else {
+			body = redactedBody
+			if len(body) <= limit {
+				return string(body)
+			}
+		}
+	}
+
+	if messagesLength := int(gjson.GetBytes(body, "messages.#").Int()); messagesLength > 0 {
+		for i := 0; i < messagesLength; i++ {
+			itemPath := fmt.Sprintf("messages.%d", i)
+			if redactedBody, err := sjson.SetBytesOptions(body, itemPath, bodyToLongPlaceholderBytes, bodyRedactingOptions); err != nil {
+				log.Errorf("failed to redact anthropic request body at %s: %v", itemPath, err)
+			} else {
+				body = redactedBody
+				if len(redactedBody) <= limit {
+					return string(body)
+				}
+			}
+		}
+	}
+
+	if system := gjson.GetBytes(body, "system"); system.Exists() {
+		if redactedBody, err := sjson.SetBytesOptions(body, "system", bodyToLongPlaceholderBytes, bodyRedactingOptions); err != nil {
+			log.Errorf("failed to redact anthropic request body 'system' field: %v", err)
+		} else {
+			body = redactedBody
+			if len(body) <= limit {
+				return string(body)
 			}
 		}
 	}
@@ -749,6 +796,7 @@ func onHttpStreamingResponseBody(ctx wrapper.HttpContext, config AIStatisticsCon
 				setSpanAttribute(ArmsOutputToken, usage.OutputToken)
 			}
 		}
+		enrichAnthropicMessagesUsage(ctx, data)
 	}
 
 	var streamEvents []StreamEvent
@@ -813,6 +861,7 @@ func onHttpResponseBody(ctx wrapper.HttpContext, config AIStatisticsConfig, body
 			setSpanAttribute(ArmsTotalToken, usage.TotalToken)
 		}
 	}
+	enrichAnthropicMessagesUsage(ctx, body)
 
 	ctx.SetUserAttribute(ResponseBody, getResponseBodyToLog(ctx, body, &config))
 
@@ -839,6 +888,8 @@ func getResponseBodyToLog(ctx wrapper.HttpContext, body []byte, config *AIStatis
 	switch apiName {
 	case ApiNameChatCompletions, ApiNameCompletions:
 		return getResponseBodyToLogForCompletions(body, responseBodyLengthLimit)
+	case ApiNameAnthropicMessages:
+		return getResponseBodyToLogForAnthropicMessages(body, responseBodyLengthLimit)
 	default:
 		return bodyToLongPlaceholder
 	}
@@ -875,6 +926,101 @@ func getResponseBodyToLogForCompletions(body []byte, limit int) string {
 	}
 
 	return newBody
+}
+
+func getResponseBodyToLogForAnthropicMessages(body []byte, limit int) string {
+	if content := gjson.GetBytes(body, "content"); content.Exists() {
+		if redactedBody, err := sjson.SetBytesOptions(body, "content", bodyToLongPlaceholderBytes, bodyRedactingOptions); err == nil {
+			body = redactedBody
+			if len(body) <= limit {
+				return string(body)
+			}
+		} else {
+			log.Errorf("failed to redact response body 'content' field: %v", err)
+		}
+	}
+
+	newBody := ""
+	if id := gjson.GetBytes(body, "id"); id.Exists() {
+		newBody, _ = sjson.SetRaw(newBody, "id", id.Raw)
+	} else {
+		newBody, _ = sjson.Set(newBody, "id", "")
+	}
+	if messageID := gjson.GetBytes(body, "message.id"); messageID.Exists() {
+		newBody, _ = sjson.SetRaw(newBody, "message.id", messageID.Raw)
+	}
+	if model := gjson.GetBytes(body, "model"); model.Exists() {
+		newBody, _ = sjson.SetRaw(newBody, "model", model.Raw)
+	}
+	if usage := gjson.GetBytes(body, "usage"); usage.Exists() {
+		newBody, _ = sjson.SetRaw(newBody, "usage", usage.Raw)
+	} else if messageUsage := gjson.GetBytes(body, "message.usage"); messageUsage.Exists() {
+		newBody, _ = sjson.SetRaw(newBody, "message.usage", messageUsage.Raw)
+	}
+
+	return newBody
+}
+
+func enrichAnthropicMessagesUsage(ctx wrapper.HttpContext, body []byte) {
+	apiName, _ := ctx.GetContext(RequestApiName).(ApiName)
+	if apiName != ApiNameAnthropicMessages {
+		return
+	}
+
+	if chatID := wrapper.GetValueFromBody(body, []string{"message.id", "id"}); chatID != nil {
+		ctx.SetUserAttribute(ChatID, chatID.String())
+	}
+	if model := wrapper.GetValueFromBody(body, []string{"message.model", "model"}); model != nil {
+		ctx.SetUserAttribute(tokenusage.CtxKeyModel, model.String())
+	}
+
+	inputToken := getLatestInt64Value(ctx, tokenusage.CtxKeyInputToken, body,
+		"message.usage.input_tokens", "usage.input_tokens")
+	outputToken := getLatestInt64Value(ctx, tokenusage.CtxKeyOutputToken, body,
+		"message.usage.output_tokens", "usage.output_tokens")
+	cacheCreationInputToken := getBodyInt64(body, "usage.cache_creation_input_tokens")
+	cacheReadInputToken := getBodyInt64(body, "usage.cache_read_input_tokens")
+
+	if inputToken > 0 {
+		ctx.SetUserAttribute(tokenusage.CtxKeyInputToken, inputToken)
+	}
+	if outputToken > 0 {
+		ctx.SetUserAttribute(tokenusage.CtxKeyOutputToken, outputToken)
+	}
+
+	totalToken := inputToken + outputToken + cacheCreationInputToken + cacheReadInputToken
+	if totalToken > 0 {
+		ctx.SetUserAttribute(tokenusage.CtxKeyTotalToken, totalToken)
+	}
+
+	setSpanAttribute(ArmsModelName, ctx.GetUserAttribute(tokenusage.CtxKeyModel))
+	if inputToken > 0 {
+		setSpanAttribute(ArmsInputToken, inputToken)
+	}
+	if outputToken > 0 {
+		setSpanAttribute(ArmsOutputToken, outputToken)
+	}
+	if totalToken > 0 {
+		setSpanAttribute(ArmsTotalToken, totalToken)
+	}
+}
+
+func getLatestInt64Value(ctx wrapper.HttpContext, key string, body []byte, paths ...string) int64 {
+	if value := wrapper.GetValueFromBody(body, paths); value != nil {
+		return value.Int()
+	}
+	if value, ok := ctx.GetUserAttribute(key).(int64); ok {
+		return value
+	}
+	return 0
+}
+
+func getBodyInt64(body []byte, path string) int64 {
+	value := gjson.GetBytes(body, path)
+	if value.Exists() {
+		return value.Int()
+	}
+	return 0
 }
 
 func setResponseType(ctx wrapper.HttpContext, responseType string, overwrite bool) {
@@ -935,6 +1081,10 @@ func setAttributeBySource(ctx wrapper.HttpContext, config AIStatisticsConfig, so
 			}
 			if (value == nil || value == "") && attribute.DefaultValue != "" {
 				value = attribute.DefaultValue
+			}
+			if (key == tokenusage.CtxKeyInputToken || key == tokenusage.CtxKeyOutputToken || key == tokenusage.CtxKeyTotalToken || key == tokenusage.CtxKeyModel) &&
+				(value == nil || value == "") && ctx.GetUserAttribute(key) != nil {
+				continue
 			}
 			if len(fmt.Sprint(value)) > config.valueLengthLimit {
 				value = fmt.Sprint(value)[:config.valueLengthLimit/2] + " [truncated] " + fmt.Sprint(value)[len(fmt.Sprint(value))-config.valueLengthLimit/2:]
@@ -997,6 +1147,12 @@ func combineStreamingEventsForLog(ctx wrapper.HttpContext, config *AIStatisticsC
 		return
 	}
 
+	apiName, _ := ctx.GetContext(RequestApiName).(ApiName)
+	if apiName == ApiNameAnthropicMessages {
+		combineAnthropicStreamingEventsForLog(ctx, config, events)
+		return
+	}
+
 	responseBody, _ := ctx.GetUserAttribute(ResponseBody).(string)
 
 	processedFields := make(map[string]bool)
@@ -1035,6 +1191,116 @@ func combineStreamingEventsForLog(ctx wrapper.HttpContext, config *AIStatisticsC
 			ctx.SetUserAttribute(ResponseBody, responseBody)
 		}
 	}
+}
+
+func combineAnthropicStreamingEventsForLog(ctx wrapper.HttpContext, config *AIStatisticsConfig, events []StreamEvent) {
+	responseBody, _ := ctx.GetUserAttribute(ResponseBody).(string)
+
+	for _, event := range events {
+		responseBody = combineAnthropicStreamingEventForLog(responseBody, &event)
+		if len(responseBody) > config.responseBodyLengthLimit {
+			ctx.SetContext(SkipStreamingResponseBodyLogProcessing, true)
+			return
+		}
+	}
+
+	ctx.SetUserAttribute(ResponseBody, responseBody)
+}
+
+func combineAnthropicStreamingEventForLog(body string, event *StreamEvent) string {
+	if event == nil || event.Data == "" {
+		return body
+	}
+
+	data := gjson.Parse(event.Data)
+	if !data.Exists() || !data.IsObject() {
+		return body
+	}
+
+	switch data.Get("type").String() {
+	case "message_start":
+		if message := data.Get("message"); message.Exists() && message.IsObject() {
+			body = message.Raw
+		}
+	case "content_block_start":
+		body = setAnthropicContentBlock(body, int(data.Get("index").Int()), data.Get("content_block"))
+	case "content_block_delta":
+		body = appendAnthropicContentBlockDelta(body, int(data.Get("index").Int()), data.Get("delta"))
+	case "message_delta":
+		body = setAnthropicMessageDelta(body, data.Get("delta"))
+	case "message_stop":
+		// Keep the aggregated message shape. Nothing to do.
+	}
+
+	if usage := data.Get("usage"); usage.Exists() {
+		if newBody, err := sjson.SetRaw(body, "usage", usage.Raw); err == nil {
+			body = newBody
+		}
+	}
+	if metrics := data.Get("amazon-bedrock-invocationMetrics"); metrics.Exists() {
+		if newBody, err := sjson.SetRaw(body, "amazon-bedrock-invocationMetrics", metrics.Raw); err == nil {
+			body = newBody
+		}
+	}
+
+	return body
+}
+
+func setAnthropicContentBlock(body string, index int, block gjson.Result) string {
+	if !block.Exists() || !block.IsObject() {
+		return body
+	}
+
+	blockPath := fmt.Sprintf("content.%d", index)
+	if newBody, err := sjson.SetRaw(body, blockPath, block.Raw); err == nil {
+		return newBody
+	}
+	return body
+}
+
+func appendAnthropicContentBlockDelta(body string, index int, delta gjson.Result) string {
+	if !delta.Exists() || !delta.IsObject() {
+		return body
+	}
+
+	contentPathPrefix := fmt.Sprintf("content.%d", index)
+	body = appendAnthropicStreamingStringField(body, contentPathPrefix+".text", delta, "text")
+	body = appendAnthropicStreamingStringField(body, contentPathPrefix+".thinking", delta, "thinking")
+	body = appendAnthropicStreamingStringField(body, contentPathPrefix+".signature", delta, "signature")
+	body = appendAnthropicStreamingStringField(body, contentPathPrefix+".input", delta, "partial_json")
+	return body
+}
+
+func setAnthropicMessageDelta(body string, delta gjson.Result) string {
+	if !delta.Exists() || !delta.IsObject() {
+		return body
+	}
+
+	if stopReason := delta.Get("stop_reason"); stopReason.Exists() {
+		if newBody, err := sjson.SetRaw(body, "stop_reason", stopReason.Raw); err == nil {
+			body = newBody
+		}
+	}
+	if stopSequence := delta.Get("stop_sequence"); stopSequence.Exists() {
+		if newBody, err := sjson.SetRaw(body, "stop_sequence", stopSequence.Raw); err == nil {
+			body = newBody
+		}
+	}
+
+	return body
+}
+
+func appendAnthropicStreamingStringField(body string, bodyFieldPath string, json gjson.Result, jsonFieldPath string) string {
+	field := json.Get(jsonFieldPath)
+	if !field.Exists() {
+		return body
+	}
+
+	currentValue := gjson.Get(body, bodyFieldPath).String()
+	if newBody, err := sjson.Set(body, bodyFieldPath, currentValue+field.String()); err == nil {
+		return newBody
+	}
+	return body
 }
 
 func combineStreamingChoice(body string, choiceIndex int, choice *gjson.Result) string {
