@@ -1057,6 +1057,28 @@ URL: `http://your-domain/v1/messages`
 }
 ```
 
+> Bedrock 场景补充说明：
+>
+> 当 provider 为 `bedrock` 且请求路径为 `/v1/messages` 时，当前实现统一走 Bedrock 原生 Claude Messages 路径：
+>
+> - 非流式请求使用 `InvokeModel`
+> - 流式请求使用 `InvokeModelWithResponseStream`
+>
+> 也就是说：
+>
+> - 不再把 `/v1/messages` 转成 OpenAI `chat/completions`
+> - 不再走 Bedrock `Converse` / `ConverseStream` fallback 链路
+>
+> 实际转发时，优先基于 `modelMapping` 后的真实 Bedrock model ID / inference profile ID 改写请求路径。
+>
+> 例如：
+>
+> - `claude-sonnet-4-6` 经 `modelMapping` 映射为 `global.anthropic.claude-sonnet-4-6`
+> - 流式 `/v1/messages` 会转发到 `/model/global.anthropic.claude-sonnet-4-6/invoke-with-response-stream`
+> - 非流式 `/v1/messages` 会转发到 `/model/global.anthropic.claude-sonnet-4-6/invoke`
+>
+> 如果某个 Bedrock model ID 本身不支持原生 Claude Messages，请以上游返回结果为准。
+
 **响应示例**
 
 两种协议格式的请求都会返回相应格式的响应：

@@ -26,3 +26,15 @@ func TestEscapeForJsonString(t *testing.T) {
 		})
 	}
 }
+
+func TestCompactJSONBytes(t *testing.T) {
+	t.Run("compact valid json", func(t *testing.T) {
+		input := []byte("{\n  \"a\": 1,\n  \"b\": {\"c\": 2}\n}")
+		assert.Equal(t, `{"a":1,"b":{"c":2}}`, string(CompactJSONBytes(input)))
+	})
+
+	t.Run("fallback for invalid json", func(t *testing.T) {
+		input := []byte("{invalid")
+		assert.Equal(t, input, CompactJSONBytes(input))
+	})
+}
