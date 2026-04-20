@@ -38,6 +38,8 @@ func init() {
 		wrapper.ParseConfig(parseConfig),
 		wrapper.ProcessRequestHeaders(onHttpRequestHeaders),
 		wrapper.ProcessResponseHeaders(onHttpResponseHeaders),
+		wrapper.WithRebuildAfterRequests[PluginConfig](1000),
+		wrapper.WithRebuildMaxMemBytes[PluginConfig](200*1024*1024),
 	)
 }
 
