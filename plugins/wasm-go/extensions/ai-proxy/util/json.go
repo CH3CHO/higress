@@ -1,6 +1,8 @@
 package util
 
 import (
+	"bytes"
+	"encoding/json"
 	"strconv"
 	"strings"
 )
@@ -19,4 +21,12 @@ func EscapeStringForJson(s string) string {
 		}
 	}
 	return builder.String()
+}
+
+func CompactJSONBytes(body []byte) []byte {
+	var buf bytes.Buffer
+	if err := json.Compact(&buf, body); err != nil {
+		return body
+	}
+	return buf.Bytes()
 }

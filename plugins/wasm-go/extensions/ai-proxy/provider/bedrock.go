@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/hmac"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
@@ -21,6 +22,7 @@ import (
 	"github.com/higress-group/proxy-wasm-go-sdk/proxywasm/types"
 	"github.com/higress-group/wasm-go/pkg/log"
 	"github.com/higress-group/wasm-go/pkg/wrapper"
+	"github.com/tidwall/gjson"
 
 	"github.com/alibaba/higress/plugins/wasm-go/extensions/ai-proxy/provider/bedrock"
 	"github.com/alibaba/higress/plugins/wasm-go/extensions/ai-proxy/util"
@@ -37,8 +39,15 @@ const (
 	bedrockStreamChatCompletionPath = "/model/%s/converse-stream"
 	// invoke_model 路径 /model/{modelId}/invoke
 	bedrockInvokeModelPath = "/model/%s/invoke"
-	bedrockSignedHeaders   = "host;x-amz-date"
-	requestIdHeader        = "X-Amzn-Requestid"
+	// invoke_model_with_response_stream 路径 /model/{modelId}/invoke-with-response-stream
+	bedrockStreamInvokeModelPath = "/model/%s/invoke-with-response-stream"
+	bedrockSignedHeaders         = "host;x-amz-date"
+	requestIdHeader              = "X-Amzn-Requestid"
+	bedrockAnthropicVersion      = "bedrock-2023-05-31"
+	headerAnthropicVersion       = "anthropic-version"
+	headerAnthropicBeta          = "anthropic-beta"
+	headerXAPIKey                = "x-api-key"
+	bedrockLogRequestBodyConfig  = "bedrockLogRequestBody"
 
 	ctxKeyBedrockJsonMode            = "bedrockJsonMode"
 	ctxKeyBedrockCurrentToolUseIndex = "bedrockCurrentToolUseIndex"
@@ -58,9 +67,11 @@ func (b *bedrockProviderInitializer) ValidateConfig(config *ProviderConfig) erro
 
 func (b *bedrockProviderInitializer) DefaultCapabilities() map[string]string {
 	return map[string]string{
-		string(ApiNameCompletion):      bedrockChatCompletionPath,
-		string(ApiNameChatCompletion):  bedrockChatCompletionPath,
-		string(ApiNameImageGeneration): bedrockInvokeModelPath,
+		string(ApiNameCompletion):     bedrockChatCompletionPath,
+		string(ApiNameChatCompletion): bedrockChatCompletionPath,
+		// Bedrock 侧的 Claude /v1/messages 原生入口走 invoke-model，而不是 converse。
+		string(ApiNameAnthropicMessages): bedrockInvokeModelPath,
+		string(ApiNameImageGeneration):   bedrockInvokeModelPath,
 	}
 }
 
@@ -78,6 +89,17 @@ type bedrockProvider struct {
 }
 
 func (b *bedrockProvider) OnStreamingResponseBody(ctx wrapper.HttpContext, apiName ApiName, chunk []byte, isLastChunk bool) ([]byte, error) {
+	switch apiName {
+	case ApiNameAnthropicMessages:
+		return b.onAnthropicMessagesStreamingResponseBody(ctx, chunk, isLastChunk)
+	case ApiNameChatCompletion, ApiNameCompletion:
+		return b.onBedrockConverseStreamingResponseBody(ctx, apiName, chunk)
+	default:
+		return chunk, nil
+	}
+}
+
+func (b *bedrockProvider) onBedrockConverseStreamingResponseBody(ctx wrapper.HttpContext, apiName ApiName, chunk []byte) ([]byte, error) {
 	var responseBuilder strings.Builder
 	events := extractAmazonEventStreamEvents(ctx, chunk)
 	if len(events) == 0 {
@@ -97,6 +119,42 @@ func (b *bedrockProvider) OnStreamingResponseBody(ctx wrapper.HttpContext, apiNa
 	return []byte(responseBuilder.String()), nil
 }
 
+func (b *bedrockProvider) onAnthropicMessagesStreamingResponseBody(ctx wrapper.HttpContext, chunk []byte, isLastChunk bool) ([]byte, error) {
+	payloads := extractAmazonEventStreamPayloads(ctx, chunk)
+	if len(payloads) == 0 {
+		return nil, nil
+	}
+
+	var responseBuilder strings.Builder
+	for _, payload := range payloads {
+		decodedPayload, err := decodeBedrockAnthropicStreamPayload(payload)
+		if err != nil {
+			log.Warnf("bedrock failed to decode anthropic stream payload: %v", err)
+			continue
+		}
+		logBedrockBodyDebug(ctx, "[bedrock] raw anthropic messages stream payload from bedrock: %s", decodedPayload)
+
+		eventType := gjson.GetBytes(decodedPayload, "type").String()
+		if eventType != "" {
+			responseBuilder.WriteString("event: ")
+			responseBuilder.WriteString(eventType)
+			responseBuilder.WriteString("\n")
+		}
+		responseBuilder.WriteString("data: ")
+		responseBuilder.Write(decodedPayload)
+		responseBuilder.WriteString("\n\n")
+	}
+	return []byte(responseBuilder.String()), nil
+}
+
+func decodeBedrockAnthropicStreamPayload(payload []byte) ([]byte, error) {
+	encodedBytes := gjson.GetBytes(payload, "bytes").String()
+	if encodedBytes == "" {
+		return payload, nil
+	}
+	return base64.StdEncoding.DecodeString(encodedBytes)
+}
+
 func (b *bedrockProvider) convertEventFromBedrockToOpenAI(ctx wrapper.HttpContext, apiName ApiName, bedrockEvent ConverseStreamEvent) ([]byte, error) {
 	choices := make([]chatCompletionChoice, 0)
 	chatChoice := &chatCompletionChoice{
@@ -114,12 +172,13 @@ func (b *bedrockProvider) convertEventFromBedrockToOpenAI(ctx wrapper.HttpContex
 			currentToolUseIndex, _ := ctx.GetContext(ctxKeyBedrockCurrentToolUseIndex).(int)
 			currentToolUseIndex++
 			ctx.SetContext(ctxKeyBedrockCurrentToolUseIndex, currentToolUseIndex)
+			toolIndex := currentToolUseIndex
 
 			// Restore original tool name (reverse normalization done during request transformation)
 			responseToolName := bedrock.GetOriginalToolName(bedrockEvent.Start.ToolUse.Name)
 			chatChoice.Delta.ToolCalls = []toolCall{
 				{
-					Index: currentToolUseIndex,
+					Index: toolIndex,
 					Id:    bedrockEvent.Start.ToolUse.ToolUseID,
 					Type:  "function",
 					Function: functionCall{
@@ -288,14 +347,32 @@ type bedrockImageGenerationRequest struct {
 	BackgroundRemovalParams     *bedrockImageGenerationBackgroundRemovalParams     `json:"backgroundRemovalParams,omitempty"`
 }
 
+type bedrockAnthropicMessagesRequest struct {
+	AnthropicVersion string            `json:"anthropic_version"`
+	AnthropicBeta    []string          `json:"anthropic_beta,omitempty"`
+	anthropicMessagesCommonFields
+}
+
 func extractAmazonEventStreamEvents(ctx wrapper.HttpContext, chunk []byte) []ConverseStreamEvent {
+	payloads := extractAmazonEventStreamPayloads(ctx, chunk)
+	var events []ConverseStreamEvent
+	for _, payload := range payloads {
+		var event ConverseStreamEvent
+		if err := json.Unmarshal(payload, &event); err == nil {
+			events = append(events, event)
+		}
+	}
+	return events
+}
+
+func extractAmazonEventStreamPayloads(ctx wrapper.HttpContext, chunk []byte) [][]byte {
 	body := chunk
 	if bufferedStreamingBody, has := ctx.GetContext(ctxKeyStreamingBody).([]byte); has {
 		body = append(bufferedStreamingBody, chunk...)
 	}
 
 	r := bytes.NewReader(body)
-	var events []ConverseStreamEvent
+	var payloads [][]byte
 	var lastRead int64 = 0
 	messageBuffer := make([]byte, 1024)
 	defer func() {
@@ -311,10 +388,7 @@ func extractAmazonEventStreamEvents(ctx wrapper.HttpContext, chunk []byte) []Con
 			log.Warnf("bedrock failed to decode message: %v, lastRead=%d, r.Size=%d", err, lastRead, r.Size())
 			break
 		}
-		var event ConverseStreamEvent
-		if err = json.Unmarshal(msg.Payload, &event); err == nil {
-			events = append(events, event)
-		}
+		payloads = append(payloads, append([]byte(nil), msg.Payload...))
 		lastRead = r.Size() - int64(r.Len())
 	}
 	if lastRead < int64(len(body)) {
@@ -322,7 +396,7 @@ func extractAmazonEventStreamEvents(ctx wrapper.HttpContext, chunk []byte) []Con
 	} else {
 		ctx.SetContext(ctxKeyStreamingBody, nil)
 	}
-	return events
+	return payloads
 }
 
 type bedrockStreamMessage struct {
@@ -672,6 +746,8 @@ func (b *bedrockProvider) TransformRequestBodyHeaders(ctx wrapper.HttpContext, a
 		return b.onChatCompletionRequestBody(ctx, body, headers)
 	case ApiNameChatCompletion:
 		return b.onChatCompletionRequestBody(ctx, body, headers)
+	case ApiNameAnthropicMessages:
+		return b.onAnthropicMessagesRequestBody(ctx, body, headers)
 	case ApiNameImageGeneration:
 		return b.onImageGenerationRequestBody(ctx, body, headers)
 	default:
@@ -690,10 +766,97 @@ func (b *bedrockProvider) TransformResponseBody(ctx wrapper.HttpContext, apiName
 		return transformCompletionsResponseFields(ctx, bodyBytes)
 	case ApiNameChatCompletion:
 		return b.onChatCompletionResponseBody(ctx, body)
+	case ApiNameAnthropicMessages:
+		logBedrockBodyDebug(ctx, "[bedrock] raw anthropic messages response body from bedrock: %s", body)
+		return body, nil
 	case ApiNameImageGeneration:
 		return b.onImageGenerationResponseBody(ctx, body)
 	}
 	return nil, errUnsupportedApiName
+}
+
+func (b *bedrockProvider) onAnthropicMessagesRequestBody(ctx wrapper.HttpContext, body []byte, headers http.Header) ([]byte, error) {
+	model := gjson.GetBytes(body, "model").String()
+	if model == "" {
+		return nil, util.BadRequest("missing model")
+	}
+	ctx.SetContext(ctxKeyOriginalRequestModel, model)
+
+	mappedModel := getMappedModel(model, b.config.modelMapping)
+	ctx.SetContext(ctxKeyFinalRequestModel, mappedModel)
+
+	streaming := gjson.GetBytes(body, "stream").Bool()
+	ctx.SetContext(ctxKeyIsStreaming, streaming)
+
+	var err error
+	body, err = setBedrockAnthropicMessagesRequestDefaults(body, headers)
+	if err != nil {
+		return nil, err
+	}
+
+	// Bedrock 原生 Messages 入口要求使用 invoke / invoke-with-response-stream 路径，
+	// 并且请求体里使用 anthropic_version，而不是直接保留 model / stream 字段。
+	headers.Set("Accept", "*/*")
+	if streaming {
+		b.overwriteRequestPathHeader(headers, bedrockStreamInvokeModelPath, mappedModel)
+	} else {
+		b.overwriteRequestPathHeader(headers, bedrockInvokeModelPath, mappedModel)
+	}
+	logBedrockBodyDebug(ctx, "[bedrock] anthropic messages request body: %s", body)
+	b.setAuthHeaders(body, headers)
+	return body, nil
+}
+
+func setBedrockAnthropicMessagesRequestDefaults(body []byte, headers http.Header) ([]byte, error) {
+	var request anthropicMessagesRequest
+	if err := json.Unmarshal(body, &request); err != nil {
+		return nil, err
+	}
+
+	// 这里显式构造 Bedrock native messages request，
+	// 只保留这条协议真正需要的字段，避免 map[string]any 带来的 key 漏改/漏删问题。
+	rebuilt := bedrockAnthropicMessagesRequest{
+		anthropicMessagesCommonFields: anthropicMessagesCommonFields{
+			Messages:      request.Messages,
+			System:        request.System,
+			MaxTokens:     request.MaxTokens,
+			StopSequences: request.StopSequences,
+			Temperature:   request.Temperature,
+			TopP:          request.TopP,
+			TopK:          request.TopK,
+			ToolChoice:    request.ToolChoice,
+			Tools:         request.Tools,
+			ServiceTier:   request.ServiceTier,
+			Thinking:      request.Thinking,
+		},
+		AnthropicVersion: bedrockAnthropicVersion,
+		AnthropicBeta:    request.AnthropicBeta,
+	}
+
+	if betaHeader := headers.Get(headerAnthropicBeta); betaHeader != "" {
+		betas := make([]string, 0)
+		for _, value := range strings.Split(betaHeader, ",") {
+			value = strings.TrimSpace(value)
+			if value != "" {
+				betas = append(betas, value)
+			}
+		}
+		if len(betas) > 0 {
+			rebuilt.AnthropicBeta = betas
+		}
+	}
+
+	headers.Del(headerAnthropicVersion)
+	headers.Del(headerAnthropicBeta)
+	headers.Del(headerXAPIKey)
+	return json.Marshal(&rebuilt)
+}
+
+func logBedrockBodyDebug(ctx wrapper.HttpContext, format string, body []byte) {
+	if !ctx.GetBoolGlobalConfig(bedrockLogRequestBodyConfig, false) {
+		return
+	}
+	log.Debugf(format, string(util.CompactJSONBytes(body)))
 }
 
 func (b *bedrockProvider) onImageGenerationResponseBody(ctx wrapper.HttpContext, body []byte) ([]byte, error) {
@@ -756,7 +919,7 @@ func (b *bedrockProvider) buildBedrockImageGenerationResponse(ctx wrapper.HttpCo
 }
 
 func (b *bedrockProvider) onChatCompletionResponseBody(ctx wrapper.HttpContext, body []byte) ([]byte, error) {
-	log.Debugf("[onChatCompletionResponseBody] bedrock converse response body before transformation: %s", body)
+	logBedrockBodyDebug(ctx, "[onChatCompletionResponseBody] bedrock converse response body before transformation: %s", body)
 	jsonMode, _ := ctx.GetContext(ctxKeyBedrockJsonMode).(bool)
 	fakeStream := util.IsFakeStream(ctx)
 	log.Debugf("[onChatCompletionResponseBody] bedrock jsonMode: %v, fakeStream: %v", jsonMode, fakeStream)
@@ -785,7 +948,7 @@ func (b *bedrockProvider) onChatCompletionResponseBody(ctx wrapper.HttpContext, 
 		return nil, err
 	}
 
-	log.Debugf("bedrock converse response body after transformation: %s", responseBytes)
+	logBedrockBodyDebug(ctx, "bedrock converse response body after transformation: %s", responseBytes)
 	return responseBytes, nil
 }
 
@@ -808,10 +971,10 @@ func (b *bedrockProvider) onChatCompletionRequestBody(ctx wrapper.HttpContext, b
 	if err != nil {
 		return nil, err
 	}
-	return b.buildBedrockTextGenerationRequest(ctx, request, extendedParams, headers)
+	return b.buildBedrockConverseRequest(ctx, request, extendedParams, headers)
 }
 
-func (b *bedrockProvider) buildBedrockTextGenerationRequest(ctx wrapper.HttpContext,
+func (b *bedrockProvider) buildBedrockConverseRequest(ctx wrapper.HttpContext,
 	origRequest *chatCompletionRequest, extendedParams *bedrockExtendedParams, headers http.Header) ([]byte, error) {
 	request, jsonMode, err := transformToBedrockConverseRequest(origRequest, &bedrock.TransformRequestOptions{}, extendedParams)
 	if err != nil {
@@ -828,7 +991,8 @@ func (b *bedrockProvider) buildBedrockTextGenerationRequest(ctx wrapper.HttpCont
 	}
 
 	requestBytes, err := json.Marshal(request)
-	log.Debugf("[bedrock] transformed request body: %s", requestBytes)
+
+	logBedrockBodyDebug(ctx, "[bedrock] converse request body: %s", requestBytes)
 
 	if extendedParams.ExtraHeaders != nil {
 		setBedrockExtraHeaders(headers, extendedParams.ExtraHeaders)

@@ -71,7 +71,7 @@ func (c *ClaudeToOpenAIConverter) ConvertClaudeRequestToOpenAI(body []byte) ([]b
 	// Convert messages from Claude format to OpenAI format
 	for _, claudeMsg := range claudeRequest.Messages {
 		// Handle different content types using the type-safe wrapper
-		if claudeMsg.Content.IsString {
+		if claudeMsg.Content.IsString() {
 			// Simple text content
 			openaiMsg := chatMessage{
 				Role:    claudeMsg.Role,

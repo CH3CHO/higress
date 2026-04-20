@@ -8,9 +8,14 @@
 - 配置 Bedrock 本地路由
 - 查看 Higress / wasm 日志
 - 用 `curl` 验证普通调用、`cache_control`、fine-grained tool streaming
-- 补充本地 `local/` Envoy 配置的写法
+- 补充 standalone Envoy 的本地 `local/` 配置写法
 
-这份文档优先推荐 **Higress 本地链路**。`local/` 目录下的 Envoy 配置作为可选补充，仅用于配置参考。
+这份文档优先推荐 **Higress 本地链路**。当前推荐把 Higress 本地资源直接维护在 `local/` 目录下：
+
+- `local/ingress-bedrock-local.yaml`
+- `local/wasmplugin-ai-proxy-local.yaml`
+
+`local/` 目录下的 Envoy 配置仅作为 standalone Envoy 的可选补充，不参与 Higress 启动。
 
 ## 快速开始
 
@@ -32,17 +37,95 @@ cd "$AI_PROXY_DIR"
 GOOS=wasip1 GOARCH=wasm go build -buildmode=c-shared -o ./plugin.wasm .
 ```
 
-2. 拷到 kind 节点并重启 Higress：
+2. 拷到 kind 节点：
 
 ```bash
 docker cp "$WASM_OUT" \
   "$KIND_NODE:/opt/plugins/wasm-go/extensions/ai-proxy/plugin.wasm"
+```
 
+3. 应用本地 Higress 资源：
+
+```bash
+kubectl apply -f "$AI_PROXY_DIR/local/ingress-bedrock-local.yaml"
+kubectl apply -f "$AI_PROXY_DIR/local/wasmplugin-ai-proxy-local.yaml"
+```
+
+推荐先把这两份文件按本地环境改成类似下面的结构：
+
+`local/ingress-bedrock-local.yaml`
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: bedrock-local
+  namespace: higress-system
+  labels:
+    higress.io/resource-definer: higress
+  annotations:
+    higress.io/backend-protocol: HTTPS
+    higress.io/destination: bedrock-runtime.dns
+    higress.io/proxy-ssl-name: bedrock-runtime.us-west-2.amazonaws.com
+    higress.io/proxy-ssl-server-name: "on"
+spec:
+  ingressClassName: higress
+  rules:
+    - host: bedrock.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              resource:
+                apiGroup: networking.higress.io
+                kind: McpBridge
+                name: default
+```
+
+`local/wasmplugin-ai-proxy-local.yaml`
+
+```yaml
+apiVersion: extensions.higress.io/v1alpha1
+kind: WasmPlugin
+metadata:
+  name: ai-proxy-local
+  namespace: higress-system
+spec:
+  url: file:///opt/plugins/wasm-go/extensions/ai-proxy/plugin.wasm
+  priority: 100
+  phase: UNSPECIFIED_PHASE
+  defaultConfigDisable: true
+  matchRules:
+    - ingress:
+        - bedrock-local
+      config:
+        provider:
+          type: bedrock
+          awsAccessKey: "<AWS_ACCESS_KEY>"
+          awsSecretKey: "<AWS_SECRET_KEY>"
+          awsRegion: "us-west-2"
+          modelMapping:
+            claude-sonnet-4-5: global.anthropic.claude-sonnet-4-5-20250929-v1:0
+            claude-sonnet-4-6: global.anthropic.claude-sonnet-4-6
+```
+
+注意：
+
+- 文档里不放真实 token / secret，只保留占位符。
+- 真正生效的是集群里的 `WasmPlugin`，改完文件后要重新 `kubectl apply`。
+- 这组 `modelMapping` 已在本地 Higress 上验证过 4 种组合：
+  `claude-sonnet-4-5` 的 `/v1/messages`、`/v1/chat/completions`，
+  以及 `claude-sonnet-4-6` 的 `/v1/messages`、`/v1/chat/completions`。
+
+4. 重启 Higress：
+
+```bash
 kubectl -n higress-system rollout restart deployment/higress-gateway
 kubectl -n higress-system rollout status deployment/higress-gateway --timeout=180s
 ```
 
-3. 确认本地 Bedrock 路由资源已经存在：
+5. 确认本地 Bedrock 路由资源已经存在：
 
 ```bash
 kubectl -n higress-system get mcpbridge
@@ -50,20 +133,20 @@ kubectl -n higress-system get ingress bedrock-local
 kubectl -n higress-system get wasmplugin ai-proxy-local
 ```
 
-4. 本地绑定 `8080`：
+6. 本地绑定 `8080`：
 
 ```bash
 kubectl -n higress-system port-forward svc/higress-gateway 8080:80
 ```
 
-5. 看日志：
+7. 看日志：
 
 ```bash
 kubectl -n higress-system get pod -l app=higress-gateway -o wide
 kubectl -n higress-system logs pod/<gateway-pod> -c higress-gateway -f
 ```
 
-6. 发请求：
+8. 发请求：
 
 ```bash
 curl http://127.0.0.1:8080/v1/chat/completions \
@@ -105,9 +188,11 @@ docker version
 
 - 插件目录：`<ai-gateway-repo>/plugins/wasm-go/extensions/ai-proxy`
 - 本地 wasm 产物：`<ai-gateway-repo>/plugins/wasm-go/extensions/ai-proxy/plugin.wasm`
-- 本地 Envoy 配置目录：`<ai-gateway-repo>/plugins/wasm-go/extensions/ai-proxy/local`
-- 本地 Envoy 配置：`<ai-gateway-repo>/plugins/wasm-go/extensions/ai-proxy/local/envoy.local.yaml`
-- 本地 Bedrock Envoy 配置：`<ai-gateway-repo>/plugins/wasm-go/extensions/ai-proxy/local/envoy-bedrock.yaml`
+- Higress 本地 Ingress 配置：`<ai-gateway-repo>/plugins/wasm-go/extensions/ai-proxy/local/ingress-bedrock-local.yaml`
+- Higress 本地 WasmPlugin 配置：`<ai-gateway-repo>/plugins/wasm-go/extensions/ai-proxy/local/wasmplugin-ai-proxy-local.yaml`
+- standalone Envoy 配置目录：`<ai-gateway-repo>/plugins/wasm-go/extensions/ai-proxy/local`
+- standalone Envoy 配置：`<ai-gateway-repo>/plugins/wasm-go/extensions/ai-proxy/local/envoy.local.yaml`
+- standalone Bedrock Envoy 配置：`<ai-gateway-repo>/plugins/wasm-go/extensions/ai-proxy/local/envoy-bedrock.yaml`
 
 注意：
 
@@ -320,7 +405,7 @@ spec:
 应用：
 
 ```bash
-kubectl apply -f ingress-bedrock-local.yaml
+kubectl apply -f local/ingress-bedrock-local.yaml
 ```
 
 ### 7.3 WasmPlugin
@@ -346,13 +431,14 @@ spec:
           awsSecretKey: "<AWS_SECRET_KEY>"
           awsRegion: "us-west-2"
           modelMapping:
-            "*": "global.anthropic.claude-sonnet-4-5-20250929-v1:0"
+            claude-sonnet-4-5: global.anthropic.claude-sonnet-4-5-20250929-v1:0
+            claude-sonnet-4-6: global.anthropic.claude-sonnet-4-6
 ```
 
 应用：
 
 ```bash
-kubectl apply -f wasmplugin-ai-proxy-local.yaml
+kubectl apply -f local/wasmplugin-ai-proxy-local.yaml
 ```
 
 ### 7.4 可选：叠加 ai-statistics
@@ -499,6 +585,24 @@ kubectl -n higress-system rollout status deployment/higress-gateway --timeout=18
 ```
 
 ## 10. curl 调用示例
+
+### 10.0 Bedrock `/v1/messages` 原生透传说明
+
+`bedrock.local` 下如果请求的是 Claude 协议 `/v1/messages`，当前实现统一走 Bedrock 原生 Claude Messages 路径，不再转换成 OpenAI `chat/completions`。
+
+当前行为：
+
+- 非流式 `/v1/messages` 使用 `InvokeModel`
+- 流式 `/v1/messages` 使用 `InvokeModelWithResponseStream`
+- 最终请求路径优先基于 `modelMapping` 后的真实 Bedrock model ID / inference profile ID 构造
+
+例如：
+
+- `claude-sonnet-4-6` 映射为 `global.anthropic.claude-sonnet-4-6`
+- 流式 `/v1/messages` 会改写为 `/model/global.anthropic.claude-sonnet-4-6/invoke-with-response-stream`
+- 非流式 `/v1/messages` 会改写为 `/model/global.anthropic.claude-sonnet-4-6/invoke`
+
+如果某个 Bedrock model ID 本身不支持原生 Claude Messages，请以上游返回结果为准。
 
 ### 10.1 基础 Bedrock 调用
 
