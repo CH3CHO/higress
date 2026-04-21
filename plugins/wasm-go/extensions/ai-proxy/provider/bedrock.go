@@ -15,6 +15,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"reflect"
 	"strconv"
 	"strings"
 	"time"
@@ -103,16 +104,17 @@ func (b *bedrockProvider) onBedrockConverseStreamingResponseBody(ctx wrapper.Htt
 	var responseBuilder strings.Builder
 	events := extractAmazonEventStreamEvents(ctx, chunk)
 	if len(events) == 0 {
-		doneEvent := StreamEvent{Data: streamEndDataValue}
-		responseBuilder.WriteString(doneEvent.ToHttpString())
-		return []byte(responseBuilder.String()), nil
+		// No decoded events does not mean the upstream stream is finished.
+		// This commonly happens when the current eventstream frame is incomplete
+		// and has been buffered into ctxKeyStreamingBody waiting for the next chunk.
+		return []byte(""), nil
 	}
 
 	for _, event := range events {
 		outputEvent, err := b.convertEventFromBedrockToOpenAI(ctx, apiName, event)
 		if err != nil {
-			log.Errorf("[onStreamingResponseBody] failed to process streaming event: %v\n%s", err, chunk)
-			return chunk, err
+			log.Errorf("[onStreamingResponseBody] failed to process Bedrock Converse streaming event: %v", err)
+			return []byte(""), nil
 		}
 		responseBuilder.WriteString(string(outputEvent))
 	}
@@ -156,6 +158,10 @@ func decodeBedrockAnthropicStreamPayload(payload []byte) ([]byte, error) {
 }
 
 func (b *bedrockProvider) convertEventFromBedrockToOpenAI(ctx wrapper.HttpContext, apiName ApiName, bedrockEvent ConverseStreamEvent) ([]byte, error) {
+	if bedrockEvent.ContentBlockStop != nil {
+		return []byte(""), nil
+	}
+
 	choices := make([]chatCompletionChoice, 0)
 	chatChoice := &chatCompletionChoice{
 		Delta: &chatMessage{},
@@ -215,6 +221,9 @@ func (b *bedrockProvider) convertEventFromBedrockToOpenAI(ctx wrapper.HttpContex
 	if bedrockEvent.StopReason != nil {
 		chatChoice.FinishReason = util.Ptr(util.MapFinishReason(*bedrockEvent.StopReason))
 	}
+	if bedrockEvent.Usage == nil && !hasVisibleBedrockStreamingChoice(chatChoice) {
+		return []byte(""), nil
+	}
 	choices = append(choices, *chatChoice)
 	requestId := ctx.GetStringContext(requestIdHeader, "")
 	openAIFormattedChunk := &chatCompletionResponse{
@@ -253,6 +262,48 @@ func (b *bedrockProvider) convertEventFromBedrockToOpenAI(ctx wrapper.HttpContex
 	return []byte(openAIChunk.String()), nil
 }
 
+func hasVisibleBedrockStreamingChoice(choice *chatCompletionChoice) bool {
+	if choice == nil {
+		return false
+	}
+	if choice.FinishReason != nil {
+		return true
+	}
+	return hasVisibleBedrockStreamingMessage(choice.Delta)
+}
+
+func hasVisibleBedrockStreamingMessage(message *chatMessage) bool {
+	if message == nil {
+		return false
+	}
+	if message.Id != "" || message.Name != "" || message.Role != "" || message.ReasoningContent != "" ||
+		message.Reasoning != "" || message.Refusal != "" || message.ToolCallId != "" {
+		return true
+	}
+	if len(message.Audio) != 0 || len(message.ToolCalls) != 0 || message.FunctionCall != nil ||
+		len(message.ThinkingBlocks) != 0 || len(message.ProviderSpecificFields) != 0 || message.CacheControl != nil {
+		return true
+	}
+	return hasVisibleBedrockStreamingContent(message.Content)
+}
+
+func hasVisibleBedrockStreamingContent(content any) bool {
+	if content == nil {
+		return false
+	}
+	value := reflect.ValueOf(content)
+	switch value.Kind() {
+	case reflect.String:
+		return value.Len() != 0
+	case reflect.Slice, reflect.Array, reflect.Map:
+		return value.Len() != 0
+	case reflect.Pointer, reflect.Interface:
+		return !value.IsNil()
+	default:
+		return true
+	}
+}
+
 func fillBedrockDeltaReasoningContentToChoice(choice *chatCompletionChoice, reasoningContent *bedrock.ConverseReasoningContentBlockDelta) {
 	if reasoningContent == nil {
 		return
@@ -272,6 +323,7 @@ func fillBedrockDeltaReasoningContentToChoice(choice *chatCompletionChoice, reas
 
 type ConverseStreamEvent struct {
 	ContentBlockIndex int                             `json:"contentBlockIndex,omitempty"`
+	ContentBlockStop  *bedrock.ContentBlockStopEvent  `json:"contentBlockStop,omitempty"`
 	Delta             *bedrock.ContentBlockDeltaEvent `json:"delta,omitempty"`
 	Role              *string                         `json:"role,omitempty"`
 	StopReason        *string                         `json:"stopReason,omitempty"`
@@ -348,8 +400,8 @@ type bedrockImageGenerationRequest struct {
 }
 
 type bedrockAnthropicMessagesRequest struct {
-	AnthropicVersion string            `json:"anthropic_version"`
-	AnthropicBeta    []string          `json:"anthropic_beta,omitempty"`
+	AnthropicVersion string   `json:"anthropic_version"`
+	AnthropicBeta    []string `json:"anthropic_beta,omitempty"`
 	anthropicMessagesCommonFields
 }
 

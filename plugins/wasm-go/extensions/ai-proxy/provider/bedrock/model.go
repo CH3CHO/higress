@@ -115,6 +115,10 @@ type ContentBlockStartEvent struct {
 	ReasoningContent *ConverseReasoningContentBlockDelta `json:"reasoningContent,omitempty"`
 }
 
+// ContentBlockStopEvent represents the end of a content block in streaming.
+// It is a boundary marker only and does not need to be forwarded to OpenAI SSE clients.
+type ContentBlockStopEvent struct{}
+
 // Reasoning-related types
 
 // ConverseReasoningTextBlock represents the reasoning text with optional signature

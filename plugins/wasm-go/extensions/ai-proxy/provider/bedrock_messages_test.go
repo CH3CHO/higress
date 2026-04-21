@@ -237,6 +237,38 @@ func TestConvertEventFromBedrockToOpenAIUsesOneBasedSequentialToolIndex(t *testi
 	assert.Equal(t, 2, extractFirstToolCallIndexFromSSE(t, startTwo))
 }
 
+func TestOnBedrockConverseStreamingResponseBodyDoesNotEmitDoneForIncompleteChunk(t *testing.T) {
+	ctx := newMockBedrockHTTPContext()
+	provider := &bedrockProvider{}
+
+	out, err := provider.onBedrockConverseStreamingResponseBody(ctx, ApiNameChatCompletion, []byte("partial-eventstream-frame"))
+	assert.NoError(t, err)
+	assert.Equal(t, []byte(""), out)
+
+	buffered, _ := ctx.GetContext(ctxKeyStreamingBody).([]byte)
+	assert.Equal(t, []byte("partial-eventstream-frame"), buffered)
+}
+
+func TestConvertEventFromBedrockToOpenAISkipsNoopEvents(t *testing.T) {
+	ctx := newMockBedrockHTTPContext()
+	ctx.SetContext(requestIdHeader, "req-1")
+	ctx.SetContext(ctxKeyFinalRequestModel, "amazon.nova-lite-v1:0")
+	provider := &bedrockProvider{}
+
+	testCases := []ConverseStreamEvent{
+		{ContentBlockIndex: 0},
+		{ContentBlockStop: &bedrock.ContentBlockStopEvent{}},
+		{Start: &bedrock.ContentBlockStartEvent{}},
+		{Delta: &bedrock.ContentBlockDeltaEvent{}},
+	}
+
+	for _, event := range testCases {
+		out, err := provider.convertEventFromBedrockToOpenAI(ctx, ApiNameChatCompletion, event)
+		assert.NoError(t, err)
+		assert.Equal(t, []byte(""), out)
+	}
+}
+
 func extractFirstToolCallIndexFromSSE(t *testing.T, sse []byte) int {
 	t.Helper()
 	resp := extractChatCompletionChunkFromSSE(t, sse)
