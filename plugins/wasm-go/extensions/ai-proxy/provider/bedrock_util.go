@@ -568,9 +568,11 @@ func convertAssistantMessageToContentBlocks(msg chatMessage) ([]*bedrock.Content
 		for _, element := range assistantContent {
 			if element.Type == contentTypeThinking {
 				thinkingBlock := map[string]any{
-					"type":      element.Type,
-					"thinking":  element.Thinking,
-					"signature": element.Signature,
+					"type":     element.Type,
+					"thinking": element.Thinking,
+				}
+				if element.Signature != "" {
+					thinkingBlock["signature"] = element.Signature
 				}
 				thinkingBlocks := bedrock.TranslateThinkingBlocksToReasoningContentBlocks([]map[string]any{thinkingBlock})
 				blocks = append(blocks, thinkingBlocks...)
