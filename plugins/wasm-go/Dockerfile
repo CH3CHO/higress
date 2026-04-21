@@ -5,6 +5,8 @@ FROM $BUILDER AS builder
 ARG GOPROXY
 ENV GOPROXY=${GOPROXY}
 
+ENV GONOSUMDB=git.dev.sh.ctripcorp.com
+
 ARG PLUGIN_NAME=hello-world
 
 WORKDIR /workspace
