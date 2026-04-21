@@ -25,16 +25,24 @@
 
 ```bash
 export AI_GATEWAY_REPO="<ai-gateway-repo>"
-export AI_PROXY_DIR="$AI_GATEWAY_REPO/plugins/wasm-go/extensions/ai-proxy"
+export WASM_GO_DIR="$AI_GATEWAY_REPO/plugins/wasm-go"
+export AI_PROXY_DIR="$WASM_GO_DIR/extensions/ai-proxy"
 export WASM_OUT="$AI_PROXY_DIR/plugin.wasm"
 export KIND_NODE="<kind-node-container>"
+export WASM_BUILDER_IMAGE="higress-registry.cn-hangzhou.cr.aliyuncs.com/plugins/wasm-go-builder:go1.24.0-oras1.0.0"
 ```
+
+这里优先走仓库自带的 wasm builder 镜像，而不是直接用宿主机 `go build`。这样可以避免本机 Go 版本、环境变量或依赖差异影响 `plugin.wasm` 产物。
 
 1. 编译 wasm：
 
 ```bash
-cd "$AI_PROXY_DIR"
-GOOS=wasip1 GOARCH=wasm go build -buildmode=c-shared -o ./plugin.wasm .
+cd "$WASM_GO_DIR"
+DOCKER_BUILDKIT=1 docker build \
+  --build-arg BUILDER="$WASM_BUILDER_IMAGE" \
+  --build-arg PLUGIN_NAME=ai-proxy \
+  -t ai-proxy:local \
+  --output "type=local,dest=$AI_PROXY_DIR" .
 ```
 
 2. 拷到 kind 节点：
@@ -198,35 +206,58 @@ docker version
 
 - `local/` 目录已经被插件目录下的 `.gitignore` 忽略，不会误提交。
 
-## 3. 本地构建 wasm
+## 3. 优先：用 builder 镜像构建 wasm
 
-进入插件目录：
+进入 wasm-go 根目录：
 
 ```bash
-cd <ai-gateway-repo>/plugins/wasm-go/extensions/ai-proxy
+cd <ai-gateway-repo>/plugins/wasm-go
 ```
 
-直接在宿主机编译：
+推荐直接复用仓库里的 [`plugins/wasm-go/Dockerfile`](../../Dockerfile) 和 builder 镜像来产出 `ai-proxy/plugin.wasm`：
 
 ```bash
-GOOS=wasip1 GOARCH=wasm go build -buildmode=c-shared -o ./plugin.wasm .
+DOCKER_BUILDKIT=1 docker build \
+  --build-arg BUILDER=higress-registry.cn-hangzhou.cr.aliyuncs.com/plugins/wasm-go-builder:go1.24.0-oras1.0.0 \
+  --build-arg PLUGIN_NAME=ai-proxy \
+  -t ai-proxy:local \
+  --output "type=local,dest=./extensions/ai-proxy" .
 ```
 
 说明：
 
-- 这是当前本地最稳的构建方式。
-- 相比 Docker builder，这条路径更适合本地反复调试。
+- 这是当前更推荐的构建方式，和仓库里其他 wasm-go 插件的构建链路一致。
+- 产物会直接落到 `extensions/ai-proxy/plugin.wasm`，后面可以直接 `docker cp` 到 kind 节点。
+- 这样不用依赖宿主机 Go 版本，也不会因为本地默认 `go` 高于 `go.mod` 里的 toolchain 而打出不同产物。
 
-### 3.1 可选：按官方方式构建 Docker / OCI 镜像
+### 3.1 兜底：直接在宿主机构建 wasm
 
-如果你要验证 `WasmPlugin.spec.url: oci://...` 这条路径，也可以按 Higress 官方文档里的方式，先编译 wasm，再打一个最小镜像。
-
-先在插件目录生成 wasm：
+如果只是临时排查，或者本机没有可用 Docker，也可以直接在插件目录用本地 Go 构建：
 
 ```bash
 cd <ai-gateway-repo>/plugins/wasm-go/extensions/ai-proxy
-go mod tidy
-GOOS=wasip1 GOARCH=wasm go build -buildmode=c-shared -o main.wasm ./
+GOTOOLCHAIN=go1.24.4 GOOS=wasip1 GOARCH=wasm go build -buildmode=c-shared -o ./plugin.wasm .
+```
+
+说明：
+
+- 这里显式固定 `GOTOOLCHAIN=go1.24.4`，与 [`go.mod`](./go.mod) 里的 `toolchain go1.24.4` 保持一致。
+- 这条路径保留给临时兜底，不作为本文档主推荐方案。
+
+### 3.2 可选：按官方方式构建 Docker / OCI 镜像
+
+如果你要验证 `WasmPlugin.spec.url: oci://...` 这条路径，也可以按 Higress 官方文档里的方式，先编译 wasm，再打一个最小镜像。
+
+先生成 wasm。这里同样建议优先走 builder 镜像：
+
+```bash
+cd <ai-gateway-repo>/plugins/wasm-go
+DOCKER_BUILDKIT=1 docker build \
+  --build-arg BUILDER=higress-registry.cn-hangzhou.cr.aliyuncs.com/plugins/wasm-go-builder:go1.24.0-oras1.0.0 \
+  --build-arg PLUGIN_NAME=ai-proxy \
+  -t ai-proxy:local \
+  --output "type=local,dest=./extensions/ai-proxy" .
+cp ./extensions/ai-proxy/plugin.wasm ./extensions/ai-proxy/main.wasm
 ```
 
 然后用一个最小 Dockerfile 打镜像：
@@ -252,7 +283,7 @@ url: oci://<your_registry>/ai-proxy:local
 说明：
 
 - 这条路径更适合验证 OCI 分发，而不是本地高频调试。
-- 本文档的主路径仍然推荐直接使用本地 `plugin.wasm` + kind 节点挂载。
+- 如果只是本地 Higress 调试，本文档主路径仍然推荐 builder 镜像产出本地 `plugin.wasm` 后再挂到 kind 节点。
 
 ## 4. 启动本地 kind + Higress
 

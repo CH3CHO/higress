@@ -402,7 +402,7 @@ func (m *chatMessage) ParseContent() []chatMessageContent {
 					contentList = append(contentList, chatMessageContent{
 						Type:         contentTypeThinking,
 						Thinking:     subStr,
-						Signature:    contentMap["signature"].(string),
+						Signature:    mapStringValue(contentMap, "signature"),
 						CacheControl: cc,
 					})
 				}
@@ -410,16 +410,18 @@ func (m *chatMessage) ParseContent() []chatMessageContent {
 				if imageUrlInterface, ok := contentMap[contentTypeImageUrl]; !ok {
 					continue
 				} else if imageUrlObj, ok := imageUrlInterface.(map[string]any); ok {
+					imageURL := mapStringValue(imageUrlObj, "url")
+					if imageURL == "" {
+						continue
+					}
 					msg := chatMessageContent{
 						Type: contentTypeImageUrl,
 						ImageUrl: &chatMessageContentImageUrl{
-							Url: imageUrlObj["url"].(string),
+							Url: imageURL,
 						},
 						CacheControl: cc,
 					}
-					if detail, ok := imageUrlObj["detail"].(string); ok {
-						msg.ImageUrl.Detail = detail
-					}
+					msg.ImageUrl.Detail = mapStringValue(imageUrlObj, "detail")
 					contentList = append(contentList, msg)
 				} else if imageUrlString, ok := imageUrlInterface.(string); ok {
 					msg := chatMessageContent{
@@ -436,8 +438,8 @@ func (m *chatMessage) ParseContent() []chatMessageContent {
 					contentList = append(contentList, chatMessageContent{
 						Type: contentTypeInputAudio,
 						InputAudio: &chatMessageContentAudio{
-							Data:   subObj["data"].(string),
-							Format: subObj["format"].(string),
+							Data:   mapStringValue(subObj, "data"),
+							Format: mapStringValue(subObj, "format"),
 						},
 						CacheControl: cc,
 					})
@@ -468,6 +470,11 @@ func (m *chatMessage) ParseContent() []chatMessageContent {
 		return contentList
 	}
 	return nil
+}
+
+func mapStringValue(m map[string]any, key string) string {
+	value, _ := m[key].(string)
+	return value
 }
 
 type toolCall struct {

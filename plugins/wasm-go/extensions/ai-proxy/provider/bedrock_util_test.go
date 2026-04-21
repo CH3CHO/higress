@@ -580,3 +580,36 @@ func TestConvertAssistantMessageToContentBlocksAddsCachePointTTL(t *testing.T) {
 		assert.Equal(t, "1h", blocks[1].CachePoint.TTL)
 	}
 }
+
+func TestConvertAssistantMessageToContentBlocksHandlesNilThinkingSignature(t *testing.T) {
+	msg := chatMessage{
+		Role: roleAssistant,
+		Content: []any{
+			map[string]any{
+				"type":      contentTypeThinking,
+				"thinking":  "reasoning text",
+				"signature": nil,
+			},
+		},
+	}
+
+	blocks, err := convertAssistantMessageToContentBlocks(msg)
+	assert.NoError(t, err)
+	if assert.Len(t, blocks, 1) {
+		assert.NotNil(t, blocks[0].ReasoningContent)
+		assert.NotNil(t, blocks[0].ReasoningContent.ReasoningText)
+		assert.Equal(t, "reasoning text", blocks[0].ReasoningContent.ReasoningText.Text)
+		assert.Nil(t, blocks[0].ReasoningContent.ReasoningText.Signature)
+	}
+}
+
+func TestConvertAssistantMessageToContentBlocksHandlesNilContent(t *testing.T) {
+	msg := chatMessage{
+		Role:    roleAssistant,
+		Content: nil,
+	}
+
+	blocks, err := convertAssistantMessageToContentBlocks(msg)
+	assert.NoError(t, err)
+	assert.Empty(t, blocks)
+}
