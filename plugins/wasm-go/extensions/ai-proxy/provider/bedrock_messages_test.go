@@ -143,6 +143,57 @@ func TestSetBedrockAnthropicMessagesRequestDefaultsPreservesBodyAnthropicBetaWhe
 	assert.Equal(t, "body-beta", gjson.GetBytes(body, "anthropic_beta.0").String())
 }
 
+func TestSetBedrockAnthropicMessagesRequestDefaultsPreservesThinkingBlocks(t *testing.T) {
+	headers := http.Header{}
+
+	body, err := setBedrockAnthropicMessagesRequestDefaults([]byte(`{
+		"model":"claude-sonnet-4-5",
+		"max_tokens":64,
+		"messages":[
+			{"role":"user","content":"hi"},
+			{"role":"assistant","content":[
+				{"type":"thinking","thinking":"internal reasoning","signature":"sig-1"},
+				{"type":"text","text":"final answer"}
+			]}
+		]
+	}`), headers)
+	assert.NoError(t, err)
+	assert.Equal(t, "thinking", gjson.GetBytes(body, "messages.1.content.0.type").String())
+	assert.Equal(t, "internal reasoning", gjson.GetBytes(body, "messages.1.content.0.thinking").String())
+	assert.Equal(t, "sig-1", gjson.GetBytes(body, "messages.1.content.0.signature").String())
+	assert.Equal(t, "text", gjson.GetBytes(body, "messages.1.content.1.type").String())
+	assert.Equal(t, "final answer", gjson.GetBytes(body, "messages.1.content.1.text").String())
+}
+
+func TestSetBedrockAnthropicMessagesRequestDefaultsPreservesRicherToolUnion(t *testing.T) {
+	headers := http.Header{}
+
+	body, err := setBedrockAnthropicMessagesRequestDefaults([]byte(`{
+		"model":"claude-sonnet-4-5",
+		"max_tokens":64,
+		"tools":[
+			{
+				"type":"web_search_20250305",
+				"name":"web_search",
+				"max_uses":5
+			}
+		],
+		"tool_choice":{
+			"type":"tool",
+			"name":"web_search",
+			"disable_parallel_tool_use":true
+		},
+		"messages":[{"role":"user","content":"hi"}]
+	}`), headers)
+	assert.NoError(t, err)
+	assert.Equal(t, "web_search_20250305", gjson.GetBytes(body, "tools.0.type").String())
+	assert.Equal(t, "web_search", gjson.GetBytes(body, "tools.0.name").String())
+	assert.Equal(t, float64(5), gjson.GetBytes(body, "tools.0.max_uses").Float())
+	assert.Equal(t, "tool", gjson.GetBytes(body, "tool_choice.type").String())
+	assert.Equal(t, "web_search", gjson.GetBytes(body, "tool_choice.name").String())
+	assert.True(t, gjson.GetBytes(body, "tool_choice.disable_parallel_tool_use").Bool())
+}
+
 func TestDecodeBedrockAnthropicStreamPayload(t *testing.T) {
 	inner := `{"type":"message_stop"}`
 	wrapped := `{"bytes":"` + base64.StdEncoding.EncodeToString([]byte(inner)) + `","p":"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNO"}`
