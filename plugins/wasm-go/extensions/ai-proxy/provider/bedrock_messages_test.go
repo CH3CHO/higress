@@ -271,7 +271,7 @@ func TestOnBedrockConverseStreamingResponseBodyDoesNotLeakRawChunkWhenEventStrea
 		"contentBlockIndex": 0,
 		"delta": map[string]any{
 			"reasoningContent": map[string]any{
-				"signature": "sig-1",
+				"signature": "sig-11111111111111111111111112222222222222222222222222222222222222222333333333333333333333333333333333333333",
 			},
 		},
 	})
@@ -301,24 +301,35 @@ func TestOnBedrockConverseStreamingResponseBodyDoesNotLeakRawChunkWhenEventStrea
 	assert.NotNil(t, reasoningTextEvents[0].Delta.ReasoningContent)
 	assert.Equal(t, "程。", reasoningTextEvents[0].Delta.ReasoningContent.Text)
 
-	splitAt := len(reasoningTextFrame) / 2
-	firstHalf := reasoningTextFrame[:splitAt]
-	secondHalf := reasoningTextFrame[splitAt:]
-
-	firstOut, err := provider.OnStreamingResponseBody(ctx, ApiNameChatCompletion, firstHalf, false)
+	reasoningOut, err := provider.OnStreamingResponseBody(ctx, ApiNameChatCompletion, reasoningTextFrame, false)
 	assert.NoError(t, err)
+	assert.Contains(t, string(reasoningOut), `"reasoning_content":"程。"`)
+	assert.NotContains(t, string(reasoningOut), ":content-typeapplication/json")
+	assert.NotContains(t, string(reasoningOut), ":message-typeevent")
+
+	splitAt1 := len(signatureFrame) / 3
+	splitAt2 := splitAt1 * 2
+	firstPart := signatureFrame[:splitAt1]
+	secondPart := signatureFrame[splitAt1:splitAt2]
+	thirdPart := signatureFrame[splitAt2:]
+
+	firstOut, err := provider.OnStreamingResponseBody(ctx, ApiNameChatCompletion, firstPart, false)
+	assert.NoError(t, err)
+	t.Logf("chunk1 输入%s\nchunk1 输出%s", string(firstPart), string(firstOut))
 	assert.Equal(t, []byte(""), firstOut)
 
-	secondOut, err := provider.OnStreamingResponseBody(ctx, ApiNameChatCompletion, secondHalf, false)
+	secondOut, err := provider.OnStreamingResponseBody(ctx, ApiNameChatCompletion, secondPart, false)
 	assert.NoError(t, err)
-	assert.Contains(t, string(secondOut), `"reasoning_content":"程。"`)
-	assert.NotContains(t, string(secondOut), ":content-typeapplication/json")
-	assert.NotContains(t, string(secondOut), ":message-typeevent")
+	t.Logf("chunk2 输入%s\nchunk2 输出%s", string(secondPart), string(secondOut))
+	assert.Equal(t, []byte(""), secondOut)
 
-	signatureOut, err := provider.OnStreamingResponseBody(ctx, ApiNameChatCompletion, signatureFrame, false)
+	thirdOut, err := provider.OnStreamingResponseBody(ctx, ApiNameChatCompletion, thirdPart, false)
 	assert.NoError(t, err)
-	assert.Contains(t, string(signatureOut), `"signature":"sig-1"`)
-	assert.NotContains(t, string(signatureOut), ":event-typecontentBlockDelta")
+	t.Logf("chunk3 输入%s\nchunk3 输出%s", string(thirdPart), string(thirdOut))
+	assert.Contains(t, string(thirdOut), `"signature":"sig-11111111111111111111111112222222222222222222222222222222222222222333333333333333333333333333333333333333"`)
+	assert.NotContains(t, string(thirdOut), ":content-typeapplication/json")
+	assert.NotContains(t, string(thirdOut), ":message-typeevent")
+	assert.NotContains(t, string(thirdOut), ":event-typecontentBlockDelta")
 
 	stopOut, err := provider.OnStreamingResponseBody(ctx, ApiNameChatCompletion, contentBlockStopFrame, false)
 	assert.NoError(t, err)
