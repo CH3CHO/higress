@@ -104,10 +104,7 @@ func (b *bedrockProvider) onBedrockConverseStreamingResponseBody(ctx wrapper.Htt
 	var responseBuilder strings.Builder
 	events := extractAmazonEventStreamEvents(ctx, chunk)
 	if len(events) == 0 {
-		// No decoded events does not mean the upstream stream is finished.
-		// This commonly happens when the current eventstream frame is incomplete
-		// and has been buffered into ctxKeyStreamingBody waiting for the next chunk.
-		if isLastChunk && !hasBufferedBedrockStreamingBody(ctx) {
+		if isLastChunk {
 			doneEvent := StreamEvent{Data: streamEndDataValue}
 			responseBuilder.WriteString(doneEvent.ToHttpString())
 			return []byte(responseBuilder.String()), nil
@@ -123,16 +120,11 @@ func (b *bedrockProvider) onBedrockConverseStreamingResponseBody(ctx wrapper.Htt
 		}
 		responseBuilder.WriteString(string(outputEvent))
 	}
-	if isLastChunk && !hasBufferedBedrockStreamingBody(ctx) {
+	if isLastChunk {
 		doneEvent := StreamEvent{Data: streamEndDataValue}
 		responseBuilder.WriteString(doneEvent.ToHttpString())
 	}
 	return []byte(responseBuilder.String()), nil
-}
-
-func hasBufferedBedrockStreamingBody(ctx wrapper.HttpContext) bool {
-	bufferedStreamingBody, _ := ctx.GetContext(ctxKeyStreamingBody).([]byte)
-	return len(bufferedStreamingBody) != 0
 }
 
 func (b *bedrockProvider) onAnthropicMessagesStreamingResponseBody(ctx wrapper.HttpContext, chunk []byte, isLastChunk bool) ([]byte, error) {

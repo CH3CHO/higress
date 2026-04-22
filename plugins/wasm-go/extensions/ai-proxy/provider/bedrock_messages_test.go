@@ -343,14 +343,14 @@ func TestOnBedrockConverseStreamingResponseBodyEmitsDoneOnLastChunkWithoutBuffer
 	assert.Equal(t, "data: [DONE]\n\n", string(out))
 }
 
-func TestOnBedrockConverseStreamingResponseBodyDoesNotEmitDoneOnLastChunkWithBufferedFrame(t *testing.T) {
+func TestOnBedrockConverseStreamingResponseBodyEmitsDoneOnLastChunkWithBufferedFrame(t *testing.T) {
 	ctx := newMockBedrockHTTPContext()
 	ctx.SetContext(ctxKeyStreamingBody, []byte("partial-eventstream-frame"))
 	provider := &bedrockProvider{}
 
 	out, err := provider.onBedrockConverseStreamingResponseBody(ctx, ApiNameChatCompletion, nil, true)
 	assert.NoError(t, err)
-	assert.Equal(t, []byte(""), out)
+	assert.Equal(t, "data: [DONE]\n\n", string(out))
 }
 
 func TestConvertEventFromBedrockToOpenAISkipsNoopEvents(t *testing.T) {
