@@ -284,12 +284,7 @@ func TestOnBedrockConverseStreamingResponseBodyDoesNotLeakRawChunkWhenEventStrea
 
 	reasoningTextFrame := encodeAmazonEventStreamMessage(t, "contentBlockDelta", reasoningTextPayload)
 	signatureFrame := encodeAmazonEventStreamMessage(t, "contentBlockDelta", signaturePayload)
-	contentBlockStopFrame := encodeAmazonEventStreamMessage(t, "contentBlockStop", nil)
 	textFrame := encodeAmazonEventStreamMessage(t, "contentBlockDelta", textPayload)
-
-	contentBlockStopMsg, err := decodeMessage(bytes.NewReader(contentBlockStopFrame), make([]byte, 1024))
-	assert.NoError(t, err)
-	t.Logf("contentBlockStop chunk \nheaders=%#v \npayload=%q", contentBlockStopMsg.Headers, contentBlockStopMsg.Payload)
 
 	_, decodeErr := decodeMessage(bytes.NewReader(reasoningTextFrame), make([]byte, 1024))
 	assert.NoError(t, decodeErr)
@@ -331,10 +326,6 @@ func TestOnBedrockConverseStreamingResponseBodyDoesNotLeakRawChunkWhenEventStrea
 	assert.NotContains(t, string(thirdOut), ":message-typeevent")
 	assert.NotContains(t, string(thirdOut), ":event-typecontentBlockDelta")
 
-	stopOut, err := provider.OnStreamingResponseBody(ctx, ApiNameChatCompletion, contentBlockStopFrame, false)
-	assert.NoError(t, err)
-	assert.Equal(t, []byte(""), stopOut)
-
 	finalOut, err := provider.OnStreamingResponseBody(ctx, ApiNameChatCompletion, textFrame, true)
 	assert.NoError(t, err)
 	assert.Contains(t, string(finalOut), `"content":"文"`)
@@ -370,7 +361,6 @@ func TestConvertEventFromBedrockToOpenAISkipsNoopEvents(t *testing.T) {
 
 	testCases := []ConverseStreamEvent{
 		{ContentBlockIndex: 0},
-		{ContentBlockStop: &bedrock.ContentBlockStopEvent{}},
 		{Start: &bedrock.ContentBlockStartEvent{}},
 		{Delta: &bedrock.ContentBlockDeltaEvent{}},
 	}

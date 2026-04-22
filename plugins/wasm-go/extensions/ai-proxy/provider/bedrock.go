@@ -172,10 +172,6 @@ func decodeBedrockAnthropicStreamPayload(payload []byte) ([]byte, error) {
 }
 
 func (b *bedrockProvider) convertEventFromBedrockToOpenAI(ctx wrapper.HttpContext, apiName ApiName, bedrockEvent ConverseStreamEvent) ([]byte, error) {
-	if bedrockEvent.ContentBlockStop != nil {
-		return []byte(""), nil
-	}
-
 	choices := make([]chatCompletionChoice, 0)
 	chatChoice := &chatCompletionChoice{
 		Delta: &chatMessage{},
@@ -337,7 +333,6 @@ func fillBedrockDeltaReasoningContentToChoice(choice *chatCompletionChoice, reas
 
 type ConverseStreamEvent struct {
 	ContentBlockIndex int                             `json:"contentBlockIndex,omitempty"`
-	ContentBlockStop  *bedrock.ContentBlockStopEvent  `json:"contentBlockStop,omitempty"`
 	Delta             *bedrock.ContentBlockDeltaEvent `json:"delta,omitempty"`
 	Role              *string                         `json:"role,omitempty"`
 	StopReason        *string                         `json:"stopReason,omitempty"`
