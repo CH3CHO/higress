@@ -18,9 +18,15 @@ type anthropicMessagesRequest struct {
 type claudeTextGenRequest = anthropicMessagesRequest
 
 type claudeTool struct {
-	Name        string                 `json:"name"`
+	Name string `json:"name"`
+	// Claude server tools use typed tool identifiers such as web_search_*.
+	// AWS Bedrock native Messages docs explicitly document typed tools for
+	// custom/computer/bash/text_editor variants.
+	Type        string                 `json:"type,omitempty"`
 	Description string                 `json:"description,omitempty"`
 	InputSchema map[string]interface{} `json:"input_schema,omitempty"`
+	// Claude server tools support max_uses.
+	MaxUses int `json:"max_uses,omitempty"`
 }
 
 type claudeToolChoice struct {
@@ -67,6 +73,9 @@ type claudeChatMessageContentSource struct {
 type claudeChatMessageContent struct {
 	Type         string                          `json:"type"`
 	Text         string                          `json:"text,omitempty"`
+	Thinking     string                          `json:"thinking,omitempty"`
+	Signature    string                          `json:"signature,omitempty"`
+	Data         string                          `json:"data,omitempty"`
 	Source       *claudeChatMessageContentSource `json:"source,omitempty"`
 	CacheControl map[string]interface{}          `json:"cache_control,omitempty"`
 	Id           string                          `json:"id,omitempty"`
