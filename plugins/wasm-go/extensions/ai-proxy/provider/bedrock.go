@@ -93,28 +93,35 @@ func (b *bedrockProvider) OnStreamingResponseBody(ctx wrapper.HttpContext, apiNa
 	case ApiNameAnthropicMessages:
 		return b.onAnthropicMessagesStreamingResponseBody(ctx, chunk, isLastChunk)
 	case ApiNameChatCompletion, ApiNameCompletion:
-		return b.onBedrockConverseStreamingResponseBody(ctx, apiName, chunk)
+		return b.onBedrockConverseStreamingResponseBody(ctx, apiName, chunk, isLastChunk)
 	default:
 		return chunk, nil
 	}
 }
 
-func (b *bedrockProvider) onBedrockConverseStreamingResponseBody(ctx wrapper.HttpContext, apiName ApiName, chunk []byte) ([]byte, error) {
+func (b *bedrockProvider) onBedrockConverseStreamingResponseBody(ctx wrapper.HttpContext, apiName ApiName, chunk []byte, isLastChunk bool) ([]byte, error) {
 	var responseBuilder strings.Builder
 	events := extractAmazonEventStreamEvents(ctx, chunk)
 	if len(events) == 0 {
-		doneEvent := StreamEvent{Data: streamEndDataValue}
-		responseBuilder.WriteString(doneEvent.ToHttpString())
-		return []byte(responseBuilder.String()), nil
+		if isLastChunk {
+			doneEvent := StreamEvent{Data: streamEndDataValue}
+			responseBuilder.WriteString(doneEvent.ToHttpString())
+			return []byte(responseBuilder.String()), nil
+		}
+		return []byte(""), nil
 	}
 
 	for _, event := range events {
 		outputEvent, err := b.convertEventFromBedrockToOpenAI(ctx, apiName, event)
 		if err != nil {
-			log.Errorf("[onStreamingResponseBody] failed to process streaming event: %v\n%s", err, chunk)
-			return chunk, err
+			log.Errorf("[onStreamingResponseBody] failed to process Bedrock Converse streaming event: %v", err)
+			return []byte(""), nil
 		}
 		responseBuilder.WriteString(string(outputEvent))
+	}
+	if isLastChunk {
+		doneEvent := StreamEvent{Data: streamEndDataValue}
+		responseBuilder.WriteString(doneEvent.ToHttpString())
 	}
 	return []byte(responseBuilder.String()), nil
 }
@@ -348,8 +355,8 @@ type bedrockImageGenerationRequest struct {
 }
 
 type bedrockAnthropicMessagesRequest struct {
-	AnthropicVersion string            `json:"anthropic_version"`
-	AnthropicBeta    []string          `json:"anthropic_beta,omitempty"`
+	AnthropicVersion string   `json:"anthropic_version"`
+	AnthropicBeta    []string `json:"anthropic_beta,omitempty"`
 	anthropicMessagesCommonFields
 }
 

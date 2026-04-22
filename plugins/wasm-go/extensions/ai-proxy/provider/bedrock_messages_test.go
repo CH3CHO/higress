@@ -1,9 +1,13 @@
 package provider
 
 import (
+	"bytes"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
+	"hash/crc32"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/alibaba/higress/plugins/wasm-go/extensions/ai-proxy/provider/bedrock"
@@ -148,6 +152,43 @@ func TestDecodeBedrockAnthropicStreamPayload(t *testing.T) {
 	assert.JSONEq(t, inner, string(decoded))
 }
 
+func TestDecodeAmazonEventStreamMessageSeparatesHeadersAndPayload(t *testing.T) {
+	payload := mustMarshalJSON(t, map[string]any{
+		"contentBlockIndex": 0,
+		"p":                 "abcdefghijklmnopqrstuvwxyzABCDEFG",
+	})
+	frame := encodeAmazonEventStreamMessage(t, "contentBlockDelta", payload)
+
+	msg, err := decodeMessage(bytes.NewReader(frame), make([]byte, 1024))
+	assert.NoError(t, err)
+
+	headerMap := make(map[string]string, len(msg.Headers))
+	for _, h := range msg.Headers {
+		headerMap[h.Name] = h.Value.Get().(string)
+	}
+	t.Logf("headers=%#v", headerMap)
+	t.Logf("payload=%s", string(msg.Payload))
+
+	var payloadMap map[string]any
+	err = json.Unmarshal(msg.Payload, &payloadMap)
+	assert.NoError(t, err)
+	t.Logf("payload_map=%#v", payloadMap)
+
+	ctx := newMockBedrockHTTPContext()
+	events := extractAmazonEventStreamEvents(ctx, frame)
+	t.Logf("events=%#v", events)
+
+	assert.Equal(t, "contentBlockDelta", headerMap[":event-type"])
+	assert.Equal(t, "application/json", headerMap[":content-type"])
+	assert.Equal(t, "event", headerMap[":message-type"])
+	assert.JSONEq(t, string(payload), string(msg.Payload))
+	assert.Equal(t, float64(0), payloadMap["contentBlockIndex"])
+	assert.Equal(t, "abcdefghijklmnopqrstuvwxyzABCDEFG", payloadMap["p"])
+	assert.Len(t, events, 1)
+	assert.Equal(t, 0, events[0].ContentBlockIndex)
+	assert.Nil(t, events[0].Delta)
+}
+
 func TestOnAnthropicMessagesRequestBodyKeepsNativePathForSupportedModel(t *testing.T) {
 	ctx := newMockBedrockHTTPContext()
 	headers := http.Header{}
@@ -237,6 +278,118 @@ func TestConvertEventFromBedrockToOpenAIUsesOneBasedSequentialToolIndex(t *testi
 	assert.Equal(t, 2, extractFirstToolCallIndexFromSSE(t, startTwo))
 }
 
+func TestOnBedrockConverseStreamingResponseBodyDoesNotEmitDoneForIncompleteChunk(t *testing.T) {
+	ctx := newMockBedrockHTTPContext()
+	provider := &bedrockProvider{}
+
+	out, err := provider.onBedrockConverseStreamingResponseBody(ctx, ApiNameChatCompletion, []byte("partial-eventstream-frame"), false)
+	assert.NoError(t, err)
+	assert.Equal(t, []byte(""), out)
+
+	buffered, _ := ctx.GetContext(ctxKeyStreamingBody).([]byte)
+	assert.Equal(t, []byte("partial-eventstream-frame"), buffered)
+}
+
+func TestOnBedrockConverseStreamingResponseBodyDoesNotLeakRawChunkWhenEventStreamFrameSplitAcrossChunks(t *testing.T) {
+	ctx := newMockBedrockHTTPContext()
+	ctx.SetContext(requestIdHeader, "req-1")
+	ctx.SetContext(ctxKeyFinalRequestModel, "claude-sonnet-4-5")
+	provider := &bedrockProvider{}
+
+	reasoningTextPayload := mustMarshalJSON(t, map[string]any{
+		"contentBlockIndex": 0,
+		"delta": map[string]any{
+			"reasoningContent": map[string]any{
+				"text": "程。",
+			},
+		},
+	})
+	signaturePayload := mustMarshalJSON(t, map[string]any{
+		"contentBlockIndex": 0,
+		"delta": map[string]any{
+			"reasoningContent": map[string]any{
+				"signature": "sig-11111111111111111111111112222222222222222222222222222222222222222333333333333333333333333333333333333333",
+			},
+		},
+	})
+	textPayload := mustMarshalJSON(t, map[string]any{
+		"contentBlockIndex": 1,
+		"delta": map[string]any{
+			"text": "文",
+		},
+	})
+
+	reasoningTextFrame := encodeAmazonEventStreamMessage(t, "contentBlockDelta", reasoningTextPayload)
+	signatureFrame := encodeAmazonEventStreamMessage(t, "contentBlockDelta", signaturePayload)
+	textFrame := encodeAmazonEventStreamMessage(t, "contentBlockDelta", textPayload)
+
+	_, decodeErr := decodeMessage(bytes.NewReader(reasoningTextFrame), make([]byte, 1024))
+	assert.NoError(t, decodeErr)
+
+	sanityCtx := newMockBedrockHTTPContext()
+	reasoningTextEvents := extractAmazonEventStreamEvents(sanityCtx, reasoningTextFrame)
+	assert.Len(t, reasoningTextEvents, 1)
+	assert.NotNil(t, reasoningTextEvents[0].Delta)
+	assert.NotNil(t, reasoningTextEvents[0].Delta.ReasoningContent)
+	assert.Equal(t, "程。", reasoningTextEvents[0].Delta.ReasoningContent.Text)
+
+	reasoningOut, err := provider.OnStreamingResponseBody(ctx, ApiNameChatCompletion, reasoningTextFrame, false)
+	assert.NoError(t, err)
+	assert.Contains(t, string(reasoningOut), `"reasoning_content":"程。"`)
+	assert.NotContains(t, string(reasoningOut), ":content-typeapplication/json")
+	assert.NotContains(t, string(reasoningOut), ":message-typeevent")
+
+	splitAt1 := len(signatureFrame) / 3
+	splitAt2 := splitAt1 * 2
+	firstPart := signatureFrame[:splitAt1]
+	secondPart := signatureFrame[splitAt1:splitAt2]
+	thirdPart := signatureFrame[splitAt2:]
+
+	firstOut, err := provider.OnStreamingResponseBody(ctx, ApiNameChatCompletion, firstPart, false)
+	assert.NoError(t, err)
+	t.Logf("chunk1 输入%s\nchunk1 输出%s", string(firstPart), string(firstOut))
+	assert.Equal(t, []byte(""), firstOut)
+
+	secondOut, err := provider.OnStreamingResponseBody(ctx, ApiNameChatCompletion, secondPart, false)
+	assert.NoError(t, err)
+	t.Logf("chunk2 输入%s\nchunk2 输出%s", string(secondPart), string(secondOut))
+	assert.Equal(t, []byte(""), secondOut)
+
+	thirdOut, err := provider.OnStreamingResponseBody(ctx, ApiNameChatCompletion, thirdPart, false)
+	assert.NoError(t, err)
+	t.Logf("chunk3 输入%s\nchunk3 输出%s", string(thirdPart), string(thirdOut))
+	assert.Contains(t, string(thirdOut), `"signature":"sig-11111111111111111111111112222222222222222222222222222222222222222333333333333333333333333333333333333333"`)
+	assert.NotContains(t, string(thirdOut), ":content-typeapplication/json")
+	assert.NotContains(t, string(thirdOut), ":message-typeevent")
+	assert.NotContains(t, string(thirdOut), ":event-typecontentBlockDelta")
+
+	finalOut, err := provider.OnStreamingResponseBody(ctx, ApiNameChatCompletion, textFrame, true)
+	assert.NoError(t, err)
+	assert.Contains(t, string(finalOut), `"content":"文"`)
+	assert.True(t, strings.HasSuffix(string(finalOut), ssePrefix+streamEndDataValue+"\n\n"))
+	assert.NotContains(t, string(finalOut), ":content-typeapplication/json")
+	assert.NotContains(t, string(finalOut), ":message-typeevent")
+}
+
+func TestOnBedrockConverseStreamingResponseBodyEmitsDoneOnLastChunkWithoutBufferedFrame(t *testing.T) {
+	ctx := newMockBedrockHTTPContext()
+	provider := &bedrockProvider{}
+
+	out, err := provider.onBedrockConverseStreamingResponseBody(ctx, ApiNameChatCompletion, nil, true)
+	assert.NoError(t, err)
+	assert.Equal(t, "data: [DONE]\n\n", string(out))
+}
+
+func TestOnBedrockConverseStreamingResponseBodyEmitsDoneOnLastChunkWithBufferedFrame(t *testing.T) {
+	ctx := newMockBedrockHTTPContext()
+	ctx.SetContext(ctxKeyStreamingBody, []byte("partial-eventstream-frame"))
+	provider := &bedrockProvider{}
+
+	out, err := provider.onBedrockConverseStreamingResponseBody(ctx, ApiNameChatCompletion, nil, true)
+	assert.NoError(t, err)
+	assert.Equal(t, "data: [DONE]\n\n", string(out))
+}
+
 func extractFirstToolCallIndexFromSSE(t *testing.T, sse []byte) int {
 	t.Helper()
 	resp := extractChatCompletionChunkFromSSE(t, sse)
@@ -254,4 +407,67 @@ func extractChatCompletionChunkFromSSE(t *testing.T, sse []byte) *chatCompletion
 	err := json.Unmarshal([]byte(payload), &resp)
 	assert.NoError(t, err)
 	return &resp
+}
+
+func mustMarshalJSON(t *testing.T, value any) []byte {
+	t.Helper()
+	out, err := json.Marshal(value)
+	assert.NoError(t, err)
+	return out
+}
+
+func encodeAmazonEventStreamMessage(t *testing.T, eventType string, payload []byte) []byte {
+	t.Helper()
+
+	headers := encodeAmazonEventStreamHeaders(t, map[string]string{
+		":event-type":   eventType,
+		":content-type": "application/json",
+		":message-type": "event",
+	})
+
+	headersLength := uint32(len(headers))
+	totalLength := uint32(16 + len(headers) + len(payload))
+
+	prelude := make([]byte, 8)
+	binary.BigEndian.PutUint32(prelude[0:4], totalLength)
+	binary.BigEndian.PutUint32(prelude[4:8], headersLength)
+
+	preludeCRC := crc32.ChecksumIEEE(prelude)
+
+	messageWithoutCRC := make([]byte, 12+len(headers)+len(payload))
+	copy(messageWithoutCRC[0:8], prelude)
+	binary.BigEndian.PutUint32(messageWithoutCRC[8:12], preludeCRC)
+	copy(messageWithoutCRC[12:12+len(headers)], headers)
+	copy(messageWithoutCRC[12+len(headers):], payload)
+
+	messageCRC := crc32.ChecksumIEEE(messageWithoutCRC)
+
+	fullMessage := make([]byte, len(messageWithoutCRC)+4)
+	copy(fullMessage, messageWithoutCRC)
+	binary.BigEndian.PutUint32(fullMessage[len(messageWithoutCRC):], messageCRC)
+	return fullMessage
+}
+
+func encodeAmazonEventStreamHeaders(t *testing.T, values map[string]string) []byte {
+	t.Helper()
+
+	order := []string{":event-type", ":content-type", ":message-type"}
+	var out []byte
+	for _, key := range order {
+		value, ok := values[key]
+		if !ok {
+			continue
+		}
+		assert.LessOrEqual(t, len(key), 255)
+		header := make([]byte, 0, 1+len(key)+1+2+len(value))
+		header = append(header, byte(len(key)))
+		header = append(header, []byte(key)...)
+		header = append(header, byte(stringValueType))
+		valueLen := make([]byte, 2)
+		binary.BigEndian.PutUint16(valueLen, uint16(len(value)))
+		header = append(header, valueLen...)
+		header = append(header, []byte(value)...)
+		out = append(out, header...)
+	}
+	return out
 }

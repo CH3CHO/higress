@@ -8,6 +8,29 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
+func TestTransformToBedrockConverseRequestFromOpenAIBody(t *testing.T) {
+	requestJSON := "{\n      \"model\": \"claude-sonnet-4-5\",\n      \"stream\": false,\n      \"messages\": [\n        {\n          \"role\": \"user\",\n          \"content\": \"hello\"\n        },\n        {\n          \"role\": \"assistant\",\n          \"content\": [\n            {\n              \"type\": \"thinking\",\n              \"thinking\": \"I should reason first.\",\n              \"signature\": \"\"\n            },\n            {\n              \"type\": \"text\",\n              \"text\": \"hello\"\n            }\n          ]\n        }\n      ]\n    }"
+
+	var request chatCompletionRequest
+	err := json.Unmarshal([]byte(requestJSON), &request)
+	assert.NoError(t, err)
+
+	extendedParams, err := extractBedrockExtendedParams([]byte(requestJSON))
+	assert.NoError(t, err)
+
+	converseRequest, jsonMode, err := transformToBedrockConverseRequest(
+		&request,
+		&bedrock.TransformRequestOptions{},
+		extendedParams,
+	)
+	assert.NoError(t, err)
+	assert.False(t, jsonMode)
+
+	requestBytes, err := json.MarshalIndent(converseRequest, "", "  ")
+	assert.NoError(t, err)
+	t.Logf("converse request:\n%s", string(requestBytes))
+}
+
 // TestTransformBedrockTools tests the transformBedrockTools function using the exact
 // input/output examples from the Python _bedrock_tools_pt function comments in:
 // litellm/litellm_core_utils/prompt_templates/factory.py
