@@ -275,10 +275,6 @@ func TestOnBedrockConverseStreamingResponseBodyDoesNotLeakRawChunkWhenEventStrea
 			},
 		},
 	})
-	contentBlockStopPayload := mustMarshalJSON(t, map[string]any{
-		"contentBlockIndex": 0,
-		"contentBlockStop":  map[string]any{},
-	})
 	textPayload := mustMarshalJSON(t, map[string]any{
 		"contentBlockIndex": 1,
 		"delta": map[string]any{
@@ -286,10 +282,14 @@ func TestOnBedrockConverseStreamingResponseBodyDoesNotLeakRawChunkWhenEventStrea
 		},
 	})
 
-	reasoningTextFrame := encodeAmazonEventStreamMessage(t, reasoningTextPayload)
-	signatureFrame := encodeAmazonEventStreamMessage(t, signaturePayload)
-	contentBlockStopFrame := encodeAmazonEventStreamMessage(t, contentBlockStopPayload)
-	textFrame := encodeAmazonEventStreamMessage(t, textPayload)
+	reasoningTextFrame := encodeAmazonEventStreamMessage(t, "contentBlockDelta", reasoningTextPayload)
+	signatureFrame := encodeAmazonEventStreamMessage(t, "contentBlockDelta", signaturePayload)
+	contentBlockStopFrame := encodeAmazonEventStreamMessage(t, "contentBlockStop", nil)
+	textFrame := encodeAmazonEventStreamMessage(t, "contentBlockDelta", textPayload)
+
+	contentBlockStopMsg, err := decodeMessage(bytes.NewReader(contentBlockStopFrame), make([]byte, 1024))
+	assert.NoError(t, err)
+	t.Logf("contentBlockStop chunk \nheaders=%#v \npayload=%q", contentBlockStopMsg.Headers, contentBlockStopMsg.Payload)
 
 	_, decodeErr := decodeMessage(bytes.NewReader(reasoningTextFrame), make([]byte, 1024))
 	assert.NoError(t, decodeErr)
@@ -408,11 +408,11 @@ func mustMarshalJSON(t *testing.T, value any) []byte {
 	return out
 }
 
-func encodeAmazonEventStreamMessage(t *testing.T, payload []byte) []byte {
+func encodeAmazonEventStreamMessage(t *testing.T, eventType string, payload []byte) []byte {
 	t.Helper()
 
 	headers := encodeAmazonEventStreamHeaders(t, map[string]string{
-		":event-type":   "contentBlockDelta",
+		":event-type":   eventType,
 		":content-type": "application/json",
 		":message-type": "event",
 	})
