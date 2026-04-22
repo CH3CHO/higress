@@ -152,6 +152,43 @@ func TestDecodeBedrockAnthropicStreamPayload(t *testing.T) {
 	assert.JSONEq(t, inner, string(decoded))
 }
 
+func TestDecodeAmazonEventStreamMessageSeparatesHeadersAndPayload(t *testing.T) {
+	payload := mustMarshalJSON(t, map[string]any{
+		"contentBlockIndex": 0,
+		"p":                 "abcdefghijklmnopqrstuvwxyzABCDEFG",
+	})
+	frame := encodeAmazonEventStreamMessage(t, "contentBlockDelta", payload)
+
+	msg, err := decodeMessage(bytes.NewReader(frame), make([]byte, 1024))
+	assert.NoError(t, err)
+
+	headerMap := make(map[string]string, len(msg.Headers))
+	for _, h := range msg.Headers {
+		headerMap[h.Name] = h.Value.Get().(string)
+	}
+	t.Logf("headers=%#v", headerMap)
+	t.Logf("payload=%s", string(msg.Payload))
+
+	var payloadMap map[string]any
+	err = json.Unmarshal(msg.Payload, &payloadMap)
+	assert.NoError(t, err)
+	t.Logf("payload_map=%#v", payloadMap)
+
+	ctx := newMockBedrockHTTPContext()
+	events := extractAmazonEventStreamEvents(ctx, frame)
+	t.Logf("events=%#v", events)
+
+	assert.Equal(t, "contentBlockDelta", headerMap[":event-type"])
+	assert.Equal(t, "application/json", headerMap[":content-type"])
+	assert.Equal(t, "event", headerMap[":message-type"])
+	assert.JSONEq(t, string(payload), string(msg.Payload))
+	assert.Equal(t, float64(0), payloadMap["contentBlockIndex"])
+	assert.Equal(t, "abcdefghijklmnopqrstuvwxyzABCDEFG", payloadMap["p"])
+	assert.Len(t, events, 1)
+	assert.Equal(t, 0, events[0].ContentBlockIndex)
+	assert.Nil(t, events[0].Delta)
+}
+
 func TestOnAnthropicMessagesRequestBodyKeepsNativePathForSupportedModel(t *testing.T) {
 	ctx := newMockBedrockHTTPContext()
 	headers := http.Header{}
@@ -351,25 +388,6 @@ func TestOnBedrockConverseStreamingResponseBodyEmitsDoneOnLastChunkWithBufferedF
 	out, err := provider.onBedrockConverseStreamingResponseBody(ctx, ApiNameChatCompletion, nil, true)
 	assert.NoError(t, err)
 	assert.Equal(t, "data: [DONE]\n\n", string(out))
-}
-
-func TestConvertEventFromBedrockToOpenAISkipsNoopEvents(t *testing.T) {
-	ctx := newMockBedrockHTTPContext()
-	ctx.SetContext(requestIdHeader, "req-1")
-	ctx.SetContext(ctxKeyFinalRequestModel, "amazon.nova-lite-v1:0")
-	provider := &bedrockProvider{}
-
-	testCases := []ConverseStreamEvent{
-		{ContentBlockIndex: 0},
-		{Start: &bedrock.ContentBlockStartEvent{}},
-		{Delta: &bedrock.ContentBlockDeltaEvent{}},
-	}
-
-	for _, event := range testCases {
-		out, err := provider.convertEventFromBedrockToOpenAI(ctx, ApiNameChatCompletion, event)
-		assert.NoError(t, err)
-		assert.Equal(t, []byte(""), out)
-	}
 }
 
 func extractFirstToolCallIndexFromSSE(t *testing.T, sse []byte) int {

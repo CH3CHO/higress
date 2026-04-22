@@ -15,7 +15,6 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"reflect"
 	"strconv"
 	"strings"
 	"time"
@@ -223,9 +222,6 @@ func (b *bedrockProvider) convertEventFromBedrockToOpenAI(ctx wrapper.HttpContex
 	if bedrockEvent.StopReason != nil {
 		chatChoice.FinishReason = util.Ptr(util.MapFinishReason(*bedrockEvent.StopReason))
 	}
-	if bedrockEvent.Usage == nil && !hasVisibleBedrockStreamingChoice(chatChoice) {
-		return []byte(""), nil
-	}
 	choices = append(choices, *chatChoice)
 	requestId := ctx.GetStringContext(requestIdHeader, "")
 	openAIFormattedChunk := &chatCompletionResponse{
@@ -262,48 +258,6 @@ func (b *bedrockProvider) convertEventFromBedrockToOpenAI(ctx wrapper.HttpContex
 	openAIChunk.WriteString(chunkData)
 	openAIChunk.WriteString("\n\n")
 	return []byte(openAIChunk.String()), nil
-}
-
-func hasVisibleBedrockStreamingChoice(choice *chatCompletionChoice) bool {
-	if choice == nil {
-		return false
-	}
-	if choice.FinishReason != nil {
-		return true
-	}
-	return hasVisibleBedrockStreamingMessage(choice.Delta)
-}
-
-func hasVisibleBedrockStreamingMessage(message *chatMessage) bool {
-	if message == nil {
-		return false
-	}
-	if message.Id != "" || message.Name != "" || message.Role != "" || message.ReasoningContent != "" ||
-		message.Reasoning != "" || message.Refusal != "" || message.ToolCallId != "" {
-		return true
-	}
-	if len(message.Audio) != 0 || len(message.ToolCalls) != 0 || message.FunctionCall != nil ||
-		len(message.ThinkingBlocks) != 0 || len(message.ProviderSpecificFields) != 0 || message.CacheControl != nil {
-		return true
-	}
-	return hasVisibleBedrockStreamingContent(message.Content)
-}
-
-func hasVisibleBedrockStreamingContent(content any) bool {
-	if content == nil {
-		return false
-	}
-	value := reflect.ValueOf(content)
-	switch value.Kind() {
-	case reflect.String:
-		return value.Len() != 0
-	case reflect.Slice, reflect.Array, reflect.Map:
-		return value.Len() != 0
-	case reflect.Pointer, reflect.Interface:
-		return !value.IsNil()
-	default:
-		return true
-	}
 }
 
 func fillBedrockDeltaReasoningContentToChoice(choice *chatCompletionChoice, reasoningContent *bedrock.ConverseReasoningContentBlockDelta) {
