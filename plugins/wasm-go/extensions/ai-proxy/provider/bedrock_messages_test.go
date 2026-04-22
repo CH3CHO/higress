@@ -241,12 +241,31 @@ func TestOnBedrockConverseStreamingResponseBodyDoesNotEmitDoneForIncompleteChunk
 	ctx := newMockBedrockHTTPContext()
 	provider := &bedrockProvider{}
 
-	out, err := provider.onBedrockConverseStreamingResponseBody(ctx, ApiNameChatCompletion, []byte("partial-eventstream-frame"))
+	out, err := provider.onBedrockConverseStreamingResponseBody(ctx, ApiNameChatCompletion, []byte("partial-eventstream-frame"), false)
 	assert.NoError(t, err)
 	assert.Equal(t, []byte(""), out)
 
 	buffered, _ := ctx.GetContext(ctxKeyStreamingBody).([]byte)
 	assert.Equal(t, []byte("partial-eventstream-frame"), buffered)
+}
+
+func TestOnBedrockConverseStreamingResponseBodyEmitsDoneOnLastChunkWithoutBufferedFrame(t *testing.T) {
+	ctx := newMockBedrockHTTPContext()
+	provider := &bedrockProvider{}
+
+	out, err := provider.onBedrockConverseStreamingResponseBody(ctx, ApiNameChatCompletion, nil, true)
+	assert.NoError(t, err)
+	assert.Equal(t, "data: [DONE]\n\n", string(out))
+}
+
+func TestOnBedrockConverseStreamingResponseBodyDoesNotEmitDoneOnLastChunkWithBufferedFrame(t *testing.T) {
+	ctx := newMockBedrockHTTPContext()
+	ctx.SetContext(ctxKeyStreamingBody, []byte("partial-eventstream-frame"))
+	provider := &bedrockProvider{}
+
+	out, err := provider.onBedrockConverseStreamingResponseBody(ctx, ApiNameChatCompletion, nil, true)
+	assert.NoError(t, err)
+	assert.Equal(t, []byte(""), out)
 }
 
 func TestConvertEventFromBedrockToOpenAISkipsNoopEvents(t *testing.T) {

@@ -94,19 +94,24 @@ func (b *bedrockProvider) OnStreamingResponseBody(ctx wrapper.HttpContext, apiNa
 	case ApiNameAnthropicMessages:
 		return b.onAnthropicMessagesStreamingResponseBody(ctx, chunk, isLastChunk)
 	case ApiNameChatCompletion, ApiNameCompletion:
-		return b.onBedrockConverseStreamingResponseBody(ctx, apiName, chunk)
+		return b.onBedrockConverseStreamingResponseBody(ctx, apiName, chunk, isLastChunk)
 	default:
 		return chunk, nil
 	}
 }
 
-func (b *bedrockProvider) onBedrockConverseStreamingResponseBody(ctx wrapper.HttpContext, apiName ApiName, chunk []byte) ([]byte, error) {
+func (b *bedrockProvider) onBedrockConverseStreamingResponseBody(ctx wrapper.HttpContext, apiName ApiName, chunk []byte, isLastChunk bool) ([]byte, error) {
 	var responseBuilder strings.Builder
 	events := extractAmazonEventStreamEvents(ctx, chunk)
 	if len(events) == 0 {
 		// No decoded events does not mean the upstream stream is finished.
 		// This commonly happens when the current eventstream frame is incomplete
 		// and has been buffered into ctxKeyStreamingBody waiting for the next chunk.
+		if isLastChunk && !hasBufferedBedrockStreamingBody(ctx) {
+			doneEvent := StreamEvent{Data: streamEndDataValue}
+			responseBuilder.WriteString(doneEvent.ToHttpString())
+			return []byte(responseBuilder.String()), nil
+		}
 		return []byte(""), nil
 	}
 
@@ -118,7 +123,16 @@ func (b *bedrockProvider) onBedrockConverseStreamingResponseBody(ctx wrapper.Htt
 		}
 		responseBuilder.WriteString(string(outputEvent))
 	}
+	if isLastChunk && !hasBufferedBedrockStreamingBody(ctx) {
+		doneEvent := StreamEvent{Data: streamEndDataValue}
+		responseBuilder.WriteString(doneEvent.ToHttpString())
+	}
 	return []byte(responseBuilder.String()), nil
+}
+
+func hasBufferedBedrockStreamingBody(ctx wrapper.HttpContext) bool {
+	bufferedStreamingBody, _ := ctx.GetContext(ctxKeyStreamingBody).([]byte)
+	return len(bufferedStreamingBody) != 0
 }
 
 func (b *bedrockProvider) onAnthropicMessagesStreamingResponseBody(ctx wrapper.HttpContext, chunk []byte, isLastChunk bool) ([]byte, error) {
