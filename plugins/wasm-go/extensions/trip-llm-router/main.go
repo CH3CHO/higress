@@ -27,6 +27,11 @@ const (
 	fallbackHeaderName  = "x-trip-llm-fallback"
 	fallbackHeaderValue = "1"
 
+	fallbackEnabledGlobalKey                = "fallback.enabled"
+	fallbackEnabledByConsumerKeyFormat      = "fallback.enabled.%s"
+	fallbackEnabledByConsumerModelKeyFormat = "fallback.enabled.%s.%s"
+	fallbackEnabledDefaultValue             = true
+
 	originalRequestPathKeyword = "/raw/"
 
 	matchedRouteConfigKey = "routeConfig"
@@ -234,6 +239,12 @@ func executeRoute(ctx wrapper.HttpContext, pluginConfig *PluginConfig, consumerI
 			statusCodeDetails: "trip-llm-router.unexpected-fallback",
 			message:           "Fallback is not enabled for the request",
 		}
+	} else if !isFallbackEnabled(ctx, consumerId, model) {
+		return httpResponseError{
+			statusCode:        400,
+			statusCodeDetails: "trip-llm-router.fallback-disabled",
+			message:           "Fallback is disabled by configuration",
+		}
 	} else {
 		targetService = routeConfig.Fallback.SelectFallbackService()
 		routeId = routeId + ".fallback"
@@ -365,7 +376,9 @@ func onHttpResponseHeaders(ctx wrapper.HttpContext, config PluginConfig) types.A
 		}
 	}
 
-	if routeConfig.Fallback != nil && routeConfig.Fallback.ShallFallback(status) {
+	consumerId := ctx.GetStringContext(consumerIdKey, "")
+	model, _ := proxywasm.GetHttpRequestHeader(modelHeaderName)
+	if routeConfig.Fallback != nil && routeConfig.Fallback.ShallFallback(status) && isFallbackEnabled(ctx, consumerId, model) {
 		_ = proxywasm.ReplaceHttpResponseHeader(fallbackHeaderName, fallbackHeaderValue)
 	}
 
@@ -383,6 +396,26 @@ func shallProcessRequest(ctx wrapper.HttpContext, config *PluginConfig) bool {
 		}
 	}
 	return false
+}
+
+func isFallbackEnabled(ctx wrapper.HttpContext, consumerId, model string) bool {
+	var enabledKeys []string
+	if consumerId != "" && model != "" {
+		enabledKeys = append(enabledKeys, fmt.Sprintf(fallbackEnabledByConsumerModelKeyFormat, consumerId, model))
+	}
+	if consumerId != "" {
+		enabledKeys = append(enabledKeys, fmt.Sprintf(fallbackEnabledByConsumerKeyFormat, consumerId))
+	}
+	enabledKeys = append(enabledKeys, fallbackEnabledGlobalKey)
+
+	for _, key := range enabledKeys {
+		if enabled, ok := ctx.GetGlobalConfig(key).(bool); ok {
+			log.Debugf("got fallback enabled value from global config with key %s: %t", key, enabled)
+			return enabled
+		}
+	}
+
+	return fallbackEnabledDefaultValue
 }
 
 func sendErrorResponse(statusCode uint32, statusCodeDetails, message string) error {
