@@ -2,6 +2,7 @@
 *.cmd
 *.ps1
 *.sh
+!wasm-go/scripts/*.sh
 *.wasm
 **/out
 **/test
