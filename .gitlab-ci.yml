@@ -1,0 +1,48 @@
+stages:
+  - detect
+  - trigger
+
+variables:
+  REGISTRY: hub.cloud.ctripcorp.com/plugins/
+  BUILDER_REGISTRY: hub.cloud.ctripcorp.com/plugins/
+  GO_VERSION: "1.24.4"
+  ORAS_VERSION: "1.0.0"
+  GOPROXY: "http://goproxy.release.ctripcorp.com,https://trip-reader:$ARTIFACTORY_GOLANG_TOKEN@artifactory.release.ctripcorp.com/artifactory/api/go/trip-golang-prod"
+  GONOSUMDB: git.dev.sh.ctripcorp.com
+  DOCKER_HOST: tcp://docker:2375
+  DOCKER_TLS_CERTDIR: ""
+  PLUGIN_SERVER_REPO: "git.dev.sh.ctripcorp.com/framework/ai-gateway-plugin-server.git"
+  PLUGIN_SERVER_DEFAULT_BRANCH: "trip"
+
+# Required CI/CD variables (configure as masked in project settings):
+#   CI_HUB_USERNAME / CI_HUB_PASSWORD      - image registry credentials
+#   ARTIFACTORY_GOLANG_TOKEN               - Artifactory Go proxy token
+#   GIT_USERNAME_PLUGIN_SERVER             - username for pushing to ai-gateway-plugin-server
+#   GIT_EMAIL_PLUGIN_SERVER                - committer email for ai-gateway-plugin-server
+#   GIT_TOKEN_PLUGIN_SERVER                - token for pushing to ai-gateway-plugin-server and calling GitLab API
+
+detect-changes:
+  stage: detect
+  image: hub.cloud.ctripcorp.com/devops/almalinux-golang1.24:latest
+  variables:
+    GIT_DEPTH: "0"
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+    - if: '$CI_COMMIT_BRANCH == "dev" || $CI_COMMIT_BRANCH == "trip"'
+  script:
+    - cd plugins/wasm-go && bash scripts/detect-changed-plugins.sh
+  artifacts:
+    paths:
+      - plugins/wasm-go/child-pipeline.yml
+
+trigger-build:
+  stage: trigger
+  resource_group: wasm-pipeline
+  trigger:
+    include:
+      - artifact: plugins/wasm-go/child-pipeline.yml
+        job: detect-changes
+    strategy: depend
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+    - if: '$CI_COMMIT_BRANCH == "dev" || $CI_COMMIT_BRANCH == "trip"'
