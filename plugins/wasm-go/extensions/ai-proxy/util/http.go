@@ -218,3 +218,11 @@ func ReplaceResponseHeaders(headers http.Header) {
 	headerSlice := HeaderToSlice(headers)
 	_ = proxywasm.ReplaceHttpResponseHeaders(headerSlice)
 }
+
+func GetRequestID() string {
+	if requestID, err := proxywasm.GetProperty([]string{"request", "id"}); err != nil {
+		return "unknown"
+	} else {
+		return string(requestID)
+	}
+}
