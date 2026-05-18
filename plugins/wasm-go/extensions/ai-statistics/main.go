@@ -37,10 +37,11 @@ func init() {
 type ApiName string
 
 const (
-	ApiNameUndetermined    ApiName = "undetermined"
-	ApiNameChatCompletions         = "chat_completions"
-	ApiNameCompletions             = "completions"
-	ApiNameAnthropicMessages       = "anthropic_messages"
+	ApiNameUndetermined      ApiName = "undetermined"
+	ApiNameChatCompletions           = "chat_completions"
+	ApiNameCompletions               = "completions"
+	ApiNameResponses                 = "responses"
+	ApiNameAnthropicMessages         = "anthropic_messages"
 )
 
 const (
@@ -69,6 +70,7 @@ const (
 	// AI API Paths
 	PathOpenAIChatCompletions       = "/chat/completions"
 	PathOpenAICompletions           = "/completions"
+	PathOpenAIResponses             = "/responses"
 	PathAnthropicMessages           = "/messages"
 	PathOpenAIEmbeddings            = "/embeddings"
 	PathOpenAIModels                = "/models"
@@ -172,6 +174,7 @@ type Attribute struct {
 var (
 	defaultEnablePathSuffixes = []string{
 		"/completions",
+		PathOpenAIResponses,
 		PathAnthropicMessages,
 		"/embeddings",
 		"/images/generations",
@@ -417,6 +420,8 @@ func onHttpRequestHeaders(ctx wrapper.HttpContext, config AIStatisticsConfig) ty
 		apiName = ApiNameChatCompletions
 	} else if strings.HasSuffix(requestPath, PathOpenAICompletions) {
 		apiName = ApiNameCompletions
+	} else if strings.HasSuffix(requestPath, PathOpenAIResponses) {
+		apiName = ApiNameResponses
 	} else if strings.HasSuffix(requestPath, PathAnthropicMessages) {
 		apiName = ApiNameAnthropicMessages
 	}
@@ -884,10 +889,12 @@ func getResponseBodyToLog(ctx wrapper.HttpContext, body []byte, config *AIStatis
 	}
 
 	apiName, _ := ctx.GetContext(RequestApiName).(ApiName)
-	log.Debugf("response body length %d exceeds limit %d, start redacting for api %s", len(body), config.requestBodyLengthLimit, apiName)
+	log.Debugf("response body length %d exceeds limit %d, start redacting for api %s", len(body), config.responseBodyLengthLimit, apiName)
 	switch apiName {
 	case ApiNameChatCompletions, ApiNameCompletions:
 		return getResponseBodyToLogForCompletions(body, responseBodyLengthLimit)
+	case ApiNameResponses:
+		return compactResponsesBodyForLog(string(body), responseBodyLengthLimit)
 	case ApiNameAnthropicMessages:
 		return getResponseBodyToLogForAnthropicMessages(body, responseBodyLengthLimit)
 	default:
@@ -1037,6 +1044,8 @@ func setResponseType(ctx wrapper.HttpContext, responseType string, overwrite boo
 // fetches the tracing span value from the specified source.
 
 func setAttributeBySource(ctx wrapper.HttpContext, config AIStatisticsConfig, source string, body []byte, streamEvents []StreamEvent) {
+	apiName, _ := ctx.GetContext(RequestApiName).(ApiName)
+
 	if source == ResponseStreamingBody {
 		logRawResponseBody := ctx.GetBoolContext(LogRawResponseBody, false)
 
@@ -1074,7 +1083,7 @@ func setAttributeBySource(ctx wrapper.HttpContext, config AIStatisticsConfig, so
 			case ResponseHeader:
 				value, _ = proxywasm.GetHttpResponseHeader(attribute.Value)
 			case ResponseStreamingBody:
-				value = extractStreamingBodyByJsonPath(streamEvents, attribute.Value, attribute.Rule, ctx.GetUserAttribute(key))
+				value = extractStreamingBodyValueForAttribute(apiName, attribute, streamEvents, ctx.GetUserAttribute(key))
 			case ResponseBody:
 				value = gjson.GetBytes(body, attribute.Value).Value()
 			default:
@@ -1152,6 +1161,10 @@ func combineStreamingEventsForLog(ctx wrapper.HttpContext, config *AIStatisticsC
 		combineAnthropicStreamingEventsForLog(ctx, config, events)
 		return
 	}
+	if apiName == ApiNameResponses {
+		aggregateResponsesStreamingEventsForLog(ctx, config, events)
+		return
+	}
 
 	responseBody, _ := ctx.GetUserAttribute(ResponseBody).(string)
 
@@ -1205,6 +1218,302 @@ func combineAnthropicStreamingEventsForLog(ctx wrapper.HttpContext, config *AISt
 	}
 
 	ctx.SetUserAttribute(ResponseBody, responseBody)
+}
+
+// aggregateResponsesStreamingEventsForLog 会把一批 Responses SSE event
+// 折叠成用于最终日志的 ResponseBody。
+// 目标是尽量还原成非流式 /v1/responses 的 body 形态，方便最终
+// ai_log.response_body 保留一份可读的聚合结果。
+func aggregateResponsesStreamingEventsForLog(ctx wrapper.HttpContext, config *AIStatisticsConfig, events []StreamEvent) {
+	responseBody, _ := ctx.GetUserAttribute(ResponseBody).(string)
+
+	for _, event := range events {
+		responseBody = applyResponsesStreamingEventForLog(responseBody, &event)
+	}
+
+	if responseBody == "" {
+		return
+	}
+
+	responseBody = compactResponsesBodyForLog(responseBody, config.responseBodyLengthLimit)
+	ctx.SetUserAttribute(ResponseBody, responseBody)
+}
+
+// applyResponsesStreamingEventForLog 会把一个 Responses SSE event 应用到
+// 当前聚合中的 body 上。这里不只是“追加”：
+// - delta 类 event 会追加 text / arguments
+// - added/done 类 event 会设置结构化字段
+// - created/in_progress 类 event 会合并顶层元数据
+// - completed/failed/incomplete 类 event 可能直接用最终 response 整体覆盖
+func applyResponsesStreamingEventForLog(body string, event *StreamEvent) string {
+	if event == nil || event.Data == "" {
+		return body
+	}
+
+	data := gjson.Parse(event.Data)
+	if !data.Exists() || !data.IsObject() {
+		return body
+	}
+
+	eventType := data.Get("type").String()
+	if eventType == "" {
+		eventType = event.Event
+	}
+
+	switch eventType {
+	case "response.created", "response.in_progress":
+		body = mergeResponsesRootForLog(body, data.Get("response"))
+	case "response.output_item.added", "response.output_item.done":
+		body = setJSONRawField(body, fmt.Sprintf("output.%d", int(data.Get("output_index").Int())), firstExistingResult(data, "item", "output_item"))
+	case "response.content_part.added", "response.content_part.done":
+		body = setJSONRawField(body, fmt.Sprintf("output.%d.content.%d", int(data.Get("output_index").Int()), int(data.Get("content_index").Int())), firstExistingResult(data, "part", "content_part"))
+	case "response.output_text.delta":
+		body = updateResponsesOutputTextForLog(body, data, true)
+	case "response.output_text.done":
+		body = updateResponsesOutputTextForLog(body, data, false)
+	case "response.function_call_arguments.delta":
+		body = updateResponsesFunctionCallArgumentsForLog(body, data, true)
+	case "response.function_call_arguments.done":
+		body = updateResponsesFunctionCallArgumentsForLog(body, data, false)
+	case "response.completed", "response.failed", "response.incomplete":
+		if response := data.Get("response"); response.Exists() && response.IsObject() {
+			body = response.Raw
+		}
+	default:
+		if response := data.Get("response"); response.Exists() && response.IsObject() {
+			body = mergeResponsesRootForLog(body, response)
+		}
+	}
+
+	return body
+}
+
+// mergeResponsesRootForLog 只合并顶层稳定字段。
+// 这些字段即使后续为了日志长度做压缩，也应该尽量保留下来。
+func mergeResponsesRootForLog(body string, response gjson.Result) string {
+	if !response.Exists() || !response.IsObject() {
+		return body
+	}
+
+	for _, field := range []string{"id", "object", "created_at", "completed_at", "status", "background", "error", "incomplete_details", "model"} {
+		body = setJSONRawField(body, field, response.Get(field))
+	}
+	body = setJSONRawField(body, "usage", response.Get("usage"))
+
+	return body
+}
+
+func updateResponsesOutputTextForLog(body string, data gjson.Result, appendDelta bool) string {
+	outputIndex := int(data.Get("output_index").Int())
+	contentIndex := int(data.Get("content_index").Int())
+	contentPath := fmt.Sprintf("output.%d.content.%d", outputIndex, contentIndex)
+
+	body = setJSONFieldIfAbsent(body, contentPath+".type", "output_text")
+
+	text := data.Get("text").String()
+	if appendDelta {
+		text = gjson.Get(body, contentPath+".text").String() + data.Get("delta").String()
+	}
+	if text == "" && !appendDelta {
+		return body
+	}
+	return setJSONStringField(body, contentPath+".text", text)
+}
+
+func updateResponsesFunctionCallArgumentsForLog(body string, data gjson.Result, appendDelta bool) string {
+	outputIndex := int(data.Get("output_index").Int())
+	outputPath := fmt.Sprintf("output.%d", outputIndex)
+
+	body = setJSONFieldIfAbsent(body, outputPath+".type", "function_call")
+	body = setJSONRawField(body, outputPath+".id", data.Get("item_id"))
+	body = setJSONRawField(body, outputPath+".call_id", data.Get("call_id"))
+	body = setJSONRawField(body, outputPath+".name", data.Get("name"))
+
+	args := data.Get("arguments")
+	if appendDelta || !args.Exists() {
+		args = data.Get("delta")
+	}
+	if !args.Exists() {
+		return body
+	}
+
+	value := args.String()
+	if appendDelta {
+		value = gjson.Get(body, outputPath+".arguments").String() + value
+	}
+	return setJSONStringField(body, outputPath+".arguments", value)
+}
+
+// compactResponsesBodyForLog 会在裁剪超长 output 的同时保留根字段和 usage。
+// 这里改成“按预算渐进构建摘要”：
+// 先稳定保留根字段，再按剩余长度预算尽量追加 output，避免反复重建整段 JSON。
+func compactResponsesBodyForLog(body string, limit int) string {
+	if limit <= 0 || len(body) <= limit {
+		return body
+	}
+
+	response := gjson.Parse(body)
+	if !response.Exists() || !response.IsObject() {
+		return bodyToLongPlaceholder
+	}
+
+	if summary := buildResponsesSummaryForLog(response, limit); summary != "" && len(summary) <= limit {
+		return summary
+	}
+
+	return bodyToLongPlaceholder
+}
+
+// buildResponsesSummaryForLog 会先构造固定根字段，再按剩余 budget 逐步补 output。
+// 这样只需要构造一次根摘要，后续是否保留 output 由剩余预算决定。
+func buildResponsesSummaryForLog(response gjson.Result, limit int) string {
+	summaryBuilder := newJSONObjectBuilder()
+	for _, field := range []string{"id", "object", "created_at", "completed_at", "status", "background", "error", "incomplete_details", "model"} {
+		summaryBuilder.AddResultField(field, response.Get(field))
+	}
+	summaryBuilder.AddResultField("usage", response.Get("usage"))
+	summaryBuilder.AddRawField("output_truncated", "true")
+
+	summary := summaryBuilder.String()
+	if len(summary) > limit {
+		return ""
+	}
+
+	output := response.Get("output")
+	if !output.Exists() || !output.IsArray() {
+		return summary
+	}
+
+	remainingBudget := limit - len(summary) - len(`,"output":`)
+	if remainingBudget < 2 {
+		return summary
+	}
+
+	outputSummary := buildJSONArrayForLog(output.Array(), remainingBudget, buildResponsesOutputItemForLog)
+	if outputSummary == "" {
+		return summary
+	}
+
+	return summary[:len(summary)-1] + `,"output":` + outputSummary + `}`
+}
+
+// buildResponsesOutputItemForLog 会优先保留 output item 的稳定元数据，
+// 再用剩余预算尽量补 arguments 和 content。
+func buildResponsesOutputItemForLog(item gjson.Result, budget int) string {
+	if !item.Exists() || !item.IsObject() {
+		return ""
+	}
+
+	summaryBuilder := newJSONObjectBuilder()
+	for _, field := range []string{"id", "type", "status", "role", "phase", "call_id", "name"} {
+		summaryBuilder.AddResultFieldIfFits(field, item.Get(field), budget)
+	}
+
+	appendTruncatedJSONResultFieldForLog(summaryBuilder, "arguments", item.Get("arguments"), budget)
+
+	content := item.Get("content")
+	if content.Exists() && content.IsArray() {
+		contentSummary := buildJSONArrayForLog(content.Array(), summaryBuilder.ExtraValueCapacity("content", budget), buildResponsesContentPartForLog)
+		if contentSummary != "" {
+			summaryBuilder.AddRawField("content", contentSummary)
+		}
+	}
+
+	if !summaryBuilder.HasField() {
+		return ""
+	}
+
+	return summaryBuilder.String()
+}
+
+// buildJSONArrayForLog 负责在总 budget 内尽量多保留数组元素。
+// 每个元素的具体摘要策略由 buildItem 控制；一旦下一个元素放不下就停止追加。
+func buildJSONArrayForLog(items []gjson.Result, budget int, buildItem func(gjson.Result, int) string) string {
+	if budget < 2 || len(items) == 0 {
+		return ""
+	}
+
+	builder := newJSONArrayBuilder()
+	for _, item := range items {
+		if !item.Exists() || !item.IsObject() {
+			continue
+		}
+
+		itemSummary := buildItem(item, builder.ExtraValueCapacity(budget))
+		if itemSummary == "" {
+			break
+		}
+		builder.AddRawValue(itemSummary)
+	}
+
+	if !builder.HasValue() {
+		return ""
+	}
+
+	return builder.String()
+}
+
+func buildResponsesContentPartForLog(part gjson.Result, budget int) string {
+	if !part.Exists() || !part.IsObject() {
+		return ""
+	}
+
+	summaryBuilder := newJSONObjectBuilder()
+	summaryBuilder.AddResultFieldIfFits("type", part.Get("type"), budget)
+	if !summaryBuilder.HasField() {
+		return ""
+	}
+
+	for _, field := range []string{"text", "refusal"} {
+		appendTruncatedJSONResultFieldForLog(summaryBuilder, field, part.Get(field), budget)
+	}
+
+	return summaryBuilder.String()
+}
+
+func setJSONRawField(body string, path string, value gjson.Result) string {
+	if !value.Exists() {
+		return body
+	}
+	if newBody, err := sjson.SetRaw(body, path, value.Raw); err == nil {
+		return newBody
+	}
+	return body
+}
+
+func firstExistingResult(data gjson.Result, paths ...string) gjson.Result {
+	for _, path := range paths {
+		value := data.Get(path)
+		if value.Exists() {
+			return value
+		}
+	}
+	return gjson.Result{}
+}
+
+func setJSONStringField(body string, path string, value string) string {
+	if newBody, err := sjson.Set(body, path, value); err == nil {
+		return newBody
+	}
+	return body
+}
+
+// setJSONFieldIfAbsent 只在字段缺失时写入给定值，不会覆盖已有值。
+func setJSONFieldIfAbsent(body string, path string, value interface{}) string {
+	if gjson.Get(body, path).Exists() {
+		return body
+	}
+	if newBody, err := sjson.Set(body, path, value); err == nil {
+		return newBody
+	}
+	return body
+}
+
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 func combineAnthropicStreamingEventForLog(body string, event *StreamEvent) string {
@@ -1360,6 +1669,37 @@ func combineStreamingStringField(body string, bodyFieldPath string, json *gjson.
 		log.Errorf("failed to combine streaming value for log at key %s: %v", bodyFieldPath, err)
 	}
 	return body
+}
+
+// extractStreamingBodyValueForAttribute 统一处理从 SSE event 视图提 attribute。
+// /v1/responses 的内建 usage 需要优先看 response.usage，因为最终 usage
+// 常挂在 completed/failed/incomplete 事件里的 response 字段下。
+func extractStreamingBodyValueForAttribute(apiName ApiName, attribute Attribute, streamEvents []StreamEvent, currentValue interface{}) interface{} {
+	if isResponsesBuiltInStreamingUsageAttribute(apiName, attribute) {
+		if usage := extractLatestStreamingResultByJsonPath(streamEvents, "response.usage"); usage.Exists() {
+			return usage.Value()
+		}
+	}
+
+	return extractStreamingBodyByJsonPath(streamEvents, attribute.Value, attribute.Rule, currentValue)
+}
+
+func isResponsesBuiltInStreamingUsageAttribute(apiName ApiName, attribute Attribute) bool {
+	return apiName == ApiNameResponses &&
+		attribute.Key == Usage &&
+		attribute.ValueSource == ResponseStreamingBody &&
+		attribute.Value == "usage" &&
+		attribute.Rule == RuleReplace
+}
+
+func extractLatestStreamingResultByJsonPath(events []StreamEvent, jsonPath string) gjson.Result {
+	for i := len(events) - 1; i >= 0; i-- {
+		result := gjson.Get(events[i].Data, jsonPath)
+		if result.Exists() && result.Type != gjson.Null {
+			return result
+		}
+	}
+	return gjson.Result{}
 }
 
 func extractStreamingBodyByJsonPath(events []StreamEvent, jsonPath string, rule string, currentValue interface{}) interface{} {

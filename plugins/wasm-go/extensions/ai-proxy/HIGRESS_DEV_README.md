@@ -5,21 +5,39 @@
 - 本地构建 `ai-proxy` wasm
 - 在 kind + Higress 中加载本地 wasm
 - 绑定本地 `8080` 端口
-- 配置 Bedrock 本地路由
+- 配置 Bedrock / OpenAI 本地路由
 - 查看 Higress / wasm 日志
 - 用 `curl` 验证普通调用、`cache_control`、fine-grained tool streaming
 - 补充 standalone Envoy 的本地 `local/` 配置写法
 
 这份文档优先推荐 **Higress 本地链路**。当前推荐把 Higress 本地资源直接维护在 `local/` 目录下：
 
+- `local/mcpbridge-local.yaml`
 - `local/ingress-bedrock-local.yaml`
+- `local/ingress-openai-local.yaml`
 - `local/wasmplugin-ai-proxy-local.yaml`
 
 `local/` 目录下的 Envoy 配置仅作为 standalone Envoy 的可选补充，不参与 Higress 启动。
 
 ## 快速开始
 
+先确认你操作的是哪套集群。本文档默认使用 `kind create cluster --name higress` 创建出来的 `kind-higress`，不是 OrbStack 内建 Kubernetes：
+
+```bash
+kubectl config current-context
+kubectl get nodes -o wide
+```
+
+预期至少满足两点：
+
+- 当前 context 是 `kind-higress`
+- 节点名里能看到 `higress-control-plane`
+
+如果你看到的是 `orbstack` 之类的 context，说明你当前连的是 OrbStack 内建集群。此时 `docker cp ... higress-control-plane:/opt/plugins/...` 改的是 kind 节点容器，但 `kubectl apply` 可能落到另一套集群，现象通常是“wasm 明明拷进去了，但 Higress 还是不生效”。
+
 如果你只想最快复现本地 Bedrock 调试，按下面顺序走：
+
+如果本机还没有可用的 `kind + Higress`，先跳到第 `4` 节完成安装，再回到这里继续。
 
 先设置通用变量：
 
@@ -27,6 +45,7 @@
 export AI_GATEWAY_REPO="<ai-gateway-repo>"
 export WASM_GO_DIR="$AI_GATEWAY_REPO/plugins/wasm-go"
 export AI_PROXY_DIR="$WASM_GO_DIR/extensions/ai-proxy"
+export AI_PROXY_LOCAL_DIR="$AI_PROXY_DIR/local"
 export WASM_OUT="$AI_PROXY_DIR/plugin.wasm"
 export KIND_NODE="<kind-node-container>"
 export WASM_BUILDER_IMAGE="higress-registry.cn-hangzhou.cr.aliyuncs.com/plugins/wasm-go-builder:go1.24.0-oras1.0.0"
@@ -55,11 +74,33 @@ docker cp "$WASM_OUT" \
 3. 应用本地 Higress 资源：
 
 ```bash
-kubectl apply -f "$AI_PROXY_DIR/local/ingress-bedrock-local.yaml"
-kubectl apply -f "$AI_PROXY_DIR/local/wasmplugin-ai-proxy-local.yaml"
+kubectl apply -f "$AI_PROXY_LOCAL_DIR/mcpbridge-local.yaml"
+kubectl apply -f "$AI_PROXY_LOCAL_DIR/ingress-bedrock-local.yaml"
+kubectl apply -f "$AI_PROXY_LOCAL_DIR/ingress-openai-local.yaml"
+kubectl apply -f "$AI_PROXY_LOCAL_DIR/wasmplugin-ai-proxy-local.yaml"
 ```
 
-推荐先把这两份文件按本地环境改成类似下面的结构：
+推荐先把这些文件按本地环境改成类似下面的结构：
+
+`local/mcpbridge-local.yaml`
+
+```yaml
+apiVersion: networking.higress.io/v1
+kind: McpBridge
+metadata:
+  name: default
+  namespace: higress-system
+spec:
+  registries:
+    - name: bedrock-runtime
+      type: dns
+      domain: bedrock-runtime.us-west-2.amazonaws.com
+      port: 443
+    - name: aigc-swedencentral.openai.azure.com
+      type: dns
+      domain: aigc-swedencentral.openai.azure.com
+      port: 443
+```
 
 `local/ingress-bedrock-local.yaml`
 
@@ -116,12 +157,21 @@ spec:
           modelMapping:
             claude-sonnet-4-5: global.anthropic.claude-sonnet-4-5-20250929-v1:0
             claude-sonnet-4-6: global.anthropic.claude-sonnet-4-6
+    - ingress:
+        - openai-local
+      config:
+        provider:
+          type: openai
+          apiTokens:
+            - "<OPENAI_API_TOKEN>"
+          openaiCustomUrl: "https://aigc-swedencentral.openai.azure.com/openai/v1"
 ```
 
 注意：
 
 - 文档里不放真实 token / secret，只保留占位符。
 - 真正生效的是集群里的 `WasmPlugin`，改完文件后要重新 `kubectl apply`。
+- `bedrock.local` 和 `openai.local` 都依赖 `McpBridge default`；如果没先 apply `local/mcpbridge-local.yaml`，路由链路不会闭合。
 - 这组 `modelMapping` 已在本地 Higress 上验证过 4 种组合：
   `claude-sonnet-4-5` 的 `/v1/messages`、`/v1/chat/completions`，
   以及 `claude-sonnet-4-6` 的 `/v1/messages`、`/v1/chat/completions`。
@@ -137,15 +187,17 @@ kubectl -n higress-system rollout status deployment/higress-gateway --timeout=18
 
 ```bash
 kubectl -n higress-system get mcpbridge
-kubectl -n higress-system get ingress bedrock-local
+kubectl -n higress-system get ingress bedrock-local openai-local
 kubectl -n higress-system get wasmplugin ai-proxy-local
 ```
 
 6. 本地绑定 `8080`：
 
 ```bash
-kubectl -n higress-system port-forward svc/higress-gateway 8080:80
+kubectl -n higress-system port-forward deployment/higress-gateway 8080:80
 ```
+
+如果 `8080` 已被旧的 `kubectl port-forward` 占用，可以先结束旧进程，或者改用 `18080:80`。
 
 7. 看日志：
 
@@ -197,6 +249,8 @@ docker version
 - 插件目录：`<ai-gateway-repo>/plugins/wasm-go/extensions/ai-proxy`
 - 本地 wasm 产物：`<ai-gateway-repo>/plugins/wasm-go/extensions/ai-proxy/plugin.wasm`
 - Higress 本地 Ingress 配置：`<ai-gateway-repo>/plugins/wasm-go/extensions/ai-proxy/local/ingress-bedrock-local.yaml`
+- Higress 本地 OpenAI Ingress 配置：`<ai-gateway-repo>/plugins/wasm-go/extensions/ai-proxy/local/ingress-openai-local.yaml`
+- Higress 本地 McpBridge 配置：`<ai-gateway-repo>/plugins/wasm-go/extensions/ai-proxy/local/mcpbridge-local.yaml`
 - Higress 本地 WasmPlugin 配置：`<ai-gateway-repo>/plugins/wasm-go/extensions/ai-proxy/local/wasmplugin-ai-proxy-local.yaml`
 - standalone Envoy 配置目录：`<ai-gateway-repo>/plugins/wasm-go/extensions/ai-proxy/local`
 - standalone Envoy 配置：`<ai-gateway-repo>/plugins/wasm-go/extensions/ai-proxy/local/envoy.local.yaml`
@@ -299,19 +353,28 @@ kind create cluster --name higress
 kubectl create namespace higress-system
 ```
 
-在仓库根目录安装 Higress：
+在仓库根目录安装或重置本地 Higress：
 
 ```bash
 cd <ai-gateway-repo>
-helm install higress helm/core \
+helm upgrade --install higress helm/core \
   -n higress-system \
-  --set controller.tag=2.1.9 \
-  --set pilot.tag=2.1.9 \
-  --set gateway.tag=2.1.9 \
+  --create-namespace \
+  --reset-values \
+  --set controller.tag=2.2.0 \
+  --set pilot.tag=2.2.0 \
+  --set gateway.tag=2.2.0 \
   --set global.local=true \
+  --set gateway.service.type=None \
   --set global.volumeWasmPlugins=true \
   --set global.onlyPushRouteCluster=false
 ```
+
+说明：
+
+- 本地模式下网关已经使用 `hostPort 80/443` 暴露入口。
+- 如果同时保留 `LoadBalancer` 类型的 `svc/higress-gateway`，k3s 的 `svclb` Pod 会占用同样的端口，导致 `higress-gateway` 调度失败。
+- 因此本文档明确关闭 `gateway.service`，后续统一使用 `deployment` 级别的 `port-forward`。
 
 确认网关 ready：
 
@@ -319,6 +382,20 @@ helm install higress helm/core \
 kubectl -n higress-system rollout status deployment/higress-gateway --timeout=180s
 kubectl -n higress-system get pod -l app=higress-gateway -o wide
 ```
+
+### 4.1 OrbStack 和 `kind-higress` 的区别
+
+这两个名字很容易混，但在本文档里职责不同：
+
+- `orbstack` context：指 OrbStack 自带的 Kubernetes 集群。它可以拿来跑普通 k8s 资源，但不是本文档默认的 Higress 调试环境。
+- `kind-higress` context：指 `kind create cluster --name higress` 创建出来的 kind 集群。本文档默认所有 `kubectl apply`、`rollout restart`、`port-forward` 都针对它。
+- `higress-control-plane`：是 `kind-higress` 里的节点容器名。`/opt/plugins` 实际就在这个 Docker 容器里。
+- OrbStack 在这里主要提供 `docker` 和 kind 的运行环境，不等于“你当前 `kubectl` 正连着的就是 OrbStack 内建集群”。
+
+最关键的一条：
+
+- `docker cp ... higress-control-plane:/opt/plugins/...` 只会改 `kind-higress`
+- 如果这时你的 `kubectl` context 还是 `orbstack`，那就是在两套集群之间来回操作，文件和资源不会汇合到同一条链路上
 
 ## 5. 确认 kind 节点挂载 `/opt/plugins`
 
@@ -337,6 +414,40 @@ kubectl -n higress-system get deployment higress-gateway -o yaml
 
 - `volumeMounts.mountPath: /opt/plugins`
 - `volumes.hostPath.path: /opt/plugins`
+
+### 5.1 为什么这里要改 kind 节点，而不是直接 `kubectl exec`
+
+这里的 `/opt/plugins` 不是 `higress-gateway` 容器镜像里自带的普通目录，而是一个 `hostPath` 挂载。
+
+这意味着：
+
+- `WasmPlugin.spec.url` 里看到的 `file:///opt/plugins/...`，最终读取的是 **Kubernetes 节点文件系统** 上的 `/opt/plugins`
+- 在 `kind` 场景里，Kubernetes 节点本身就是一个 Docker 容器
+- 所以准备本地 wasm 文件时，目标实际上是 **kind 节点容器里的 `/opt/plugins`**
+
+因此这里要区分两层：
+
+- 用 `kubectl` 管理集群资源，例如 `Deployment`、`Ingress`、`WasmPlugin`
+- 用 `docker exec` / `docker cp` 操作 kind 节点容器里的 `/opt/plugins`
+
+不要把这两件事混在一起。典型原因有两个：
+
+- `kubectl exec` 进入的是 Pod 容器，不是节点根文件系统
+- 如果 `hostPath` 对应目录还没准备好，`higress-gateway` Pod 可能会因为挂载失败起不来，这时也无法依赖 `kubectl exec` 进去补目录
+
+最短判断方式：
+
+- 如果你在处理 `Ingress`、`WasmPlugin`、`rollout restart`，用 `kubectl`
+- 如果你在处理 `/opt/plugins` 目录和 `plugin.wasm` 文件，改 kind 节点容器
+
+另外，执行这些步骤前先确认当前 `kubectl` context 就是目标 kind 集群，例如：
+
+```bash
+kubectl config current-context
+kubectl get nodes -o wide
+```
+
+如果当前 context 指向的不是文档里的 kind 集群，那么 `/opt/plugins` 对应的就不是你以为的那台节点，后面的 `docker cp` 和 `kubectl apply` 会落在两套不同环境上。
 
 ## 6. 把本地 wasm 拷贝进 kind 节点
 
@@ -365,20 +476,22 @@ kubectl -n higress-system rollout restart deployment/higress-gateway
 kubectl -n higress-system rollout status deployment/higress-gateway --timeout=180s
 ```
 
-## 7. 配置本地 Bedrock 路由
+## 7. 配置本地 Bedrock / OpenAI 路由
 
-本地成功验证过的结构是：
+当前本地样例支持两条入口：
 
 - `McpBridge` 指向 `bedrock-runtime.us-west-2.amazonaws.com:443`
+- `McpBridge` 同时包含 `aigc-swedencentral.openai.azure.com:443`
 - `Ingress` 暴露本地 host：`bedrock.local`
-- `WasmPlugin` 绑定到 `bedrock-local`
+- `Ingress` 暴露本地 host：`openai.local`
+- `WasmPlugin` 同时绑定到 `bedrock-local` 和 `openai-local`
 
 最小必要性说明：
 
-- 如果你要走这份文档推荐的 Higress 本地链路，并且请求最终要从 Higress 转发到真实 Bedrock，那么这三项都需要。
-- `McpBridge` 负责给 Higress 提供外部 Bedrock 域名对应的上游目标。
-- `Ingress` 负责把本地 `Host: bedrock.local` 路由到这个上游，同时作为 `WasmPlugin.matchRules.ingress` 的绑定对象。
-- `WasmPlugin` 负责加载本地 wasm，并把 OpenAI 风格请求转换成 Bedrock 请求。
+- 如果你要走这份文档推荐的 Higress 本地链路，并且请求最终要从 Higress 转发到真实 Bedrock 或 OpenAI，那么这三项都需要。
+- `McpBridge` 负责给 Higress 提供外部 Bedrock / OpenAI 域名对应的上游目标。
+- `Ingress` 负责把本地 `Host: bedrock.local` 或 `Host: openai.local` 路由到这个上游，同时作为 `WasmPlugin.matchRules.ingress` 的绑定对象。
+- `WasmPlugin` 负责加载本地 wasm，并按命中的 Ingress 把 OpenAI 风格请求转换成对应 provider 请求。
 - 如果你只是做本地 Envoy 调试、单测，或者只验证 wasm 编译产物本身，那就不一定需要这三项。
 
 ### 7.1 McpBridge
@@ -395,12 +508,16 @@ spec:
       type: dns
       domain: bedrock-runtime.us-west-2.amazonaws.com
       port: 443
+    - name: aigc-swedencentral.openai.azure.com
+      type: dns
+      domain: aigc-swedencentral.openai.azure.com
+      port: 443
 ```
 
 应用：
 
 ```bash
-kubectl apply -f mcpbridge.yaml
+kubectl apply -f local/mcpbridge-local.yaml
 ```
 
 ### 7.2 Ingress
@@ -439,6 +556,42 @@ spec:
 kubectl apply -f local/ingress-bedrock-local.yaml
 ```
 
+如果你还要本地联调 OpenAI 兼容入口，再加一条：
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: openai-local
+  namespace: higress-system
+  labels:
+    higress.io/resource-definer: higress
+  annotations:
+    higress.io/backend-protocol: HTTPS
+    higress.io/destination: aigc-swedencentral.openai.azure.com.dns
+    higress.io/proxy-ssl-name: aigc-swedencentral.openai.azure.com
+    higress.io/proxy-ssl-server-name: "on"
+spec:
+  ingressClassName: higress
+  rules:
+    - host: openai.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              resource:
+                apiGroup: networking.higress.io
+                kind: McpBridge
+                name: default
+```
+
+应用：
+
+```bash
+kubectl apply -f local/ingress-openai-local.yaml
+```
+
 ### 7.3 WasmPlugin
 
 ```yaml
@@ -464,6 +617,14 @@ spec:
           modelMapping:
             claude-sonnet-4-5: global.anthropic.claude-sonnet-4-5-20250929-v1:0
             claude-sonnet-4-6: global.anthropic.claude-sonnet-4-6
+    - ingress:
+        - openai-local
+      config:
+        provider:
+          type: openai
+          apiTokens:
+            - "<OPENAI_API_TOKEN>"
+          openaiCustomUrl: "https://aigc-swedencentral.openai.azure.com/openai/v1"
 ```
 
 应用：
@@ -492,31 +653,41 @@ spec:
   matchRules:
     - ingress:
         - bedrock-local
+        - openai-local
 ```
 
 应用：
 
 ```bash
-kubectl apply -f wasmplugin-ai-statistics-local.yaml
+kubectl apply -f local/wasmplugin-ai-statistics-local.yaml
 ```
 
 说明：
 
 - `ai-proxy-local` 当前优先级是 `100`
 - `ai-statistics-local` 当前优先级是 `200`
-- 两者都绑定到 `bedrock-local`
+- 当前样例里 `ai-statistics-local` 同时绑定到 `bedrock-local` 和 `openai-local`
 - `ai-statistics` 默认按请求路径后缀工作；现在本地也支持 `/messages` 和 `/v1/messages`
 
 重要说明：
 
-- `matchRules.ingress` 必须写 `bedrock-local`
+- `matchRules.ingress` 必须写 Ingress 资源名，例如 `bedrock-local` 或 `openai-local`
 - 不要写成 `higress-system/bedrock-local`
+
+`ai-statistics` 本地联调时，建议额外注意这几件事：
+
+- `ai-statistics-local` 要显式覆盖你实际压测的入口。调 `bedrock.local` 至少要匹配 `bedrock-local`；调 `openai.local` 的 `/v1/responses` 时还要匹配 `openai-local`。少挂一个 ingress，对应请求就不会写 `ai_log`。
+- 改 `plugins/wasm-go/extensions/ai-statistics/*.go` 之后，要重新构建 `plugins/wasm-go/extensions/ai-statistics/plugin.wasm`，再把它拷到 `higress-control-plane:/opt/plugins/wasm-go/extensions/ai-statistics/plugin.wasm`，最后重启 `deployment/higress-gateway`。只 `kubectl apply` `WasmPlugin` YAML 不会刷新 wasm 二进制。
+- `ai_log` 默认会带 `request_body`、`response_body`。`/v1/responses` 非流式响应里常见的 `instructions`、`tools` 也可能进入 `response_body`，日志会明显变大；如果本地只想看摘要，可以在 `defaultConfig` 里额外加 `response_body_length_limit`。
+- `/v1/responses` 流式场景里，最终日志中的 `response_body` 不是原始 SSE event 列表，而是插件聚合后的最终对象，目标是尽量接近非流式响应；如果你要从原始事件级字段取值，继续使用 `response_streaming_body`。
+- 排查时优先看 access log 里的 `ai_log`，不要只看 wasm stdout。`ai_log` 没内容时，先检查 `matchRules.ingress`、最新 `plugin.wasm` 是否已经拷进 kind 节点，以及网关是否已经 `rollout restart`。
 
 当前本地生效配置可以这样查看：
 
 ```bash
 kubectl -n higress-system get mcpbridge -o yaml
 kubectl -n higress-system get ingress bedrock-local -o yaml
+kubectl -n higress-system get ingress openai-local -o yaml
 kubectl -n higress-system get wasmplugin ai-proxy-local -o yaml
 kubectl -n higress-system get wasmplugin ai-statistics-local -o yaml
 ```
@@ -526,7 +697,7 @@ kubectl -n higress-system get wasmplugin ai-statistics-local -o yaml
 把 Higress 网关端口转发到本地：
 
 ```bash
-kubectl -n higress-system port-forward svc/higress-gateway 8080:80
+kubectl -n higress-system port-forward deployment/higress-gateway 8080:80
 ```
 
 成功后，本地统一入口就是：
@@ -535,7 +706,29 @@ kubectl -n higress-system port-forward svc/higress-gateway 8080:80
 http://127.0.0.1:8080
 ```
 
+如果 `8080` 被旧的 `kubectl port-forward` 占用，可以先结束旧进程，或者改成：
+
+```bash
+kubectl -n higress-system port-forward deployment/higress-gateway 18080:80
+```
+
 ## 9. 查看日志
+
+最快的看法是直接按 label 看网关容器滚动日志：
+
+查看滚动日志：
+
+```bash
+kubectl -n higress-system logs -l app=higress-gateway -c higress-gateway -f
+```
+
+如果你想先带出最近 `N` 行，再持续跟随：
+
+```bash
+kubectl -n higress-system logs -l app=higress-gateway -c higress-gateway --tail=200 -f
+```
+
+如果你想先确认当前 pod，再做更细的筛选，可以按下面两步：
 
 先拿当前网关 pod：
 
@@ -906,6 +1099,34 @@ tag 命名示例：
 
 - 让 `-z` 集群网关重新拉取新镜像
 - 不要只停留在配置已发布但 Pod 未重建的状态
+
+当前这套环境可以直接按下面四步执行：
+
+1. 查看 Pod：
+
+```bash
+tdk get pod -n fat-ai-gateway
+```
+
+2. 查看 Pod 和 IP：
+
+```bash
+tdk get pod -n fat-ai-gateway -o wide
+```
+
+3. 滚动重启 `ai-gateway`：
+
+```bash
+tdk rollout restart deployment/ai-gateway -n fat-ai-gateway
+```
+
+4. 查看重启状态：
+
+```bash
+tdk rollout status deployment/ai-gateway -n fat-ai-gateway
+```
+
+如果这里只是验证镜像是否已经重新拉取，通常第 `2` 步和第 `4` 步最关键。
 
 ## 13. 常见问题
 
