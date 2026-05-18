@@ -165,6 +165,30 @@ func TestSetBedrockAnthropicMessagesRequestDefaultsPreservesThinkingBlocks(t *te
 	assert.Equal(t, "final answer", gjson.GetBytes(body, "messages.1.content.1.text").String())
 }
 
+func TestSetBedrockAnthropicMessagesRequestDefaultsPreservesToolResultContentBlocks(t *testing.T) {
+	headers := http.Header{}
+
+	body, err := setBedrockAnthropicMessagesRequestDefaults([]byte(`{
+		"model":"claude-sonnet-4-5",
+		"max_tokens":64,
+		"messages":[
+			{"role":"assistant","content":[
+				{"type":"tool_use","id":"toolu_123","name":"fetch_doc","input":{"doc_id":"doc-1"}}
+			]},
+			{"role":"user","content":[
+				{"type":"tool_result","tool_use_id":"toolu_123","content":[
+					{"type":"text","text":"document body"}
+				]}
+			]}
+		]
+	}`), headers)
+	assert.NoError(t, err)
+	assert.Equal(t, "tool_result", gjson.GetBytes(body, "messages.1.content.0.type").String())
+	assert.Equal(t, "toolu_123", gjson.GetBytes(body, "messages.1.content.0.tool_use_id").String())
+	assert.Equal(t, "text", gjson.GetBytes(body, "messages.1.content.0.content.0.type").String())
+	assert.Equal(t, "document body", gjson.GetBytes(body, "messages.1.content.0.content.0.text").String())
+}
+
 func TestSetBedrockAnthropicMessagesRequestDefaultsPreservesRicherToolUnion(t *testing.T) {
 	headers := http.Header{}
 

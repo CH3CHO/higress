@@ -105,7 +105,7 @@ func (c *ClaudeToOpenAIConverter) ConvertClaudeRequestToOpenAI(body []byte) ([]b
 				for _, toolResult := range conversionResult.toolResults {
 					toolMsg := chatMessage{
 						Role:       "tool",
-						Content:    toolResult.Content,
+						Content:    getClaudeToolResultContent(toolResult),
 						ToolCallId: toolResult.ToolUseId,
 					}
 					openaiRequest.Messages = append(openaiRequest.Messages, toolMsg)
@@ -821,4 +821,14 @@ func (c *ClaudeToOpenAIConverter) convertContentArray(claudeContents []claudeCha
 	}
 
 	return result
+}
+
+func getClaudeToolResultContent(content claudeChatMessageContent) any {
+	if content.Content == nil {
+		return nil
+	}
+	if content.Content.IsString() {
+		return content.Content.GetStringValue()
+	}
+	return content.Content.GetArrayValue()
 }
