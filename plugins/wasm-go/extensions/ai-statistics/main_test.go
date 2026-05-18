@@ -16,13 +16,14 @@ package main
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/higress-group/proxy-wasm-go-sdk/proxywasm/types"
 	"github.com/higress-group/wasm-go/pkg/test"
-	"github.com/tidwall/gjson"
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 )
 
 // 测试配置：基本统计配置
@@ -632,7 +633,7 @@ func TestMetrics(t *testing.T) {
 			// 1. 处理请求头
 			host.CallOnHttpRequestHeaders([][2]string{
 				{":authority", "example.com"},
-				{":path", "/api/chat"},
+				{":path", "/v1/chat/completions"},
 				{":method", "POST"},
 				{"x-mse-consumer", "user1"},
 			})
@@ -709,7 +710,7 @@ func TestMetrics(t *testing.T) {
 			// 1. 处理请求头
 			host.CallOnHttpRequestHeaders([][2]string{
 				{":authority", "example.com"},
-				{":path", "/api/chat"},
+				{":path", "/v1/chat/completions"},
 				{":method", "POST"},
 				{"x-mse-consumer", "user2"},
 			})
@@ -926,6 +927,76 @@ func TestMetrics(t *testing.T) {
 			require.NoError(t, err)
 			require.Equal(t, uint64(44), totalTokenValue)
 		})
+
+		t.Run("responses_streaming_metrics", func(t *testing.T) {
+			host, status := test.NewTestHost(emptyAttributesConfig)
+			defer host.Reset()
+			require.Equal(t, types.OnPluginStartStatusOK, status)
+
+			host.SetRouteName("api-v1")
+			host.SetClusterName("cluster-1")
+
+			host.CallOnHttpRequestHeaders([][2]string{
+				{":authority", "example.com"},
+				{":path", "/v1/responses"},
+				{":method", "POST"},
+				{"x-mse-consumer", "user5"},
+			})
+
+			requestBody := []byte(`{
+				"model": "gpt-5.4",
+				"input": "Hello",
+				"stream": true
+			}`)
+			action := host.CallOnHttpRequestBody(requestBody)
+			require.Equal(t, types.ActionContinue, action)
+
+			time.Sleep(10 * time.Millisecond)
+
+			action = host.CallOnHttpResponseHeaders([][2]string{
+				{":status", "200"},
+				{"content-type", "text/event-stream"},
+			})
+			require.Equal(t, types.ActionContinue, action)
+
+			firstChunk := []byte("data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_123\",\"object\":\"response\",\"created_at\":1,\"status\":\"in_progress\",\"model\":\"gpt-5.4\",\"output\":[]}}\n\n")
+			action = host.CallOnHttpStreamingResponseBody(firstChunk, false)
+			require.Equal(t, types.ActionContinue, action)
+			require.Equal(t, firstChunk, host.GetResponseBody())
+
+			lastChunk := []byte("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_123\",\"object\":\"response\",\"created_at\":1,\"completed_at\":2,\"status\":\"completed\",\"model\":\"gpt-5.4\",\"output\":[{\"id\":\"msg_123\",\"type\":\"message\",\"status\":\"completed\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"Hello world\"}]}],\"usage\":{\"input_tokens\":10,\"output_tokens\":5,\"total_tokens\":15}}}\n\n")
+			action = host.CallOnHttpStreamingResponseBody(lastChunk, true)
+			require.Equal(t, types.ActionContinue, action)
+			require.Equal(t, lastChunk, host.GetResponseBody())
+
+			time.Sleep(10 * time.Millisecond)
+			host.CompleteHttp()
+
+			firstTokenDurationMetric := "route.api-v1.upstream.cluster-1.model.gpt-5.4.consumer.user5.metric.llm_first_token_duration"
+			firstTokenDurationValue, err := host.GetCounterMetric(firstTokenDurationMetric)
+			require.NoError(t, err)
+			require.Greater(t, firstTokenDurationValue, uint64(0))
+
+			streamDurationCountMetric := "route.api-v1.upstream.cluster-1.model.gpt-5.4.consumer.user5.metric.llm_stream_duration_count"
+			streamDurationCountValue, err := host.GetCounterMetric(streamDurationCountMetric)
+			require.NoError(t, err)
+			require.Equal(t, uint64(1), streamDurationCountValue)
+
+			inputTokenMetric := "route.api-v1.upstream.cluster-1.model.gpt-5.4.consumer.user5.metric.input_token"
+			inputTokenValue, err := host.GetCounterMetric(inputTokenMetric)
+			require.NoError(t, err)
+			require.Equal(t, uint64(10), inputTokenValue)
+
+			outputTokenMetric := "route.api-v1.upstream.cluster-1.model.gpt-5.4.consumer.user5.metric.output_token"
+			outputTokenValue, err := host.GetCounterMetric(outputTokenMetric)
+			require.NoError(t, err)
+			require.Equal(t, uint64(5), outputTokenValue)
+
+			totalTokenMetric := "route.api-v1.upstream.cluster-1.model.gpt-5.4.consumer.user5.metric.total_token"
+			totalTokenValue, err := host.GetCounterMetric(totalTokenMetric)
+			require.NoError(t, err)
+			require.Equal(t, uint64(15), totalTokenValue)
+		})
 	})
 }
 
@@ -944,14 +1015,14 @@ func TestCompleteFlow(t *testing.T) {
 			// 1. 处理请求头
 			action := host.CallOnHttpRequestHeaders([][2]string{
 				{":authority", "example.com"},
-				{":path", "/api/chat"},
+				{":path", "/v1/chat/completions"},
 				{":method", "POST"},
 				{"x-request-id", "req-123"},
 				{"x-mse-consumer", "consumer1"},
 			})
 
-			// 应该返回 ActionContinue
-			require.Equal(t, types.ActionContinue, action)
+			// POST 且后续会读取请求体时，插件会先暂停 header 继续传递并缓存请求体。
+			require.Equal(t, types.HeaderStopIteration, action)
 
 			// 2. 处理请求体
 			requestBody := []byte(`{
@@ -1036,13 +1107,13 @@ func TestCompleteFlow(t *testing.T) {
 			// 1. 处理请求头
 			action := host.CallOnHttpRequestHeaders([][2]string{
 				{":authority", "example.com"},
-				{":path", "/api/chat"},
+				{":path", "/v1/chat/completions"},
 				{":method", "POST"},
 				{"x-mse-consumer", "consumer2"},
 			})
 
-			// 应该返回 ActionContinue
-			require.Equal(t, types.ActionContinue, action)
+			// POST 且后续会读取请求体时，插件会先暂停 header 继续传递并缓存请求体。
+			require.Equal(t, types.HeaderStopIteration, action)
 
 			// 2. 处理请求体
 			requestBody := []byte(`{
@@ -1238,4 +1309,145 @@ func TestCombineAnthropicStreamingEventForLog(t *testing.T) {
 	require.Equal(t, int64(23), gjson.Get(body, "usage.output_tokens").Int())
 	require.Equal(t, int64(3101), gjson.Get(body, "amazon-bedrock-invocationMetrics.invocationLatency").Int())
 	require.Equal(t, int64(2948), gjson.Get(body, "amazon-bedrock-invocationMetrics.firstByteLatency").Int())
+}
+
+func TestApplyResponsesStreamingEventForLog(t *testing.T) {
+	body := ""
+	events := []StreamEvent{
+		{
+			Data: `{"type":"response.created","response":{"id":"resp_123","object":"response","created_at":1,"status":"in_progress","model":"gpt-5.4","output":[]}}`,
+		},
+		{
+			Data: `{"type":"response.output_item.added","output_index":0,"item":{"id":"msg_123","type":"message","status":"in_progress","role":"assistant","content":[]}}`,
+		},
+		{
+			Data: `{"type":"response.content_part.added","output_index":0,"content_index":0,"part":{"type":"output_text","text":""}}`,
+		},
+		{
+			Data: `{"type":"response.output_text.delta","output_index":0,"content_index":0,"delta":"Hello"}`,
+		},
+		{
+			Data: `{"type":"response.output_text.delta","output_index":0,"content_index":0,"delta":" world"}`,
+		},
+		{
+			Data: `{"type":"response.completed","response":{"id":"resp_123","object":"response","created_at":1,"completed_at":2,"status":"completed","model":"gpt-5.4","output":[{"id":"rs_123","type":"reasoning","encrypted_content":"secret","summary":[]},{"id":"msg_123","type":"message","status":"completed","role":"assistant","content":[{"type":"output_text","text":"Hello world"}]}],"usage":{"input_tokens":10,"output_tokens":5,"total_tokens":15}}}`,
+		},
+	}
+
+	for _, event := range events {
+		body = applyResponsesStreamingEventForLog(body, &event)
+	}
+
+	require.Equal(t, "resp_123", gjson.Get(body, "id").String())
+	require.Equal(t, "completed", gjson.Get(body, "status").String())
+	require.Equal(t, "gpt-5.4", gjson.Get(body, "model").String())
+	require.Equal(t, "secret", gjson.Get(body, "output.0.encrypted_content").String())
+	require.Equal(t, "Hello world", gjson.Get(body, "output.1.content.0.text").String())
+	require.Equal(t, int64(15), gjson.Get(body, "usage.total_tokens").Int())
+}
+
+func TestExtractStreamingBodyValueForAttribute(t *testing.T) {
+	toJSONResult := func(value interface{}) gjson.Result {
+		data, err := json.Marshal(value)
+		require.NoError(t, err)
+		return gjson.ParseBytes(data)
+	}
+
+	t.Run("responses built-in usage prefers response usage", func(t *testing.T) {
+		attribute := Attribute{
+			Key:         Usage,
+			Value:       "usage",
+			ValueSource: ResponseStreamingBody,
+			Rule:        RuleReplace,
+		}
+		events := []StreamEvent{
+			{
+				Data: `{"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2},"response":{"usage":{"input_tokens":10,"output_tokens":5,"total_tokens":15}}}`,
+			},
+		}
+
+		value := extractStreamingBodyValueForAttribute(ApiNameResponses, attribute, events, nil)
+		result := toJSONResult(value)
+
+		require.Equal(t, int64(10), result.Get("input_tokens").Int())
+		require.Equal(t, int64(5), result.Get("output_tokens").Int())
+		require.Equal(t, int64(15), result.Get("total_tokens").Int())
+	})
+
+	t.Run("responses built-in usage falls back to top-level usage", func(t *testing.T) {
+		attribute := Attribute{
+			Key:         Usage,
+			Value:       "usage",
+			ValueSource: ResponseStreamingBody,
+			Rule:        RuleReplace,
+		}
+		events := []StreamEvent{
+			{
+				Data: `{"usage":{"input_tokens":3,"output_tokens":2,"total_tokens":5}}`,
+			},
+		}
+
+		value := extractStreamingBodyValueForAttribute(ApiNameResponses, attribute, events, nil)
+		result := toJSONResult(value)
+
+		require.Equal(t, int64(3), result.Get("input_tokens").Int())
+		require.Equal(t, int64(2), result.Get("output_tokens").Int())
+		require.Equal(t, int64(5), result.Get("total_tokens").Int())
+	})
+
+	t.Run("responses custom streaming usage keeps configured path", func(t *testing.T) {
+		attribute := Attribute{
+			Key:         "custom_usage",
+			Value:       "usage",
+			ValueSource: ResponseStreamingBody,
+			Rule:        RuleReplace,
+		}
+		events := []StreamEvent{
+			{
+				Data: `{"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2},"response":{"usage":{"input_tokens":10,"output_tokens":5,"total_tokens":15}}}`,
+			},
+		}
+
+		value := extractStreamingBodyValueForAttribute(ApiNameResponses, attribute, events, nil)
+		result := toJSONResult(value)
+
+		require.Equal(t, int64(1), result.Get("input_tokens").Int())
+		require.Equal(t, int64(1), result.Get("output_tokens").Int())
+		require.Equal(t, int64(2), result.Get("total_tokens").Int())
+	})
+}
+
+func TestCompactResponsesBodyForLog(t *testing.T) {
+	body := `{
+		"id":"resp_123",
+		"object":"response",
+		"created_at":1,
+		"completed_at":2,
+		"status":"completed",
+		"model":"gpt-5.4",
+		"instructions":"` + strings.Repeat("instruction-", 80) + `",
+		"output":[
+			{"id":"rs_123","type":"reasoning","encrypted_content":"` + strings.Repeat("secret", 300) + `","summary":[]},
+			{"id":"msg_123","type":"message","status":"completed","role":"assistant","content":[{"type":"output_text","text":"` + strings.Repeat("hello-world-", 120) + `"}]}
+		],
+		"usage":{"input_tokens":10,"output_tokens":5,"total_tokens":15}
+	}`
+
+	compacted := compactResponsesBodyForLog(body, 1024)
+
+	require.LessOrEqual(t, len(compacted), 1024)
+	require.Equal(t, "resp_123", gjson.Get(compacted, "id").String())
+	require.Equal(t, "completed", gjson.Get(compacted, "status").String())
+	require.Equal(t, "gpt-5.4", gjson.Get(compacted, "model").String())
+	require.Equal(t, int64(15), gjson.Get(compacted, "usage.total_tokens").Int())
+	require.True(t, gjson.Get(compacted, "output_truncated").Bool())
+	require.False(t, gjson.Get(compacted, "instructions").Exists())
+	require.False(t, gjson.Get(compacted, "output.0.encrypted_content").Exists())
+	require.NotEmpty(t, gjson.Get(compacted, "output.1.content.0.text").String())
+}
+
+func TestTruncateStringForLog(t *testing.T) {
+	require.Equal(t, "abc [truncated]", truncateStringForLog("abcdefghijklmnop", 15))
+	require.Equal(t, "abcde", truncateStringForLog("abcdefghijklmnop", 5))
+	require.Equal(t, "short", truncateStringForLog("short", 10))
 }
