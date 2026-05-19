@@ -82,7 +82,7 @@ type claudeChatMessageContent struct {
 	Name         string                          `json:"name,omitempty"`
 	Input        map[string]interface{}          `json:"input,omitempty"`
 	ToolUseId    string                          `json:"tool_use_id,omitempty"`
-	Content      string                          `json:"content,omitempty"`
+	Content      *claudeChatMessageContentUnion  `json:"content,omitempty"`
 }
 
 func (ccw *claudeChatMessageContentUnion) UnmarshalJSON(data []byte) error {

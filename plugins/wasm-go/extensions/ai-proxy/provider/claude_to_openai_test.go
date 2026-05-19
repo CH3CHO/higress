@@ -7,6 +7,7 @@ import (
 	"github.com/higress-group/wasm-go/pkg/log"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 )
 
 // Mock logger for testing
@@ -300,6 +301,31 @@ func TestClaudeToOpenAIConverter_ConvertClaudeRequestToOpenAI(t *testing.T) {
 		assert.Equal(t, "tool", toolMsg.Role)
 		assert.Equal(t, "Search results: Claude is an AI assistant created by Anthropic.", toolMsg.Content)
 		assert.Equal(t, "toolu_01D7FLrfh4GYq7yT1ULFeyMV", toolMsg.ToolCallId)
+	})
+
+	t.Run("convert_tool_result_content_blocks_to_tool_message", func(t *testing.T) {
+		claudeRequest := `{
+			"model": "anthropic/claude-sonnet-4",
+			"messages": [{
+				"role": "user",
+				"content": [{
+					"type": "tool_result",
+					"tool_use_id": "toolu_01D7FLrfh4GYq7yT1ULFeyMV",
+					"content": [{
+						"type": "text",
+						"text": "Search results: Claude is an AI assistant created by Anthropic."
+					}]
+				}]
+			}],
+			"max_tokens": 1000
+		}`
+
+		result, err := converter.ConvertClaudeRequestToOpenAI([]byte(claudeRequest))
+		require.NoError(t, err)
+		assert.Equal(t, "tool", gjson.GetBytes(result, "messages.0.role").String())
+		assert.Equal(t, "toolu_01D7FLrfh4GYq7yT1ULFeyMV", gjson.GetBytes(result, "messages.0.tool_call_id").String())
+		assert.Equal(t, "text", gjson.GetBytes(result, "messages.0.content.0.type").String())
+		assert.Equal(t, "Search results: Claude is an AI assistant created by Anthropic.", gjson.GetBytes(result, "messages.0.content.0.text").String())
 	})
 
 	t.Run("convert_multiple_tool_calls", func(t *testing.T) {
