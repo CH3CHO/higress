@@ -86,7 +86,7 @@ func TestExtractVertexExtendedParams(t *testing.T) {
       "googleSearchRetrieval": {"key": "value2"}
      },
      {
-      "code_execution": {"key": "value3"}
+      "codeExecution": {"key": "value3"}
      }
     ]
    }`,

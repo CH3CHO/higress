@@ -110,6 +110,30 @@ func TestClaudeToOpenAIConverter_ConvertClaudeRequestToOpenAI(t *testing.T) {
 		assert.Equal(t, expectedContent, userMsg.Content)
 	})
 
+	t.Run("strip_dynamic_cch_from_system_prompt", func(t *testing.T) {
+		claudeRequest := `{
+			"model": "anthropic/claude-sonnet-4",
+			"max_tokens": 1000,
+			"system": [{
+				"type": "text",
+				"text": "x-anthropic-billing-header: cc_version=2.1.84.c8e; cc_entrypoint=claude-vscode; cch=123tsdaf;"
+			}, {
+				"type": "text",
+				"text": "You are helpful."
+			}],
+			"messages": [{
+				"role": "user",
+				"content": "hello"
+			}]
+		}`
+
+		result, err := converter.ConvertClaudeRequestToOpenAI([]byte(claudeRequest))
+		require.NoError(t, err)
+
+		assert.Equal(t, roleSystem, gjson.GetBytes(result, "messages.0.role").String())
+		assert.Equal(t, "x-anthropic-billing-header: cc_version=2.1.84.c8e; cc_entrypoint=claude-vscode;\nYou are helpful.", gjson.GetBytes(result, "messages.0.content").String())
+	})
+
 	t.Run("convert_mixed_content_with_image", func(t *testing.T) {
 		// Test case with mixed text and image content (should remain as array)
 		claudeRequest := `{

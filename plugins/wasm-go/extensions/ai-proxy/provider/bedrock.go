@@ -819,6 +819,7 @@ func setBedrockAnthropicMessagesRequestDefaults(body []byte, headers http.Header
 	if err := json.Unmarshal(body, &request); err != nil {
 		return nil, err
 	}
+	sanitizeAnthropicMessagesRequestCCH(&request)
 
 	// 这里显式构造 Bedrock native messages request，
 	// 只保留这条协议真正需要的字段，避免 map[string]any 带来的 key 漏改/漏删问题。

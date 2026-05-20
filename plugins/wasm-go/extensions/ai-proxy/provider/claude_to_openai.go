@@ -57,6 +57,7 @@ func (c *ClaudeToOpenAIConverter) ConvertClaudeRequestToOpenAI(body []byte) ([]b
 	if err := json.Unmarshal(body, &claudeRequest); err != nil {
 		return nil, fmt.Errorf("unable to unmarshal claude request: %v", err)
 	}
+	sanitizeAnthropicMessagesRequestCCH(&claudeRequest)
 
 	// Convert Claude request to OpenAI format
 	openaiRequest := chatCompletionRequest{
