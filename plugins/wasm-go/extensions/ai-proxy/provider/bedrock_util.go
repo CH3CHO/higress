@@ -29,6 +29,7 @@ import (
 //   - error: any error that occurred during transformation
 func transformToBedrockConverseRequest(request *chatCompletionRequest, opts *bedrock.TransformRequestOptions,
 	extendedParams *bedrockExtendedParams) (*bedrock.ConverseRequest, bool, error) {
+	sanitizeChatCompletionRequestCCH(request)
 	isThinkingEnabled := isBedrockThinkingEnabled(extendedParams.Thinking, request.ReasoningEffort)
 
 	// Handle response_format parameter

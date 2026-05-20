@@ -165,6 +165,29 @@ func TestSetBedrockAnthropicMessagesRequestDefaultsPreservesThinkingBlocks(t *te
 	assert.Equal(t, "final answer", gjson.GetBytes(body, "messages.1.content.1.text").String())
 }
 
+func TestSetBedrockAnthropicMessagesRequestDefaultsStripsDynamicCCHFromSystem(t *testing.T) {
+	headers := http.Header{}
+
+	body, err := setBedrockAnthropicMessagesRequestDefaults([]byte(`{
+		"model":"claude-sonnet-4-5",
+		"max_tokens":64,
+		"system":[
+			{
+				"type":"text",
+				"text":"x-anthropic-billing-header: cc_version=2.1.84.c8e; cc_entrypoint=claude-vscode; cch=123tsdaf;"
+			},
+			{
+				"type":"text",
+				"text":"You are helpful."
+			}
+		],
+		"messages":[{"role":"user","content":"hi"}]
+	}`), headers)
+	assert.NoError(t, err)
+	assert.Equal(t, "x-anthropic-billing-header: cc_version=2.1.84.c8e; cc_entrypoint=claude-vscode;", gjson.GetBytes(body, "system.0.text").String())
+	assert.Equal(t, "You are helpful.", gjson.GetBytes(body, "system.1.text").String())
+}
+
 func TestSetBedrockAnthropicMessagesRequestDefaultsPreservesToolResultContentBlocks(t *testing.T) {
 	headers := http.Header{}
 

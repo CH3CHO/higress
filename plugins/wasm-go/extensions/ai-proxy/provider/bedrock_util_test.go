@@ -31,6 +31,28 @@ func TestTransformToBedrockConverseRequestFromOpenAIBody(t *testing.T) {
 	t.Logf("converse request:\n%s", string(requestBytes))
 }
 
+func TestTransformToBedrockConverseRequestStripsDynamicCCHFromSystemBlocks(t *testing.T) {
+	requestJSON := "{\n      \"model\": \"claude-sonnet-4-5\",\n      \"stream\": false,\n      \"messages\": [\n        {\n          \"role\": \"system\",\n          \"content\": [\n            {\n              \"type\": \"text\",\n              \"text\": \"x-anthropic-billing-header: cc_version=2.1.84.c8e; cc_entrypoint=claude-vscode; cch=123tsdaf;\"\n            },\n            {\n              \"type\": \"text\",\n              \"text\": \"You are helpful.\"\n            }\n          ]\n        },\n        {\n          \"role\": \"user\",\n          \"content\": \"hello\"\n        }\n      ]\n    }"
+
+	var request chatCompletionRequest
+	err := json.Unmarshal([]byte(requestJSON), &request)
+	assert.NoError(t, err)
+
+	extendedParams, err := extractBedrockExtendedParams([]byte(requestJSON))
+	assert.NoError(t, err)
+
+	converseRequest, _, err := transformToBedrockConverseRequest(
+		&request,
+		&bedrock.TransformRequestOptions{},
+		extendedParams,
+	)
+	assert.NoError(t, err)
+	if assert.Len(t, converseRequest.System, 2) {
+		assert.Equal(t, "x-anthropic-billing-header: cc_version=2.1.84.c8e; cc_entrypoint=claude-vscode;", *converseRequest.System[0].Text)
+		assert.Equal(t, "You are helpful.", *converseRequest.System[1].Text)
+	}
+}
+
 // TestTransformBedrockTools tests the transformBedrockTools function using the exact
 // input/output examples from the Python _bedrock_tools_pt function comments in:
 // litellm/litellm_core_utils/prompt_templates/factory.py
