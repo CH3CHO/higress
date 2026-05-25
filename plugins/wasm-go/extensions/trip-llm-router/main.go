@@ -52,10 +52,18 @@ const (
 	tokenRatelimitDryRunByConsumerModelKeyFormat = "token-ratelimit.dry-run.consumer.%s.model.%s"
 	tokenRatelimitDryRunDefaultValue             = true
 
+	modelsListEnabledGlobalKey           = "models-list.enabled.global"
+	modelsListEnabledByConsumerKeyFormat = "models-list.enabled.consumer.%s"
+	modelsListEnabledDefaultValue        = false
+
+	modelsListCreatedAt = 1767225600 // 2026/1/1 00:00:00 UTC
+
 	defaultServiceRouteHost = "aigw.internal"
 )
 
 var (
+	modelsListPathSuffixes = []string{"/v1/models", "/models"}
+
 	errorResponseHeaders = [][2]string{
 		{"content-type", "application/json"},
 	}
@@ -161,6 +169,7 @@ func onHttpRequestHeaders(ctx wrapper.HttpContext, config PluginConfig) types.Ac
 
 	path := ctx.Path()
 	consumerPathKeyword := fmt.Sprintf("/%s/", consumerId)
+	var routePathSuffix string
 	if index := strings.Index(path, consumerPathKeyword); index == -1 {
 		_ = sendErrorResponse(400, "trip-llm-router.bad-path", "Request path doesn't match the authenticated consumer ID: "+path)
 		return types.ActionContinue
@@ -168,6 +177,18 @@ func onHttpRequestHeaders(ctx wrapper.HttpContext, config PluginConfig) types.Ac
 		routePathPrefix := path[:index+len(consumerPathKeyword)-1] // Remove the trailing slash
 		log.Debugf("route path prefix: %s", routePathPrefix)
 		_ = proxywasm.SetProperty(routePathPrefixPropertyPath, []byte(routePathPrefix))
+		routePathSuffix = path[index+len(consumerPathKeyword)-1:]
+		log.Debugf("route path suffix: %s", routePathSuffix)
+	}
+
+	// Handle /v1/models endpoint local response (only for OpenAI protocol)
+	requestProtocol := getRequestProtocol(ctx)
+	if requestProtocol == ProtocolOpenAI && slices.Contains(modelsListPathSuffixes, strings.ToLower(routePathSuffix)) {
+		if !isModelsListEnabled(ctx, consumerId) {
+			_ = sendErrorResponse(400, "trip-llm-router.models-not-enabled", "Models list endpoint is not available")
+			return types.ActionContinue
+		}
+		return handleOpenaiListModels(ctx, consumerConfig)
 	}
 
 	model, _ := proxywasm.GetHttpRequestHeader(modelHeaderName)
@@ -182,7 +203,6 @@ func onHttpRequestHeaders(ctx wrapper.HttpContext, config PluginConfig) types.Ac
 		return types.ActionContinue
 	}
 
-	requestProtocol := getRequestProtocol(ctx)
 	if routeConfig.Protocols != nil && !slices.Contains(routeConfig.Protocols, requestProtocol) {
 		_ = sendErrorResponse(403, "trip-llm-router.unenabled-protocol", "Protocol "+string(requestProtocol)+" is not enabled for model "+model)
 		return types.ActionContinue
@@ -323,6 +343,44 @@ func needDryRunRequestRatelimit(ctx wrapper.HttpContext, consumerId, model strin
 	return requestRatelimitDryRunDefaultValue
 }
 
+func isModelsListEnabled(ctx wrapper.HttpContext, consumerId string) bool {
+	var enabledKeys []string
+	if consumerId != "" {
+		enabledKeys = append(enabledKeys, fmt.Sprintf(modelsListEnabledByConsumerKeyFormat, consumerId))
+	}
+	enabledKeys = append(enabledKeys, modelsListEnabledGlobalKey)
+
+	for _, key := range enabledKeys {
+		if enabled, ok := ctx.GetGlobalConfig(key).(bool); ok {
+			log.Debugf("models list enabled: consumer=%s, key=%s, enabled=%t", consumerId, key, enabled)
+			return enabled
+		}
+	}
+
+	log.Debugf("models list enabled: consumer=%s, using default=%t", consumerId, modelsListEnabledDefaultValue)
+	return modelsListEnabledDefaultValue
+}
+
+func handleOpenaiListModels(ctx wrapper.HttpContext, consumerConfig *ConsumerConfig) types.Action {
+	models := consumerConfig.GetAvailableModels(ProtocolOpenAI)
+	log.Debugf("building models list response for consumer=%s, protocol=openai, modelCount=%d, models=%v", consumerConfig.ID, len(models), models)
+
+	response := buildModelsListResponse(models)
+	responseBody, err := json.Marshal(response)
+	if err != nil {
+		log.Errorf("failed to marshal models list response: %v", err)
+		_ = sendErrorResponse(500, "trip-llm-router.serialize-failed", "Failed to serialize models list response")
+		return types.ActionContinue
+	}
+	log.Debugf("sending models list response: body=%s", string(responseBody))
+
+	headers := [][2]string{
+		{"content-type", "application/json"},
+	}
+	_ = proxywasm.SendHttpResponseWithDetail(200, "trip-llm-router.list-models", headers, responseBody, -1)
+	return types.ActionContinue
+}
+
 func needDryRunTokenRatelimit(ctx wrapper.HttpContext, consumerId, model string) bool {
 	var enabledKeys []string
 	if consumerId != "" {
@@ -434,4 +492,34 @@ type httpResponseError struct {
 
 func (e httpResponseError) Error() string {
 	return fmt.Sprintf("HTTP %d %s - %s", e.statusCode, e.statusCodeDetails, e.message)
+}
+
+// OpenAI Models API Response Types
+type ModelInfo struct {
+	ID      string `json:"id"`
+	Object  string `json:"object"`
+	Created int64  `json:"created"`
+	OwnedBy string `json:"owned_by"`
+}
+
+type ModelsListResponse struct {
+	Object string      `json:"object"`
+	Data   []ModelInfo `json:"data"`
+}
+
+func buildModelsListResponse(models []string) ModelsListResponse {
+	data := make([]ModelInfo, 0, len(models))
+	for _, model := range models {
+		data = append(data, ModelInfo{
+			ID:      model,
+			Object:  "model",
+			Created: modelsListCreatedAt,
+			OwnedBy: "system",
+		})
+	}
+
+	return ModelsListResponse{
+		Object: "list",
+		Data:   data,
+	}
 }

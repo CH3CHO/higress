@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"slices"
 
 	"github.com/higress-group/wasm-go/pkg/log"
 	"github.com/tidwall/gjson"
@@ -45,4 +46,20 @@ func (c *ConsumerConfig) FromJson(json gjson.Result) error {
 
 func (c *ConsumerConfig) GetRouteConfig(model string) *RouteConfig {
 	return c.ModelRoutes[model]
+}
+
+func (c *ConsumerConfig) GetAvailableModels(protocol Protocol) []string {
+	models := make([]string, 0, len(c.ModelRoutes))
+	uniqueModels := make(map[string]bool)
+	for model, routeConfig := range c.ModelRoutes {
+		if !uniqueModels[model] {
+			// If protocol is specified, filter by protocol
+			if protocol != "" && routeConfig.Protocols != nil && !slices.Contains(routeConfig.Protocols, protocol) {
+				continue
+			}
+			models = append(models, model)
+			uniqueModels[model] = true
+		}
+	}
+	return models
 }
