@@ -128,14 +128,11 @@ func (c *contextCache) GetContextFromFile(ctx wrapper.HttpContext, provider Prov
 }
 
 func insertContext(provider Provider, content string, err error, body []byte) {
-	defer func() {
-		_ = proxywasm.ResumeHttpRequest()
-	}()
-
 	typ := provider.GetProviderType()
 	if err != nil {
 		log.Errorf("failed to load context file: %v", err)
 		util.ErrorHandler(fmt.Sprintf("ai-proxy.%s.load_ctx_failed", typ), fmt.Errorf("failed to load context file: %v", err))
+		return
 	}
 
 	if inserter, ok := provider.(ContextInserter); ok {
@@ -146,10 +143,13 @@ func insertContext(provider Provider, content string, err error, body []byte) {
 
 	if err != nil {
 		util.ErrorHandler(fmt.Sprintf("ai-proxy.%s.insert_ctx_failed", typ), fmt.Errorf("failed to insert context message: %v", err))
+		return
 	}
 	if err := replaceRequestBody(body); err != nil {
 		util.ErrorHandler(fmt.Sprintf("ai-proxy.%s.replace_request_body_failed", typ), fmt.Errorf("failed to replace request body: %v", err))
+		return
 	}
+	_ = proxywasm.ResumeHttpRequest()
 }
 
 func defaultInsertHttpContextMessage(body []byte, content string) ([]byte, error) {

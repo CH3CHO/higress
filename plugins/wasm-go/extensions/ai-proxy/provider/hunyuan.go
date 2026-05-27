@@ -187,13 +187,11 @@ func (m *hunyuanProvider) OnRequestBody(ctx wrapper.HttpContext, apiName ApiName
 		}
 		err := m.contextCache.GetContent(func(content string, err error) {
 			log.Debugf("#debug nash5# ctx file loaded! callback start, content is: %s", content)
-			defer func() {
-				_ = proxywasm.ResumeHttpRequest()
-			}()
 
 			if err != nil {
 				log.Errorf("failed to load context file: %v", err)
 				util.ErrorHandler("ai-proxy.hunyuan.load_ctx_failed", fmt.Errorf("failed to load context file: %v", err))
+				return
 			}
 			m.insertContextMessageIntoHunyuanRequest(request, content)
 
@@ -204,7 +202,9 @@ func (m *hunyuanProvider) OnRequestBody(ctx wrapper.HttpContext, apiName ApiName
 
 			if err := replaceJsonRequestBody(request); err != nil {
 				util.ErrorHandler("ai-proxy.hunyuan.insert_ctx_failed", fmt.Errorf("failed to replace request body: %v", err))
+				return
 			}
+			_ = proxywasm.ResumeHttpRequest()
 		})
 		if err == nil {
 			log.Debugf("#debug nash5# ctx file load success!")
@@ -260,9 +260,6 @@ func (m *hunyuanProvider) OnRequestBody(ctx wrapper.HttpContext, apiName ApiName
 	}
 
 	err := m.contextCache.GetContent(func(content string, err error) {
-		defer func() {
-			_ = proxywasm.ResumeHttpRequest()
-		}()
 		if err != nil {
 			log.Errorf("failed to load context file: %v", err)
 			util.ErrorHandler("ai-proxy.hunyuan.load_ctx_failed", fmt.Errorf("failed to load context file: %v", err))
@@ -278,7 +275,9 @@ func (m *hunyuanProvider) OnRequestBody(ctx wrapper.HttpContext, apiName ApiName
 
 		if err := replaceJsonRequestBody(hunyuanRequest); err != nil {
 			util.ErrorHandler("ai-proxy.hunyuan.insert_ctx_failed", fmt.Errorf("failed to replace request body: %v", err))
+			return
 		}
+		_ = proxywasm.ResumeHttpRequest()
 	})
 	if err == nil {
 		return types.ActionPause, nil

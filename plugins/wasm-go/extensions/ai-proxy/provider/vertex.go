@@ -822,9 +822,6 @@ func (v *vertexProvider) getAccessToken(jwtToken string) error {
 	reqBody := "grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer&assertion=" + jwtToken
 	err := v.client.Post("/token", headers, []byte(reqBody), func(statusCode int, responseHeaders http.Header, responseBody []byte) {
 		responseString := string(responseBody)
-		defer func() {
-			_ = proxywasm.ResumeHttpRequest()
-		}()
 		if statusCode != http.StatusOK {
 			log.Errorf("failed to create vertex access key, status: %d body: %s", statusCode, responseString)
 			_ = util.ErrorHandler("ai-proxy.vertex.load_ak_failed", fmt.Errorf("failed to load vertex ak"))
@@ -844,6 +841,7 @@ func (v *vertexProvider) getAccessToken(jwtToken string) error {
 		if err != nil {
 			log.Errorf("[vertex]: unable to cache access token: %v", err)
 		}
+		_ = proxywasm.ResumeHttpRequest()
 	}, v.config.timeout)
 	return err
 }
