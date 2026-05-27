@@ -188,14 +188,15 @@ func onHttpRequestHeaders(ctx wrapper.HttpContext, cfg config.ClusterKeyRateLimi
 		if context.remaining < 0 {
 			if dryRun {
 				ctx.SetUserAttribute(UserAttrResultKey, "reject-dryrun")
+				_ = proxywasm.ResumeHttpRequest()
 			} else {
 				ctx.SetUserAttribute(UserAttrResultKey, "reject")
 				rejected(cfg, context)
 			}
 		} else {
 			ctx.SetUserAttribute(UserAttrResultKey, "pass")
+			_ = proxywasm.ResumeHttpRequest()
 		}
-		_ = proxywasm.ResumeHttpRequest()
 	})
 
 	if err != nil {

@@ -513,10 +513,6 @@ func (g *geminiProvider) processImageURL(ctx wrapper.HttpContext, body []byte) (
 	}
 
 	if err := g.processImageURLWithCallback(ctx, body, totalImages, func(body []byte, err error) {
-		defer func() {
-			_ = proxywasm.ResumeHttpRequest()
-		}()
-
 		if err != nil {
 			log.Errorf("failed to get image while handle multi modal: %v", err)
 			util.ErrorHandler("ai-proxy.gemini.fetch_image_failed", err)
@@ -525,7 +521,9 @@ func (g *geminiProvider) processImageURL(ctx wrapper.HttpContext, body []byte) (
 		// replace the request
 		if err := replaceRequestBody(body); err != nil {
 			util.ErrorHandler("ai-proxy.gemini.replace_request_body_failed", err)
+			return
 		}
+		_ = proxywasm.ResumeHttpRequest()
 	}); err != nil {
 		return types.ActionContinue, err
 	}

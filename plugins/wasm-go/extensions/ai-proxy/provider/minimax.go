@@ -115,12 +115,10 @@ func (m *minimaxProvider) handleRequestBodyByChatCompletionPro(body []byte) (typ
 	}
 
 	err := m.contextCache.GetContent(func(content string, err error) {
-		defer func() {
-			_ = proxywasm.ResumeHttpRequest()
-		}()
 		if err != nil {
 			log.Errorf("failed to load context file: %v", err)
 			util.ErrorHandler("ai-proxy.minimax.load_ctx_failed", fmt.Errorf("failed to load context file: %v", err))
+			return
 		}
 		// Since minimaxChatCompletionV2 (format consistent with OpenAI) and minimaxChatCompletionPro (different format from OpenAI) have different logic for insertHttpContextMessage, we cannot unify them within one provider.
 		// For minimaxChatCompletionPro, we need to manually handle context messages.
@@ -128,7 +126,9 @@ func (m *minimaxProvider) handleRequestBodyByChatCompletionPro(body []byte) (typ
 		minimaxRequest := m.buildMinimaxChatCompletionProRequest(request, content)
 		if err := replaceJsonRequestBody(minimaxRequest); err != nil {
 			util.ErrorHandler("ai-proxy.minimax.insert_ctx_failed", fmt.Errorf("failed to replace Request body: %v", err))
+			return
 		}
+		_ = proxywasm.ResumeHttpRequest()
 	})
 	if err == nil {
 		return types.ActionPause, nil

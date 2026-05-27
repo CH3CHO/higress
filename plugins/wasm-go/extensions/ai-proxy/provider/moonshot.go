@@ -97,9 +97,6 @@ func (m *moonshotProvider) OnRequestBody(ctx wrapper.HttpContext, apiName ApiNam
 
 	apiKey := m.config.GetOrSetTokenWithContext(ctx)
 	err := m.getContextContent(apiKey, func(content string, err error) {
-		defer func() {
-			_ = proxywasm.ResumeHttpRequest()
-		}()
 		if err != nil {
 			log.Errorf("failed to load context file: %v", err)
 			_ = util.ErrorHandler("ai-proxy.moonshot.load_ctx_failed", fmt.Errorf("failed to load context file: %v", err))
@@ -108,7 +105,9 @@ func (m *moonshotProvider) OnRequestBody(ctx wrapper.HttpContext, apiName ApiNam
 		err = m.performChatCompletion(ctx, content, request)
 		if err != nil {
 			_ = util.ErrorHandler("ai-proxy.moonshot.insert_ctx_failed", fmt.Errorf("failed to perform chat completion: %v", err))
+			return
 		}
+		_ = proxywasm.ResumeHttpRequest()
 	})
 	if err == nil {
 		return types.ActionPause, nil
