@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+
+	"github.com/tidwall/sjson"
 )
 
 // anthropicMessagesRequest is the shared user-facing DTO for Claude-compatible
@@ -83,6 +85,22 @@ type claudeChatMessageContent struct {
 	Input        map[string]interface{}          `json:"input,omitempty"`
 	ToolUseId    string                          `json:"tool_use_id,omitempty"`
 	Content      *claudeChatMessageContentUnion  `json:"content,omitempty"`
+}
+
+// 仅修正 tool_use 显式传入 input:{} 时被 omitempty 吞掉的问题，其它字段仍保持默认序列化行为。
+func (c claudeChatMessageContent) MarshalJSON() ([]byte, error) {
+	type alias claudeChatMessageContent
+	body, err := json.Marshal(alias(c))
+	if err != nil {
+		return nil, err
+	}
+	if c.Type == "tool_use" && c.Input != nil && len(c.Input) == 0 {
+		body, err = sjson.SetRawBytes(body, "input", []byte("{}"))
+		if err != nil {
+			return nil, err
+		}
+	}
+	return body, nil
 }
 
 func (ccw *claudeChatMessageContentUnion) UnmarshalJSON(data []byte) error {

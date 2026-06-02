@@ -212,6 +212,39 @@ func TestSetBedrockAnthropicMessagesRequestDefaultsPreservesToolResultContentBlo
 	assert.Equal(t, "document body", gjson.GetBytes(body, "messages.1.content.0.content.0.text").String())
 }
 
+func TestSetBedrockAnthropicMessagesRequestDefaultsPreservesEmptyToolUseInput(t *testing.T) {
+	headers := http.Header{}
+
+	body, err := setBedrockAnthropicMessagesRequestDefaults([]byte(`{
+		"model":"claude-sonnet-4-5",
+		"max_tokens":64,
+		"messages":[
+			{"role":"assistant","content":[
+				{"type":"tool_use","id":"toolu_123","name":"fetch_doc","input":{}}
+			]}
+		]
+	}`), headers)
+	assert.NoError(t, err)
+	assert.True(t, gjson.GetBytes(body, "messages.0.content.0.input").Exists())
+	assert.Equal(t, "{}", gjson.GetBytes(body, "messages.0.content.0.input").Raw)
+}
+
+func TestSetBedrockAnthropicMessagesRequestDefaultsOmitsMissingToolUseInput(t *testing.T) {
+	headers := http.Header{}
+
+	body, err := setBedrockAnthropicMessagesRequestDefaults([]byte(`{
+		"model":"claude-sonnet-4-5",
+		"max_tokens":64,
+		"messages":[
+			{"role":"assistant","content":[
+				{"type":"tool_use","id":"toolu_123","name":"fetch_doc"}
+			]}
+		]
+	}`), headers)
+	assert.NoError(t, err)
+	assert.False(t, gjson.GetBytes(body, "messages.0.content.0.input").Exists())
+}
+
 func TestSetBedrockAnthropicMessagesRequestDefaultsPreservesRicherToolUnion(t *testing.T) {
 	headers := http.Header{}
 

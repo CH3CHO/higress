@@ -12,6 +12,7 @@ import (
 	"github.com/higress-group/proxy-wasm-go-sdk/proxywasm/types"
 	"github.com/higress-group/wasm-go/pkg/log"
 	"github.com/higress-group/wasm-go/pkg/wrapper"
+	"github.com/tidwall/sjson"
 )
 
 // claudeProvider is the provider for Claude service.
@@ -43,6 +44,22 @@ type claudeTextGenContent struct {
 	Input     map[string]interface{} `json:"input,omitempty"`     // For tool_use
 	Signature string                 `json:"signature,omitempty"` // For thinking
 	Thinking  string                 `json:"thinking,omitempty"`  // For thinking
+}
+
+// 仅修正 tool_use 显式传入 input:{} 时被 omitempty 吞掉的问题，其它字段仍保持默认序列化行为。
+func (c claudeTextGenContent) MarshalJSON() ([]byte, error) {
+	type alias claudeTextGenContent
+	body, err := json.Marshal(alias(c))
+	if err != nil {
+		return nil, err
+	}
+	if c.Type == "tool_use" && c.Input != nil && len(c.Input) == 0 {
+		body, err = sjson.SetRawBytes(body, "input", []byte("{}"))
+		if err != nil {
+			return nil, err
+		}
+	}
+	return body, nil
 }
 
 type claudeTextGenUsage struct {
