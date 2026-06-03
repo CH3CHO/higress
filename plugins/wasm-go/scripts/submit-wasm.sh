@@ -65,9 +65,15 @@ SCHEME=$(echo "${CI_SERVER_URL}" | cut -d: -f1)
 git clone "${SCHEME}://${PLUGIN_SERVER_REPO}" plugin-server
 cd plugin-server
 
-# Checkout target branch (create if not exists)
+# Checkout target branch.
+# dev: always rebase onto plugin-server's default branch — wasm-dev is a snapshot of
+#      "trip + in-flight dev changes", not an append-only branch. Avoids divergence
+#      accumulating as MRs land on trip but their stale wasm commits linger on wasm-dev.
+# trip: continue from existing wasm-trip if present (the open MR may be accumulating commits).
 git fetch origin
-if git ls-remote --exit-code --heads origin "${TARGET_BRANCH}" > /dev/null 2>&1; then
+if [ "${TRIGGER_BRANCH}" = "dev" ]; then
+    git checkout -b "${TARGET_BRANCH}" "origin/${PLUGIN_SERVER_DEFAULT_BRANCH}"
+elif git ls-remote --exit-code --heads origin "${TARGET_BRANCH}" > /dev/null 2>&1; then
     git checkout -b "${TARGET_BRANCH}" "origin/${TARGET_BRANCH}"
 else
     git checkout -b "${TARGET_BRANCH}"
@@ -82,8 +88,9 @@ while IFS= read -r PLUGIN; do
     # Fail if plugin-server already has a newer commit than ours.
     # With oldest_first ordering, this should never happen in normal operation.
     # If it does, something is wrong (e.g. a manual push) — surface it as an error.
+    # Skipped on dev: we reset wasm-dev to trip each run, so EXISTING_SHA is from trip baseline.
     EXISTING_META="plugins/${PLUGIN}/${VERSION}/metadata.txt"
-    if [ -f "${EXISTING_META}" ]; then
+    if [ "${TRIGGER_BRANCH}" != "dev" ] && [ -f "${EXISTING_META}" ]; then
         EXISTING_SHA=$(tr -d '[:space:]' < "${EXISTING_META}")
         if ( cd "${AI_GATEWAY_DIR}" && git merge-base --is-ancestor "${CI_COMMIT_SHA}" "${EXISTING_SHA}" ) 2>/dev/null; then
             echo "ERROR: ${PLUGIN} in plugin-server already has a newer commit (${EXISTING_SHA:0:8}) than ours (${CI_COMMIT_SHA:0:8}). Aborting."
@@ -115,7 +122,12 @@ git commit -m "chore: update wasm plugins (${CI_COMMIT_SHORT_SHA})
 Plugins: ${PLUGIN_LIST}
 Commit: ${CI_PROJECT_URL}/-/commit/${CI_COMMIT_SHA}"
 
-git push origin "${TARGET_BRANCH}"
+# dev rebuilds wasm-dev from trip each run, so the push is non-fast-forward by design.
+if [ "${TRIGGER_BRANCH}" = "dev" ]; then
+    git push --force-with-lease origin "${TARGET_BRANCH}"
+else
+    git push origin "${TARGET_BRANCH}"
+fi
 
 # For trip branch: create or update MR
 if [ "${CREATE_MR}" != "true" ]; then
