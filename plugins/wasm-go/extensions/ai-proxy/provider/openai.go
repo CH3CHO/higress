@@ -170,6 +170,7 @@ func (m *openaiProvider) OnRequestHeaders(ctx wrapper.HttpContext, apiName ApiNa
 
 func (m *openaiProvider) TransformRequestHeaders(ctx wrapper.HttpContext, apiName ApiName, headers http.Header) {
 	if m.isDirectCustomPath {
+		// openaiCustomUrl 已经指向具体 API 时，按单接口直达处理，不再参与 capability 映射。
 		util.OverwriteRequestPathHeader(headers, m.customPath)
 	} else if apiName != "" {
 		effectiveApiName := apiName
