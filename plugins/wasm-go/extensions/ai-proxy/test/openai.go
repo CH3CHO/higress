@@ -71,6 +71,39 @@ var openAICustomDomainIndirectPathConfig = func() json.RawMessage {
 	return data
 }()
 
+// 测试配置：OpenAI直达 chat/completions 路径 + Anthropic Messages capability
+var openAIAnthropicMessagesCapabilityConfig = func() json.RawMessage {
+	data, _ := json.Marshal(map[string]interface{}{
+		"provider": map[string]interface{}{
+			"type":      "openai",
+			"apiTokens": []string{"sk-openai-custom-domain"},
+			"modelMapping": map[string]string{
+				"*": "gpt-3.5-turbo",
+			},
+			"openaiCustomUrl": "https://custom.openai.com/openai",
+			"capabilities": map[string]string{
+				"anthropic/v1/messages": "/anthropic",
+			},
+		},
+	})
+	return data
+}()
+
+// 测试配置：OpenAI自定义域名配置（带前缀的直达路径）
+var openAIPrefixedDirectChatCompletionConfig = func() json.RawMessage {
+	data, _ := json.Marshal(map[string]interface{}{
+		"provider": map[string]interface{}{
+			"type":      "openai",
+			"apiTokens": []string{"sk-openai-custom-domain"},
+			"modelMapping": map[string]string{
+				"*": "gpt-3.5-turbo",
+			},
+			"openaiCustomUrl": "https://custom.openai.com/proxy/openai/v1/chat/completions",
+		},
+	})
+	return data
+}()
+
 // 测试配置：OpenAI完整配置（包含responseJsonSchema等字段）
 var completeOpenAIConfig = func() json.RawMessage {
 	data, _ := json.Marshal(map[string]interface{}{
@@ -132,6 +165,26 @@ func RunOpenAIParseConfigTests(t *testing.T) {
 		// 测试OpenAI自定义域名配置（间接路径）
 		t.Run("openai custom domain indirect path config", func(t *testing.T) {
 			host, status := test.NewTestHost(openAICustomDomainIndirectPathConfig)
+			defer host.Reset()
+			require.Equal(t, types.OnPluginStartStatusOK, status)
+
+			config, err := host.GetMatchConfig()
+			require.NoError(t, err)
+			require.NotNil(t, config)
+		})
+
+		t.Run("openai anthropic messages capability config", func(t *testing.T) {
+			host, status := test.NewTestHost(openAIAnthropicMessagesCapabilityConfig)
+			defer host.Reset()
+			require.Equal(t, types.OnPluginStartStatusOK, status)
+
+			config, err := host.GetMatchConfig()
+			require.NoError(t, err)
+			require.NotNil(t, config)
+		})
+
+		t.Run("openai prefixed direct chat completion config", func(t *testing.T) {
+			host, status := test.NewTestHost(openAIPrefixedDirectChatCompletionConfig)
 			defer host.Reset()
 			require.Equal(t, types.OnPluginStartStatusOK, status)
 
@@ -304,6 +357,76 @@ func RunOpenAIOnHttpRequestHeadersTests(t *testing.T) {
 			require.True(t, hasPath)
 			// 对于直接路径，应该保持原有路径
 			require.Contains(t, pathValue, "/v1/chat/completions", "Path should be preserved for direct custom path")
+		})
+
+		t.Run("openai anthropic messages capability request headers", func(t *testing.T) {
+			host, status := test.NewTestHost(openAIAnthropicMessagesCapabilityConfig)
+			defer host.Reset()
+			require.Equal(t, types.OnPluginStartStatusOK, status)
+
+			action := host.CallOnHttpRequestHeaders([][2]string{
+				{":authority", "example.com"},
+				{":path", "/v1/messages"},
+				{":method", "POST"},
+				{"Content-Type", "application/json"},
+			})
+
+			require.Equal(t, types.HeaderStopIteration, action)
+
+			requestHeaders := host.GetRequestHeaders()
+			require.NotNil(t, requestHeaders)
+
+			hostValue, hasHost := test.GetHeaderValue(requestHeaders, ":authority")
+			require.True(t, hasHost)
+			require.Equal(t, "custom.openai.com", hostValue)
+
+			pathValue, hasPath := test.GetHeaderValue(requestHeaders, ":path")
+			require.True(t, hasPath)
+			require.Equal(t, "/anthropic", pathValue)
+		})
+
+		t.Run("openai non direct custom path still maps chat completions by capability", func(t *testing.T) {
+			host, status := test.NewTestHost(openAIAnthropicMessagesCapabilityConfig)
+			defer host.Reset()
+			require.Equal(t, types.OnPluginStartStatusOK, status)
+
+			action := host.CallOnHttpRequestHeaders([][2]string{
+				{":authority", "example.com"},
+				{":path", "/v1/chat/completions"},
+				{":method", "POST"},
+				{"Content-Type", "application/json"},
+			})
+
+			require.Equal(t, types.HeaderStopIteration, action)
+
+			requestHeaders := host.GetRequestHeaders()
+			require.NotNil(t, requestHeaders)
+
+			pathValue, hasPath := test.GetHeaderValue(requestHeaders, ":path")
+			require.True(t, hasPath)
+			require.Equal(t, "/openai/chat/completions", pathValue)
+		})
+
+		t.Run("openai direct custom path bypasses capability mapping", func(t *testing.T) {
+			host, status := test.NewTestHost(openAIPrefixedDirectChatCompletionConfig)
+			defer host.Reset()
+			require.Equal(t, types.OnPluginStartStatusOK, status)
+
+			action := host.CallOnHttpRequestHeaders([][2]string{
+				{":authority", "example.com"},
+				{":path", "/v1/chat/completions"},
+				{":method", "POST"},
+				{"Content-Type", "application/json"},
+			})
+
+			require.Equal(t, types.HeaderStopIteration, action)
+
+			requestHeaders := host.GetRequestHeaders()
+			require.NotNil(t, requestHeaders)
+
+			pathValue, hasPath := test.GetHeaderValue(requestHeaders, ":path")
+			require.True(t, hasPath)
+			require.Equal(t, "/proxy/openai/v1/chat/completions", pathValue)
 		})
 	})
 }

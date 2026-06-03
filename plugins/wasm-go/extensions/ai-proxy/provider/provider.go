@@ -691,7 +691,8 @@ func (c *ProviderConfig) FromJson(json gjson.Result) {
 
 	c.capabilities = make(map[string]string)
 	for capability, pathJson := range json.Get("capabilities").Map() {
-		// 过滤掉不受支持的能力
+		// 过滤掉不受支持的能力；anthropic/v1/messages 用于 OpenAI provider
+		// 在同一 host 下按 capability 单独覆盖到 Anthropic Messages path。
 		switch capability {
 		case string(ApiNameChatCompletion),
 			string(ApiNameEmbeddings),
@@ -699,7 +700,8 @@ func (c *ProviderConfig) FromJson(json gjson.Result) {
 			string(ApiNameImageVariation),
 			string(ApiNameImageEdit),
 			string(ApiNameAudioSpeech),
-			string(ApiNameCohereV1Rerank):
+			string(ApiNameCohereV1Rerank),
+			string(ApiNameAnthropicMessages):
 			c.capabilities[capability] = pathJson.String()
 		}
 	}
