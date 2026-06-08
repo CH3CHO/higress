@@ -22,6 +22,7 @@ import (
 
 	"github.com/higress-group/proxy-wasm-go-sdk/proxywasm/types"
 	"github.com/higress-group/wasm-go/pkg/test"
+	"github.com/higress-group/wasm-go/pkg/wrapper"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
 )
@@ -191,6 +192,49 @@ var emptyAttributesConfig = func() json.RawMessage {
 	return data
 }()
 
+// 测试配置：跳过请求体日志
+var skipRequestBodyLogConfig = func() json.RawMessage {
+	data, _ := json.Marshal(map[string]interface{}{
+		"attributes": []map[string]interface{}{
+			{
+				"key":           "model",
+				"value_source":  "request_body",
+				"value":         "model",
+				"apply_to_log":  true,
+				"apply_to_span": false,
+			},
+		},
+		"skip_request_body_log": true,
+	})
+	return data
+}()
+
+// 测试配置：跳过响应体日志
+var skipResponseBodyLogConfig = func() json.RawMessage {
+	data, _ := json.Marshal(map[string]interface{}{
+		"attributes": []map[string]interface{}{
+			{
+				"key":           "input_token",
+				"value_source":  "response_body",
+				"value":         "usage.prompt_tokens",
+				"apply_to_log":  true,
+				"apply_to_span": false,
+			},
+		},
+		"skip_response_body_log": true,
+	})
+	return data
+}()
+
+// 测试配置：同时跳过请求体和响应体日志
+var skipBothBodyLogConfig = func() json.RawMessage {
+	data, _ := json.Marshal(map[string]interface{}{
+		"skip_request_body_log":  true,
+		"skip_response_body_log": true,
+	})
+	return data
+}()
+
 func TestParseConfig(t *testing.T) {
 	test.RunGoTest(t, func(t *testing.T) {
 		// 测试基本统计配置解析
@@ -251,6 +295,39 @@ func TestParseConfig(t *testing.T) {
 		// 测试空属性配置解析
 		t.Run("empty attributes config", func(t *testing.T) {
 			host, status := test.NewTestHost(emptyAttributesConfig)
+			defer host.Reset()
+			require.Equal(t, types.OnPluginStartStatusOK, status)
+
+			config, err := host.GetMatchConfig()
+			require.NoError(t, err)
+			require.NotNil(t, config)
+		})
+
+		// 测试跳过请求体日志配置解析
+		t.Run("skip request body log config", func(t *testing.T) {
+			host, status := test.NewTestHost(skipRequestBodyLogConfig)
+			defer host.Reset()
+			require.Equal(t, types.OnPluginStartStatusOK, status)
+
+			config, err := host.GetMatchConfig()
+			require.NoError(t, err)
+			require.NotNil(t, config)
+		})
+
+		// 测试跳过响应体日志配置解析
+		t.Run("skip response body log config", func(t *testing.T) {
+			host, status := test.NewTestHost(skipResponseBodyLogConfig)
+			defer host.Reset()
+			require.Equal(t, types.OnPluginStartStatusOK, status)
+
+			config, err := host.GetMatchConfig()
+			require.NoError(t, err)
+			require.NotNil(t, config)
+		})
+
+		// 测试同时跳过请求体和响应体日志配置解析
+		t.Run("skip both body log config", func(t *testing.T) {
+			host, status := test.NewTestHost(skipBothBodyLogConfig)
 			defer host.Reset()
 			require.Equal(t, types.OnPluginStartStatusOK, status)
 
@@ -1450,4 +1527,197 @@ func TestTruncateStringForLog(t *testing.T) {
 	require.Equal(t, "abc [truncated]", truncateStringForLog("abcdefghijklmnop", 15))
 	require.Equal(t, "abcde", truncateStringForLog("abcdefghijklmnop", 5))
 	require.Equal(t, "short", truncateStringForLog("short", 10))
+}
+
+func TestSkipRequestBodyLog(t *testing.T) {
+	test.RunTest(t, func(t *testing.T) {
+		t.Run("non-streaming skip request body log", func(t *testing.T) {
+			host, status := test.NewTestHost(skipRequestBodyLogConfig)
+			defer host.Reset()
+			require.Equal(t, types.OnPluginStartStatusOK, status)
+
+			host.SetRouteName("api-v1")
+			host.SetClusterName("cluster-1")
+
+			// 1. 请求头
+			action := host.CallOnHttpRequestHeaders([][2]string{
+				{":authority", "example.com"},
+				{":path", "/v1/chat/completions"},
+				{":method", "POST"},
+				{"x-mse-consumer", "consumer1"},
+			})
+			require.Equal(t, types.HeaderStopIteration, action)
+
+			// 2. 请求体
+			requestBody := []byte(`{"model": "gpt-3.5-turbo", "messages": [{"role": "user", "content": "Hello"}]}`)
+			action = host.CallOnHttpRequestBody(requestBody)
+			require.Equal(t, types.ActionContinue, action)
+
+			time.Sleep(10 * time.Millisecond)
+
+			// 3. 响应头
+			action = host.CallOnHttpResponseHeaders([][2]string{
+				{":status", "200"},
+				{"content-type", "application/json"},
+			})
+			require.Equal(t, types.ActionContinue, action)
+
+			// 4. 响应体
+			responseBody := []byte(`{
+				"choices": [{"message": {"content": "Hi there"}}],
+				"usage": {"prompt_tokens": 5, "completion_tokens": 2, "total_tokens": 7},
+				"model": "gpt-3.5-turbo"
+			}`)
+			action = host.CallOnHttpResponseBody(responseBody)
+			require.Equal(t, types.ActionContinue, action)
+
+			// 5. 完成
+			host.CompleteHttp()
+
+			// 6. 验证 ai_log：不包含 request_body，但包含 model attribute
+			aiLogRaw, err := host.GetProperty([]string{"ai_log"})
+			require.NoError(t, err)
+			aiLogStr := wrapper.UnmarshalStr(string(aiLogRaw))
+			require.False(t, gjson.Get(aiLogStr, "request_body").Exists(), "request_body should not exist in ai_log when skip_request_body_log=true")
+			require.True(t, gjson.Get(aiLogStr, "model").Exists(), "model attribute should still be extracted from request_body")
+
+			// 7. 验证 metric 正常
+			inputTokenMetric := "route.api-v1.upstream.cluster-1.model.gpt-3.5-turbo.consumer.consumer1.metric.input_token"
+			inputTokenValue, err := host.GetCounterMetric(inputTokenMetric)
+			require.NoError(t, err)
+			require.Equal(t, uint64(5), inputTokenValue)
+		})
+	})
+}
+
+func TestSkipResponseBodyLog(t *testing.T) {
+	test.RunTest(t, func(t *testing.T) {
+		t.Run("non-streaming skip response body log", func(t *testing.T) {
+			host, status := test.NewTestHost(skipResponseBodyLogConfig)
+			defer host.Reset()
+			require.Equal(t, types.OnPluginStartStatusOK, status)
+
+			host.SetRouteName("api-v1")
+			host.SetClusterName("cluster-1")
+
+			// 1. 请求头
+			action := host.CallOnHttpRequestHeaders([][2]string{
+				{":authority", "example.com"},
+				{":path", "/v1/chat/completions"},
+				{":method", "POST"},
+				{"x-mse-consumer", "consumer1"},
+			})
+			require.Equal(t, types.HeaderStopIteration, action)
+
+			// 2. 请求体
+			requestBody := []byte(`{"model": "gpt-3.5-turbo", "messages": [{"role": "user", "content": "Hello"}]}`)
+			action = host.CallOnHttpRequestBody(requestBody)
+			require.Equal(t, types.ActionContinue, action)
+
+			time.Sleep(10 * time.Millisecond)
+
+			// 3. 响应头
+			action = host.CallOnHttpResponseHeaders([][2]string{
+				{":status", "200"},
+				{"content-type", "application/json"},
+			})
+			require.Equal(t, types.ActionContinue, action)
+
+			// 4. 响应体
+			responseBody := []byte(`{
+				"choices": [{"message": {"content": "Hi there"}}],
+				"usage": {"prompt_tokens": 7, "completion_tokens": 2, "total_tokens": 9},
+				"model": "gpt-3.5-turbo"
+			}`)
+			action = host.CallOnHttpResponseBody(responseBody)
+			require.Equal(t, types.ActionContinue, action)
+
+			// 5. 完成
+			host.CompleteHttp()
+
+			// 6. 验证 ai_log：不包含 response_body，但包含 input_token attribute
+			aiLogRaw, err := host.GetProperty([]string{"ai_log"})
+			require.NoError(t, err)
+			aiLogStr := wrapper.UnmarshalStr(string(aiLogRaw))
+			require.False(t, gjson.Get(aiLogStr, "response_body").Exists(), "response_body should not exist in ai_log when skip_response_body_log=true")
+			require.True(t, gjson.Get(aiLogStr, "input_token").Exists(), "input_token attribute should still be extracted from response_body")
+
+			// 7. 验证 input_token 指标正常
+			inputTokenMetric := "route.api-v1.upstream.cluster-1.model.gpt-3.5-turbo.consumer.consumer1.metric.input_token"
+			inputTokenValue, err := host.GetCounterMetric(inputTokenMetric)
+			require.NoError(t, err)
+			require.Equal(t, uint64(7), inputTokenValue)
+		})
+	})
+}
+
+func TestSkipBothBodyLogStreaming(t *testing.T) {
+	test.RunTest(t, func(t *testing.T) {
+		t.Run("streaming skip both body log", func(t *testing.T) {
+			host, status := test.NewTestHost(skipBothBodyLogConfig)
+			defer host.Reset()
+			require.Equal(t, types.OnPluginStartStatusOK, status)
+
+			host.SetRouteName("api-v1")
+			host.SetClusterName("cluster-1")
+
+			// 1. 请求头
+			action := host.CallOnHttpRequestHeaders([][2]string{
+				{":authority", "example.com"},
+				{":path", "/v1/chat/completions"},
+				{":method", "POST"},
+				{"x-mse-consumer", "consumer1"},
+			})
+			require.Equal(t, types.HeaderStopIteration, action)
+
+			// 2. 请求体
+			requestBody := []byte(`{"model": "gpt-3.5-turbo", "messages": [{"role": "user", "content": "Hello"}]}`)
+			action = host.CallOnHttpRequestBody(requestBody)
+			require.Equal(t, types.ActionContinue, action)
+
+			time.Sleep(10 * time.Millisecond)
+
+			// 3. 流式响应头
+			action = host.CallOnHttpResponseHeaders([][2]string{
+				{":status", "200"},
+				{"content-type", "text/event-stream"},
+			})
+			require.Equal(t, types.ActionContinue, action)
+
+			// 4. 第一个流式块
+			firstChunk := []byte(`data: {"choices":[{"message":{"content":"Hello"}}],"model":"gpt-3.5-turbo","usage":{"prompt_tokens":5,"completion_tokens":3,"total_tokens":8}}`)
+			action = host.CallOnHttpStreamingResponseBody(firstChunk, false)
+			require.Equal(t, types.ActionContinue, action)
+			require.Equal(t, firstChunk, host.GetResponseBody())
+
+			// 5. 最后一个流式块
+			lastChunk := []byte(`data: {"choices":[{"message":{"content":"How can I help you?"}}],"model":"gpt-3.5-turbo","usage":{"prompt_tokens":5,"completion_tokens":8,"total_tokens":13}}`)
+			action = host.CallOnHttpStreamingResponseBody(lastChunk, true)
+			require.Equal(t, types.ActionContinue, action)
+			require.Equal(t, lastChunk, host.GetResponseBody())
+
+			time.Sleep(10 * time.Millisecond)
+
+			// 6. 完成
+			host.CompleteHttp()
+
+			// 7. 验证 ai_log：不包含 request_body 和 response_body
+			aiLogRaw, err := host.GetProperty([]string{"ai_log"})
+			require.NoError(t, err)
+			aiLogStr := wrapper.UnmarshalStr(string(aiLogRaw))
+			require.False(t, gjson.Get(aiLogStr, "request_body").Exists(), "request_body should not exist in ai_log when skip_request_body_log=true")
+			require.False(t, gjson.Get(aiLogStr, "response_body").Exists(), "response_body should not exist in ai_log when skip_response_body_log=true")
+
+			// 8. 验证指标正常
+			inputTokenMetric := "route.api-v1.upstream.cluster-1.model.gpt-3.5-turbo.consumer.consumer1.metric.input_token"
+			inputTokenValue, err := host.GetCounterMetric(inputTokenMetric)
+			require.NoError(t, err)
+			require.Equal(t, uint64(5), inputTokenValue)
+
+			outputTokenMetric := "route.api-v1.upstream.cluster-1.model.gpt-3.5-turbo.consumer.consumer1.metric.output_token"
+			outputTokenValue, err := host.GetCounterMetric(outputTokenMetric)
+			require.NoError(t, err)
+			require.Equal(t, uint64(8), outputTokenValue)
+		})
+	})
 }

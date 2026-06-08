@@ -29,6 +29,8 @@ Users can also expand observable values ​​through configuration:
 | `value_length_limit` | int | optional  | 4000   | length limit for each value |
 | `enable_path_suffixes`   | []string    | optional | ["/v1/chat/completions","/v1/completions","/v1/embeddings","/v1/models","/generateContent","/streamGenerateContent"] | Only effective for requests with these specific path suffixes, can be configured as "\*" to match all paths                                         |
 | `enable_content_types` | []string    | optional | ["text/event-stream","application/json"]                                                                             | Only buffer response body for these content types                                                                                                   |
+| `skip_request_body_log` | bool | optional | false | When set to true, `request_body` will not be recorded in `ai_log`, but the plugin will still extract attributes and metrics from `request_body` |
+| `skip_response_body_log` | bool | optional | false | When set to true, `response_body` will not be recorded in `ai_log`, but the plugin will still extract attributes and metrics from `response_body` |
 
 Attribute Configuration instructions:
 
@@ -256,4 +258,25 @@ attributes:
     value_source: request_header
     value: x-mse-consumer
     apply_to_log: true
+```
+
+### Skip Request and Response Body Logging
+
+When you don't need to record the full request or response body in the log, you can skip it with the following configuration:
+
+```yaml
+skip_request_body_log: true
+skip_response_body_log: true
+```
+
+After configuration, `ai_log` will no longer contain `request_body` and `response_body` fields, but the plugin will still extract attributes and metrics from the body.
+
+If you only want to skip partial logs, you can configure them separately:
+
+```yaml
+# Only skip request body log
+skip_request_body_log: true
+
+# Only skip response body log
+skip_response_body_log: true
 ```

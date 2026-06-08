@@ -29,6 +29,8 @@ description: AI可观测配置参考
 | `value_length_limit` | int | 非必填  | 4000   | 记录的单个value的长度限制 |
 | `enable_path_suffixes` | []string    | 非必填   | []     | 只对这些特定路径后缀的请求生效，可以配置为 "\*" 以匹配所有路径（通配符检查会优先进行以提高性能）。如果为空数组，则对所有路径生效 |
 | `enable_content_types` | []string    | 非必填   | []     | 只对这些内容类型的响应进行缓冲处理。如果为空数组，则对所有内容类型生效                                                           |
+| `skip_request_body_log` | bool | 非必填 | false | 为 true 时，不在 `ai_log` 中记录 `request_body`，但插件仍会从 `request_body` 中提取 attribute 和 metric |
+| `skip_response_body_log` | bool | 非必填 | false | 为 true 时，不在 `ai_log` 中记录 `response_body`，但插件仍会从 `response_body` 中提取 attribute 和 metric |
 
 Attribute 配置说明:
 
@@ -298,4 +300,25 @@ attributes:
     value_source: request_header
     value: x-mse-consumer
     apply_to_log: true
+```
+
+### 跳过请求体和响应体日志记录
+
+当不需要在日志中记录完整的请求体或响应体时，可以通过以下配置跳过：
+
+```yaml
+skip_request_body_log: true
+skip_response_body_log: true
+```
+
+配置后，`ai_log` 中不再包含 `request_body` 和 `response_body` 字段，但插件仍会从 body 中提取 attribute 和 metric。
+
+如果只希望跳过部分日志，可以单独配置：
+
+```yaml
+# 只跳过请求体日志
+skip_request_body_log: true
+
+# 只跳过响应体日志
+skip_response_body_log: true
 ```

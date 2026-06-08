@@ -208,6 +208,10 @@ type AIStatisticsConfig struct {
 	enablePathKeywords []string
 	// Content types to enable response body buffering
 	enableContentTypes []string
+	// If skipRequestBodyLog is true, request body will not be logged
+	skipRequestBodyLog bool
+	// If skipResponseBodyLog is true, response body will not be logged
+	skipResponseBodyLog bool
 }
 
 func generateMetricName(route, cluster, model, consumer, metricName string) string {
@@ -372,6 +376,9 @@ func parseConfig(configJson gjson.Result, config *AIStatisticsConfig) error {
 		config.enableContentTypes = append(config.enableContentTypes, contentTypeStr)
 	}
 
+	config.skipRequestBodyLog = configJson.Get("skip_request_body_log").Bool()
+	config.skipResponseBodyLog = configJson.Get("skip_response_body_log").Bool()
+
 	return nil
 }
 
@@ -463,9 +470,11 @@ func onHttpRequestHeaders(ctx wrapper.HttpContext, config AIStatisticsConfig) ty
 		// Delay the header flushing to the next filter and buffer the body for once.
 		// Because if we don't do this, following plugins may just return an error when processing the header,
 		// causing us unable to log the request body at all.
+		_ = ctx.WriteUserAttributeToLogWithKey(wrapper.AILogKey)
 		return types.HeaderStopIteration
 	}
 
+	_ = ctx.WriteUserAttributeToLogWithKey(wrapper.AILogKey)
 	return types.ActionContinue
 }
 
@@ -482,29 +491,31 @@ func onHttpStreamingRequestBody(ctx wrapper.HttpContext, config AIStatisticsConf
 		return
 	}
 
-	cachedRequestBody := ctx.GetByteSliceContext(RequestBody, nil)
-	if cachedRequestBody == nil {
-		cachedRequestBody = chunk
-	} else if len(cachedRequestBody)+len(chunk) < config.requestBodyLengthLimit {
-		cachedRequestBody = append(cachedRequestBody, chunk...)
-	} else {
-		bytesToBeAdded := config.requestBodyLengthLimit - len(cachedRequestBody)
-		if bytesToBeAdded > 0 {
-			cachedRequestBody = append(cachedRequestBody, chunk[:bytesToBeAdded]...)
+	if !config.skipRequestBodyLog {
+		cachedRequestBody := ctx.GetByteSliceContext(RequestBody, nil)
+		if cachedRequestBody == nil {
+			cachedRequestBody = chunk
+		} else if len(cachedRequestBody)+len(chunk) < config.requestBodyLengthLimit {
+			cachedRequestBody = append(cachedRequestBody, chunk...)
+		} else {
+			bytesToBeAdded := config.requestBodyLengthLimit - len(cachedRequestBody)
+			if bytesToBeAdded > 0 {
+				cachedRequestBody = append(cachedRequestBody, chunk[:bytesToBeAdded]...)
+			}
+			ctx.SetContext(SkipStreamingRequestBodyLogProcessing, true)
 		}
-		ctx.SetContext(SkipStreamingRequestBodyLogProcessing, true)
-	}
-	ctx.SetContext(RequestBody, cachedRequestBody)
+		ctx.SetContext(RequestBody, cachedRequestBody)
 
-	// Both header and received body will be passed to the following filter in the chain after return.
-	// If following plugins may just return an error when processing the header or the first chunk of body,
-	// breaking the filter chain, we won't be able to log the request body at all.
-	// So we perform the logging here when processing both the first chunk and the last chunk,
-	// especially for route_not_found cases.
-	isFirstChunk := ctx.GetUserAttribute(RequestBody) == nil
-	if isFirstChunk || isLastChunk {
-		ctx.SetUserAttribute(RequestBody, string(cachedRequestBody))
-		_ = ctx.WriteUserAttributeToLogWithKey(wrapper.AILogKey)
+		// Both header and received body will be passed to the following filter in the chain after return.
+		// If following plugins may just return an error when processing the header or the first chunk of body,
+		// breaking the filter chain, we won't be able to log the request body at all.
+		// So we perform the logging here when processing both the first chunk and the last chunk,
+		// especially for route_not_found cases.
+		isFirstChunk := ctx.GetUserAttribute(RequestBody) == nil
+		if isFirstChunk || isLastChunk {
+			ctx.SetUserAttribute(RequestBody, string(cachedRequestBody))
+			_ = ctx.WriteUserAttributeToLogWithKey(wrapper.AILogKey)
+		}
 	}
 
 	return
@@ -516,7 +527,9 @@ func onHttpRequestBody(ctx wrapper.HttpContext, config AIStatisticsConfig, body 
 		return types.ActionContinue
 	}
 
-	ctx.SetUserAttribute(RequestBody, getRequestBodyToLog(ctx, body, &config))
+	if !config.skipRequestBodyLog {
+		ctx.SetUserAttribute(RequestBody, getRequestBodyToLog(ctx, body, &config))
+	}
 
 	// Set user defined log & span attributes.
 	setAttributeBySource(ctx, config, RequestBody, body, nil)
@@ -868,7 +881,9 @@ func onHttpResponseBody(ctx wrapper.HttpContext, config AIStatisticsConfig, body
 	}
 	enrichAnthropicMessagesUsage(ctx, body)
 
-	ctx.SetUserAttribute(ResponseBody, getResponseBodyToLog(ctx, body, &config))
+	if !config.skipResponseBodyLog {
+		ctx.SetUserAttribute(ResponseBody, getResponseBodyToLog(ctx, body, &config))
+	}
 
 	// Set user defined log & span attributes.
 	setAttributeBySource(ctx, config, ResponseBody, body, nil)
@@ -1047,19 +1062,23 @@ func setAttributeBySource(ctx wrapper.HttpContext, config AIStatisticsConfig, so
 	apiName, _ := ctx.GetContext(RequestApiName).(ApiName)
 
 	if source == ResponseStreamingBody {
+		// ResponseStreamingBody 的日志写入分为三段式：
+		// 1) 如果 body 是 SSE 格式，调用 combineStreamingEventsForLog 将 events 聚合成完整 JSON 写入 ResponseBody；
+		// 2) 如果第 1 步未检测到任何 SSE event（body 可能不是 SSE），调用 appendRawStreamingResponseBodyToLog 将原始 body 直接追加到 ResponseBody 作为兜底；
+		// 3) 如果配置了只记录原始响应（非 SSE 非 JSON），则跳过从流式 body 中提取 attribute 的步骤。
+
 		logRawResponseBody := ctx.GetBoolContext(LogRawResponseBody, false)
 
-		if !logRawResponseBody {
-			// for a potential streaming body, we need to extract streaming events first for attribute extraction
-			log.Debugf("parsing streaming body chunks for attribute extraction")
-			// get buffered streaming body chunks for one-time to reduce memory footprint.
-			combineStreamingEventsForLog(ctx, &config, streamEvents)
-		}
+		if !config.skipResponseBodyLog {
+			if !logRawResponseBody {
+				combineStreamingEventsForLog(ctx, &config, streamEvents)
+			}
 
-		if !ctx.GetBoolContext(StreamEventFoundInResponseBody, false) {
-			// as long as no streaming event hasn't been found in the response body,
-			// we can directly use the raw response body for logging just in case that the body isn't a streaming one.
-			appendRawStreamingResponseBodyToLog(ctx, &config, body)
+			if !ctx.GetBoolContext(StreamEventFoundInResponseBody, false) {
+				// as long as no streaming event hasn't been found in the response body,
+				// we can directly use the raw response body for logging just in case that the body isn't a streaming one.
+				appendRawStreamingResponseBodyToLog(ctx, &config, body)
+			}
 		}
 
 		if logRawResponseBody {
