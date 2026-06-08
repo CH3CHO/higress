@@ -31,6 +31,7 @@ description: AI可观测配置参考
 | `enable_content_types` | []string    | 非必填   | []     | 只对这些内容类型的响应进行缓冲处理。如果为空数组，则对所有内容类型生效                                                           |
 | `skip_request_body_log` | bool | 非必填 | false | 为 true 时，不在 `ai_log` 中记录 `request_body`，但插件仍会从 `request_body` 中提取 attribute 和 metric |
 | `skip_response_body_log` | bool | 非必填 | false | 为 true 时，不在 `ai_log` 中记录 `response_body`，但插件仍会从 `response_body` 中提取 attribute 和 metric |
+| `request_headers` | []string | 非必填 | `[]` | 需要批量记录的 HTTP request header key 列表，以 JSON 字符串形式写入 `ai_log` |
 
 Attribute 配置说明:
 
@@ -322,3 +323,22 @@ skip_request_body_log: true
 # 只跳过响应体日志
 skip_response_body_log: true
 ```
+
+### 批量记录 Request Headers
+
+```yaml
+request_headers:
+  - x-request-id
+  - x-trace-id
+  - x-user-id
+```
+
+#### 日志输出示例
+
+```json
+{
+  "ai_log": "{\"request_headers\":\"{\\\"x-request-id\\\":\\\"abc123\\\",\\\"x-trace-id\\\":\\\"xyz456\\\",\\\"x-user-id\\\":\\\"user1\\\"}\",\"model\":\"qwen-turbo\",\"input_token\":\"10\"}"
+}
+```
+
+`request_headers` 字段的值是一个 JSON 字符串，方便下游日志解析器统一处理。
