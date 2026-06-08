@@ -31,6 +31,7 @@ Users can also expand observable values ​​through configuration:
 | `enable_content_types` | []string    | optional | ["text/event-stream","application/json"]                                                                             | Only buffer response body for these content types                                                                                                   |
 | `skip_request_body_log` | bool | optional | false | When set to true, `request_body` will not be recorded in `ai_log`, but the plugin will still extract attributes and metrics from `request_body` |
 | `skip_response_body_log` | bool | optional | false | When set to true, `response_body` will not be recorded in `ai_log`, but the plugin will still extract attributes and metrics from `response_body` |
+| `request_headers` | []string | optional | `[]` | List of HTTP request header keys to record in batch, written as a JSON string to `ai_log` |
 
 Attribute Configuration instructions:
 
@@ -280,3 +281,22 @@ skip_request_body_log: true
 # Only skip response body log
 skip_response_body_log: true
 ```
+
+### Batch Record Request Headers
+
+```yaml
+request_headers:
+  - x-request-id
+  - x-trace-id
+  - x-user-id
+```
+
+#### Log Output Example
+
+```json
+{
+  "ai_log": "{\"request_headers\":\"{\\\"x-request-id\\\":\\\"abc123\\\",\\\"x-trace-id\\\":\\\"xyz456\\\",\\\"x-user-id\\\":\\\"user1\\\"}\",\"model\":\"qwen-turbo\",\"input_token\":\"10\"}"
+}
+```
+
+The `request_headers` value is a JSON string for unified downstream log parsing.

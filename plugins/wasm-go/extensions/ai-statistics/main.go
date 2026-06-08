@@ -212,6 +212,9 @@ type AIStatisticsConfig struct {
 	skipRequestBodyLog bool
 	// If skipResponseBodyLog is true, response body will not be logged
 	skipResponseBodyLog bool
+
+	// requestHeadersToLog 存储需要批量记录的 header key（均为小写）
+	requestHeadersToLog []string
 }
 
 func generateMetricName(route, cluster, model, consumer, metricName string) string {
@@ -379,6 +382,16 @@ func parseConfig(configJson gjson.Result, config *AIStatisticsConfig) error {
 	config.skipRequestBodyLog = configJson.Get("skip_request_body_log").Bool()
 	config.skipResponseBodyLog = configJson.Get("skip_response_body_log").Bool()
 
+	// Parse request headers config
+	requestHeaders := configJson.Get("request_headers").Array()
+	config.requestHeadersToLog = make([]string, 0, len(requestHeaders))
+	for _, header := range requestHeaders {
+		headerKey := strings.ToLower(strings.TrimSpace(header.String()))
+		if headerKey != "" {
+			config.requestHeadersToLog = append(config.requestHeadersToLog, headerKey)
+		}
+	}
+
 	return nil
 }
 
@@ -460,6 +473,25 @@ func onHttpRequestHeaders(ctx wrapper.HttpContext, config AIStatisticsConfig) ty
 	setAttributeBySource(ctx, config, FixedValue, nil, nil)
 	// Set user defined log & span attributes which type is request_header
 	setAttributeBySource(ctx, config, RequestHeader, nil, nil)
+
+	// Batch record request headers if configured
+	if len(config.requestHeadersToLog) > 0 {
+		headerMap := make(map[string]string)
+
+		for _, headerKey := range config.requestHeadersToLog {
+			if value, _ := proxywasm.GetHttpRequestHeader(headerKey); value != "" {
+				headerMap[headerKey] = value
+			}
+		}
+
+		if len(headerMap) > 0 {
+			if jsonBytes, err := json.Marshal(headerMap); err == nil {
+				ctx.SetUserAttribute("request_headers", string(jsonBytes))
+			} else {
+				log.Warnf("failed to marshal request_headers: %v", err)
+			}
+		}
+	}
 
 	if ctx.HasRequestBody() {
 		if contentType, _ := proxywasm.GetHttpRequestHeader("content-type"); strings.Contains(contentType, "json") {

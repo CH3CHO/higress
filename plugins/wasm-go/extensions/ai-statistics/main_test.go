@@ -209,6 +209,19 @@ var skipRequestBodyLogConfig = func() json.RawMessage {
 	return data
 }()
 
+// 测试配置：批量 request headers
+var requestHeadersObjectConfig = func() json.RawMessage {
+	data, _ := json.Marshal(map[string]interface{}{
+		"request_headers": []string{
+			"x-request-id",
+			"x-trace-id",
+			"x-user-id",
+		},
+		"disable_openai_usage": false,
+	})
+	return data
+}()
+
 // 测试配置：跳过响应体日志
 var skipResponseBodyLogConfig = func() json.RawMessage {
 	data, _ := json.Marshal(map[string]interface{}{
@@ -306,6 +319,17 @@ func TestParseConfig(t *testing.T) {
 		// 测试跳过请求体日志配置解析
 		t.Run("skip request body log config", func(t *testing.T) {
 			host, status := test.NewTestHost(skipRequestBodyLogConfig)
+			defer host.Reset()
+			require.Equal(t, types.OnPluginStartStatusOK, status)
+
+			config, err := host.GetMatchConfig()
+			require.NoError(t, err)
+			require.NotNil(t, config)
+		})
+
+		// 测试 request_headers 配置解析
+		t.Run("request headers config", func(t *testing.T) {
+			host, status := test.NewTestHost(requestHeadersObjectConfig)
 			defer host.Reset()
 			require.Equal(t, types.OnPluginStartStatusOK, status)
 
@@ -1521,6 +1545,50 @@ func TestCompactResponsesBodyForLog(t *testing.T) {
 	require.False(t, gjson.Get(compacted, "instructions").Exists())
 	require.False(t, gjson.Get(compacted, "output.0.encrypted_content").Exists())
 	require.NotEmpty(t, gjson.Get(compacted, "output.1.content.0.text").String())
+}
+
+func TestRequestHeadersLogging(t *testing.T) {
+	test.RunTest(t, func(t *testing.T) {
+		t.Run("request headers logging", func(t *testing.T) {
+			host, status := test.NewTestHost(requestHeadersObjectConfig)
+			defer host.Reset()
+			require.Equal(t, types.OnPluginStartStatusOK, status)
+
+			action := host.CallOnHttpRequestHeaders([][2]string{
+				{":authority", "example.com"},
+				{":path", "/v1/chat/completions"},
+				{":method", "POST"},
+				{"x-request-id", "req-abc-123"},
+				{"x-trace-id", "trace-xyz-456"},
+				{"x-user-id", "user789"},
+			})
+
+			require.Equal(t, types.HeaderStopIteration, action)
+
+			host.CompleteHttp()
+		})
+	})
+}
+
+func TestRequestHeadersPartialMissing(t *testing.T) {
+	test.RunTest(t, func(t *testing.T) {
+		t.Run("partial missing headers", func(t *testing.T) {
+			host, status := test.NewTestHost(requestHeadersObjectConfig)
+			defer host.Reset()
+			require.Equal(t, types.OnPluginStartStatusOK, status)
+
+			action := host.CallOnHttpRequestHeaders([][2]string{
+				{":authority", "example.com"},
+				{":path", "/v1/chat/completions"},
+				{":method", "POST"},
+				{"x-request-id", "req-abc-123"},
+			})
+
+			require.Equal(t, types.HeaderStopIteration, action)
+
+			host.CompleteHttp()
+		})
+	})
 }
 
 func TestTruncateStringForLog(t *testing.T) {
