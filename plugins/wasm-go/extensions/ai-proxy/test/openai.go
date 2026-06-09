@@ -89,6 +89,27 @@ var openAIAnthropicMessagesCapabilityConfig = func() json.RawMessage {
 	return data
 }()
 
+// 测试配置：OpenAI Anthropic Messages capability + responseJsonSchema
+var openAIAnthropicMessagesCapabilityWithSchemaConfig = func() json.RawMessage {
+	data, _ := json.Marshal(map[string]interface{}{
+		"provider": map[string]interface{}{
+			"type":      "openai",
+			"apiTokens": []string{"sk-openai-custom-domain"},
+			"modelMapping": map[string]string{
+				"*": "gpt-3.5-turbo",
+			},
+			"openaiCustomUrl": "https://custom.openai.com/openai",
+			"capabilities": map[string]string{
+				"anthropic/v1/messages": "/anthropic",
+			},
+			"responseJsonSchema": map[string]interface{}{
+				"type": "json_object",
+			},
+		},
+	})
+	return data
+}()
+
 // 测试配置：OpenAI自定义域名配置（带前缀的直达路径）
 var openAIPrefixedDirectChatCompletionConfig = func() json.RawMessage {
 	data, _ := json.Marshal(map[string]interface{}{
@@ -530,6 +551,88 @@ func RunOpenAIOnHttpRequestBodyTests(t *testing.T) {
 			require.True(t, hasOpenAILogs, "Should have OpenAI processing logs")
 		})
 
+		t.Run("openai anthropic messages capability request body strips dynamic cch", func(t *testing.T) {
+			host, status := test.NewTestHost(openAIAnthropicMessagesCapabilityConfig)
+			defer host.Reset()
+			require.Equal(t, types.OnPluginStartStatusOK, status)
+
+			host.CallOnHttpRequestHeaders([][2]string{
+				{":authority", "example.com"},
+				{":path", "/v1/messages"},
+				{":method", "POST"},
+				{"Content-Type", "application/json"},
+			})
+
+			requestBody := `{
+				"model":"claude-3-5-sonnet",
+				"metadata":{"trace_id":"trace-1"},
+				"system":[
+					{
+						"type":"text",
+						"text":"x-anthropic-billing-header: cc_version=2.1.84.c8e; cc_entrypoint=claude-vscode; cch=123tsdaf;"
+					}
+				],
+				"messages":[
+					{
+						"role":"user",
+						"content":[
+							{
+								"type":"text",
+								"text":"x-anthropic-billing-header: cc_version=2.1.84.c8e; cc_entrypoint=claude-vscode; cch=ttffc;"
+							},
+							{
+								"type":"text",
+								"text":"hi"
+							}
+						]
+					}
+				]
+			}`
+			action := host.CallOnHttpRequestBody([]byte(requestBody))
+
+			require.Equal(t, types.ActionContinue, action)
+
+			processedBody := host.GetRequestBody()
+			require.NotNil(t, processedBody)
+			require.NotContains(t, string(processedBody), "cch=123tsdaf")
+			require.NotContains(t, string(processedBody), "cch=ttffc")
+			require.Contains(t, string(processedBody), `"metadata":{"trace_id":"trace-1"}`)
+			require.Contains(t, string(processedBody), `"system":[{"type":"text","text":"x-anthropic-billing-header: cc_version=2.1.84.c8e; cc_entrypoint=claude-vscode;"}]`)
+			require.Contains(t, string(processedBody), `"messages":[{"role":"user","content":[{"type":"text","text":"x-anthropic-billing-header: cc_version=2.1.84.c8e; cc_entrypoint=claude-vscode;"},{"type":"text","text":"hi"}]}]`)
+		})
+
+		t.Run("openai anthropic messages capability request body skips response format injection", func(t *testing.T) {
+			host, status := test.NewTestHost(openAIAnthropicMessagesCapabilityWithSchemaConfig)
+			defer host.Reset()
+			require.Equal(t, types.OnPluginStartStatusOK, status)
+
+			host.CallOnHttpRequestHeaders([][2]string{
+				{":authority", "example.com"},
+				{":path", "/v1/messages"},
+				{":method", "POST"},
+				{"Content-Type", "application/json"},
+			})
+
+			requestBody := `{
+				"model":"claude-3-5-sonnet",
+				"metadata":{"trace_id":"trace-2"},
+				"messages":[
+					{
+						"role":"user",
+						"content":"hi"
+					}
+				]
+			}`
+			action := host.CallOnHttpRequestBody([]byte(requestBody))
+
+			require.Equal(t, types.ActionContinue, action)
+
+			processedBody := host.GetRequestBody()
+			require.NotNil(t, processedBody)
+			require.Contains(t, string(processedBody), `"metadata":{"trace_id":"trace-2"}`)
+			require.NotContains(t, string(processedBody), `"response_format"`)
+		})
+
 		// 测试OpenAI请求体处理（嵌入接口）
 		t.Run("openai embeddings request body", func(t *testing.T) {
 			host, status := test.NewTestHost(basicOpenAIConfig)
@@ -635,8 +738,8 @@ func RunOpenAIOnHttpRequestBodyTests(t *testing.T) {
 			require.NotNil(t, processedBody)
 
 			// 验证responseJsonSchema是否被应用
-			// 注意：由于test框架的限制，我们可能需要检查日志或其他方式来验证处理结果
 			require.Contains(t, string(processedBody), "gpt-3.5-turbo", "Model name should be preserved")
+			require.Contains(t, string(processedBody), `"response_format":{"type":"json_object"}`, "responseJsonSchema should be injected into response_format")
 
 			// 检查是否有相关的处理日志
 			debugLogs := host.GetDebugLogs()
@@ -971,6 +1074,38 @@ func RunOpenAIOnHttpResponseBodyTests(t *testing.T) {
 func RunOpenAIOnStreamingResponseBodyTests(t *testing.T) {
 	// 测试OpenAI响应体处理（流式响应）
 	test.RunTest(t, func(t *testing.T) {
+		t.Run("openai anthropic messages capability streaming preserves event type", func(t *testing.T) {
+			host, status := test.NewTestHost(openAIAnthropicMessagesCapabilityConfig)
+			defer host.Reset()
+			require.Equal(t, types.OnPluginStartStatusOK, status)
+
+			host.CallOnHttpRequestHeaders([][2]string{
+				{":authority", "example.com"},
+				{":path", "/v1/messages"},
+				{":method", "POST"},
+				{"Content-Type", "application/json"},
+			})
+
+			requestBody := `{"model":"claude-3-5-sonnet","messages":[{"role":"user","content":"test"}],"stream":true}`
+			host.CallOnHttpRequestBody([]byte(requestBody))
+
+			responseHeaders := [][2]string{
+				{":status", "200"},
+				{"Content-Type", "text/event-stream"},
+			}
+			host.CallOnHttpResponseHeaders(responseHeaders)
+
+			chunk1 := "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-3-5-sonnet\",\"content\":[]}}\n\n"
+			action1 := host.CallOnHttpStreamingResponseBody([]byte(chunk1), false)
+			require.Equal(t, types.ActionContinue, action1)
+			require.Equal(t, chunk1, string(host.GetResponseBody()))
+
+			chunk2 := "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"input_tokens\":10,\"output_tokens\":5}}\n\n"
+			action2 := host.CallOnHttpStreamingResponseBody([]byte(chunk2), true)
+			require.Equal(t, types.ActionContinue, action2)
+			require.Equal(t, chunk2, string(host.GetResponseBody()))
+		})
+
 		t.Run("openai streaming response body", func(t *testing.T) {
 			host, status := test.NewTestHost(basicOpenAIConfig)
 			defer host.Reset()
@@ -1033,6 +1168,37 @@ func RunOpenAIOnStreamingResponseBodyTests(t *testing.T) {
 				}
 			}
 			require.True(t, hasStreamingLogs, "Should have streaming response processing logs")
+		})
+
+		t.Run("openai streaming data only events remain unchanged", func(t *testing.T) {
+			host, status := test.NewTestHost(basicOpenAIConfig)
+			defer host.Reset()
+			require.Equal(t, types.OnPluginStartStatusOK, status)
+
+			host.CallOnHttpRequestHeaders([][2]string{
+				{":authority", "example.com"},
+				{":path", "/v1/completions"},
+				{":method", "POST"},
+				{"Content-Type", "application/json"},
+			})
+
+			requestBody := `{"model":"gpt-3.5-turbo-instruct","prompt":"test","stream":true}`
+			host.CallOnHttpRequestBody([]byte(requestBody))
+
+			host.CallOnHttpResponseHeaders([][2]string{
+				{":status", "200"},
+				{"Content-Type", "text/event-stream"},
+			})
+
+			chunk := "data: {\"id\":\"cmpl-123\",\"choices\":[{\"text\":\"Hello\",\"index\":0}],\"model\":\"gpt-3.5-turbo-instruct\"}\n\n"
+			action := host.CallOnHttpStreamingResponseBody([]byte(chunk), false)
+			require.Equal(t, types.ActionContinue, action)
+			require.Equal(t, chunk, string(host.GetResponseBody()))
+
+			doneChunk := "data: [DONE]\n\n"
+			action = host.CallOnHttpStreamingResponseBody([]byte(doneChunk), true)
+			require.Equal(t, types.ActionContinue, action)
+			require.Equal(t, doneChunk, string(host.GetResponseBody()))
 		})
 	})
 }

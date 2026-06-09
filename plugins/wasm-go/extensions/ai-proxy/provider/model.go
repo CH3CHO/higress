@@ -527,7 +527,30 @@ func (e *StreamEvent) SetValue(key, value string) {
 }
 
 func (e *StreamEvent) ToHttpString() string {
-	return fmt.Sprintf("%s %s\n\n", streamDataItemKey, e.Data)
+	var builder strings.Builder
+	if e.Id != "" {
+		builder.WriteString(streamEventIdItemKey)
+		builder.WriteString(" ")
+		builder.WriteString(e.Id)
+		builder.WriteString("\n")
+	}
+	if e.Event != "" {
+		builder.WriteString(streamEventNameItemKey)
+		builder.WriteString(" ")
+		builder.WriteString(e.Event)
+		builder.WriteString("\n")
+	}
+	if e.HttpStatus != "" {
+		builder.WriteString(streamBuiltInItemKey)
+		builder.WriteString(streamHttpStatusValuePrefix)
+		builder.WriteString(e.HttpStatus)
+		builder.WriteString("\n")
+	}
+	builder.WriteString(streamDataItemKey)
+	builder.WriteString(" ")
+	builder.WriteString(e.Data)
+	builder.WriteString("\n\n")
+	return builder.String()
 }
 
 // https://platform.openai.com/docs/guides/images

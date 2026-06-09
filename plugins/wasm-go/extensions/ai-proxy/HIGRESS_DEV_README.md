@@ -922,7 +922,135 @@ curl http://127.0.0.1:8080/v1/chat/completions \
 - `usage.cache_read_input_tokens`
 - `usage.prompt_tokens_details.cached_tokens`
 
-### 10.4 fine-grained tool streaming 调试示例
+### 10.4 `chat_completions` / `responses` / `messages` 的 cache usage 对比
+
+这三种契约都可能表达“缓存创建”和“缓存读取”，但字段口径不同，不能混着解释。
+
+#### `chat_completions`
+
+常见字段：
+
+- `usage.prompt_tokens`
+- `usage.completion_tokens`
+- `usage.total_tokens`
+- `usage.prompt_tokens_details.cached_tokens`
+- `usage.cache_creation_input_tokens`
+- `usage.cache_read_input_tokens`
+
+建议解释口径：
+
+- `prompt_tokens`：总输入 token，通常已经包含 cache read
+- `completion_tokens`：输出 token
+- `prompt_tokens_details.cached_tokens`：命中的缓存输入
+- `cache_creation_input_tokens`：本次新创建进缓存的输入
+
+如果上游同时返回了：
+
+- `prompt_tokens`
+- `cache_creation_input_tokens`
+- `cache_read_input_tokens`
+
+那更稳妥的理解是：
+
+- 总输入 token = `prompt_tokens + cache_creation_input_tokens`
+- 其中命中缓存部分 = `cache_read_input_tokens` 或 `prompt_tokens_details.cached_tokens`
+
+#### `responses`
+
+常见字段：
+
+- `usage.input_tokens`
+- `usage.output_tokens`
+- `usage.total_tokens`
+- `usage.input_tokens_details.cached_tokens`
+- 部分实现也会额外带 `usage.cache_creation_input_tokens`
+- 部分实现也会额外带 `usage.cache_read_input_tokens`
+
+建议解释口径：
+
+- `input_tokens`：输入 token 主口径
+- `output_tokens`：输出 token 主口径
+- `input_tokens_details.cached_tokens`：命中的缓存输入
+- 如果额外返回了 `cache_creation_input_tokens` / `cache_read_input_tokens`，则它们是对 input 侧缓存细分的补充字段
+
+`responses` 契约下不要默认套用 `messages` 的总 token 公式，优先以响应里显式给出的 `total_tokens` 为准。
+
+#### `messages`
+
+常见字段：
+
+- `usage.input_tokens`
+- `usage.output_tokens`
+- `usage.cache_creation_input_tokens`
+- `usage.cache_read_input_tokens`
+- `usage.cache_creation.ephemeral_5m_input_tokens`
+
+`messages` 契约建议按下面公式理解：
+
+```text
+total_input_tokens =
+input_tokens
++ cache_creation_input_tokens
++ cache_read_input_tokens
+```
+
+```text
+total_tokens =
+input_tokens
++ cache_creation_input_tokens
++ cache_read_input_tokens
++ output_tokens
+```
+
+也就是：
+
+- `input_tokens`：本次实际新算的非缓存输入
+- `cache_creation_input_tokens`：本次新创建缓存的输入
+- `cache_read_input_tokens`：本次命中缓存读取的输入
+- `output_tokens`：输出
+
+如果同时存在：
+
+- `cache_creation_input_tokens`
+- `cache_creation.ephemeral_5m_input_tokens`
+
+优先把它们视为同一语义的不同表达，优先读显式顶层字段。
+
+### 10.5 `anthropic/v1/messages` capability 为什么有时还能看到原始 `event:`
+
+排查 OpenAI provider 暴露 `anthropic/v1/messages` capability 时，不能只看请求侧有没有走 OpenAI 逻辑，还要看响应体有没有真的被读取和重写。
+
+当前代码里有一个很关键的现象：
+
+- 如果 `ApiNameAnthropicMessages` 在 `openaiProvider.TransformRequestBody(...)` 里没有提前返回
+- 请求会继续走 `transformRequestFields(...)`
+- 但 `transformRequestFields(...)` 里并没有 `ApiNameAnthropicMessages` 的专门处理分支
+- 因此局部变量 `needReadResponseBody` 会保持为 `false`
+- defer 最后会执行 `ctx.DontReadResponseBody()`
+
+这会直接导致：
+
+- `onStreamingResponseBody(...)` 不会接管这条响应
+- 不会进入统一的 `ExtractStreamingEvents(...) -> ToHttpString()` 回写链路
+- 上游原始 SSE 会被直接透传
+
+因此如果你在本地对 `Host: kimi.local` 之类的 capability 链路实测时仍然看到：
+
+```text
+event: message_start
+event: content_block_delta
+event: message_delta
+event: message_stop
+```
+
+这不一定说明本地 `ToHttpString()` 保留了 `event:`，更常见的原因是：
+
+- 这条响应根本没被读 body
+- 上游 Anthropic/Messages 风格 SSE 被原样透传了
+
+反过来说，如果把 `ApiNameAnthropicMessages` 提前从 `TransformRequestBody(...)` 返回，跳过 `transformRequestFields(...)`，那就不会再依赖这条隐式的 `DontReadResponseBody()` 透传行为，后续是否保留 `event:` 要看实际响应处理分支。
+
+### 10.6 fine-grained tool streaming 调试示例
 
 通过 OpenAI 协议里的 `extra_headers.anthropic-beta` 开启：
 

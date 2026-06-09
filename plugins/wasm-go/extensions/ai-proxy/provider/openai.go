@@ -221,22 +221,32 @@ func (m *openaiProvider) TransformRequestBodyAsync(ctx wrapper.HttpContext, apiN
 }
 
 func (m *openaiProvider) TransformRequestBody(ctx wrapper.HttpContext, apiName ApiName, body []byte) (transformedBody []byte, err error) {
-	transformedBody = body
-	err = nil
-
-	if m.config.responseJsonSchema != nil {
-		request := &chatCompletionRequest{}
-		if err := decodeChatCompletionRequest(transformedBody, request); err != nil {
+	switch apiName {
+	case ApiNameAnthropicMessages:
+		// anthropic/v1/messages capability 仍然遵循 Claude Messages 契约，
+		// 这里只补 body 级 cch 清洗和通用模型映射，不再进入 OpenAI chat/completions
+		// 的 response_format、字段黑名单等专属改写逻辑。
+		if transformedBody, _, err = sanitizeAnthropicMessagesRequestBodyCCH(body); err != nil {
 			return nil, err
 		}
-		log.Debugf("[ai-proxy] set response format to %s", m.config.responseJsonSchema)
-		request.ResponseFormat = m.config.responseJsonSchema
-		body, _ = json.Marshal(request)
+		return m.config.defaultTransformRequestBody(ctx, apiName, transformedBody)
+	default:
+		return m.transformOpenAIRequestBody(ctx, apiName, body)
+	}
+}
+
+func (m *openaiProvider) transformOpenAIRequestBody(ctx wrapper.HttpContext, apiName ApiName, body []byte) (transformedBody []byte, err error) {
+	transformedBody = body
+
+	if apiName == ApiNameChatCompletion && m.config.responseJsonSchema != nil {
+		if transformedBody, err = applyChatCompletionResponseJSONSchema(transformedBody, m.config.responseJsonSchema); err != nil {
+			return nil, err
+		}
 	}
 
 	transformedBody, err = m.config.defaultTransformRequestBody(ctx, apiName, transformedBody)
 	if err != nil {
-		return
+		return nil, err
 	}
 
 	transformedBody, err = m.transformRequestFields(ctx, apiName, transformedBody)
@@ -244,7 +254,23 @@ func (m *openaiProvider) TransformRequestBody(ctx wrapper.HttpContext, apiName A
 		log.Errorf("openaiProvider: transform request fields failed: %v", err)
 	}
 
-	return
+	return transformedBody, nil
+}
+
+func applyChatCompletionResponseJSONSchema(body []byte, responseJSONSchema map[string]interface{}) ([]byte, error) {
+	request := &chatCompletionRequest{}
+	if err := decodeChatCompletionRequest(body, request); err != nil {
+		return nil, err
+	}
+
+	log.Debugf("[ai-proxy] set response format to %v", responseJSONSchema)
+	request.ResponseFormat = responseJSONSchema
+
+	transformedBody, err := json.Marshal(request)
+	if err != nil {
+		return nil, err
+	}
+	return transformedBody, nil
 }
 
 func (m *openaiProvider) transformRequestFields(ctx wrapper.HttpContext, apiName ApiName, body []byte) ([]byte, error) {
