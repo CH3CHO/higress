@@ -1464,3 +1464,370 @@ func TestFallbackEnabledConfig(t *testing.T) {
 		})
 	})
 }
+
+// TestModelWhitelistConfig 测试全局模型白名单功能
+func TestModelWhitelistConfig(t *testing.T) {
+	test.RunTest(t, func(t *testing.T) {
+		t.Run("whitelist enabled - model in whitelist", func(t *testing.T) {
+			pluginConfig, _ := json.Marshal(map[string]interface{}{
+				"consumers": []map[string]interface{}{
+					{
+						"id": "consumer1",
+						"routes": []map[string]interface{}{
+							{
+								"id":     "route1",
+								"models": []string{"model1", "model2"},
+								"services": []map[string]interface{}{
+									{"id": "service1", "weight": 100},
+								},
+							},
+						},
+					},
+				},
+				"modelFilter": map[string]interface{}{
+					"whitelistEnabled": true,
+					"whitelistItems":   []string{"model1"},
+				},
+			})
+			host, status := test.NewTestHost(pluginConfig)
+			defer host.Reset()
+			require.Equal(t, types.OnPluginStartStatusOK, status)
+
+			action := host.CallOnHttpRequestHeaders([][2]string{
+				{":authority", "example.com"},
+				{":path", "/llm/consumer1/v1/chat/completions"},
+				{":method", "POST"},
+				{"Content-Type", "application/json"},
+				{"x-mse-consumer", "consumer1"},
+				{"x-higress-llm-model", "model1"},
+			})
+			require.Equal(t, types.ActionContinue, action)
+
+			requestHeaders := host.GetRequestHeaders()
+			found := false
+			for _, header := range requestHeaders {
+				if header[0] == llmServiceIdHeaderName && header[1] == "service1" {
+					found = true
+					break
+				}
+			}
+			require.True(t, found, "Model in whitelist should be routed normally")
+		})
+
+		t.Run("whitelist enabled - model not in whitelist", func(t *testing.T) {
+			pluginConfig, _ := json.Marshal(map[string]interface{}{
+				"consumers": []map[string]interface{}{
+					{
+						"id": "consumer1",
+						"routes": []map[string]interface{}{
+							{
+								"id":     "route1",
+								"models": []string{"model1", "model2"},
+								"services": []map[string]interface{}{
+									{"id": "service1", "weight": 100},
+								},
+							},
+						},
+					},
+				},
+				"modelFilter": map[string]interface{}{
+					"whitelistEnabled": true,
+					"whitelistItems":   []string{"model1"},
+				},
+			})
+			host, status := test.NewTestHost(pluginConfig)
+			defer host.Reset()
+			require.Equal(t, types.OnPluginStartStatusOK, status)
+
+			action := host.CallOnHttpRequestHeaders([][2]string{
+				{":authority", "example.com"},
+				{":path", "/llm/consumer1/v1/chat/completions"},
+				{":method", "POST"},
+				{"Content-Type", "application/json"},
+				{"x-mse-consumer", "consumer1"},
+				{"x-higress-llm-model", "model2"},
+			})
+			require.Equal(t, types.ActionContinue, action)
+
+			localResponse := host.GetLocalResponse()
+			require.NotNil(t, localResponse, "Should return error for model not in whitelist")
+			require.Equal(t, uint32(400), localResponse.StatusCode)
+			require.Equal(t, "trip-llm-router.model-not-in-whitelist", localResponse.StatusCodeDetail)
+			require.Equal(t, `{"code":400,"message":"Model model2 is not in the model whitelist of the gateway."}`, string(localResponse.Data))
+		})
+
+		t.Run("whitelist enabled - consumer route has model but whitelist does not", func(t *testing.T) {
+			pluginConfig, _ := json.Marshal(map[string]interface{}{
+				"consumers": []map[string]interface{}{
+					{
+						"id": "consumer1",
+						"routes": []map[string]interface{}{
+							{
+								"id":     "route1",
+								"models": []string{"model1", "model2", "model3"},
+								"services": []map[string]interface{}{
+									{"id": "service1", "weight": 100},
+								},
+							},
+						},
+					},
+				},
+				"modelFilter": map[string]interface{}{
+					"whitelistEnabled": true,
+					"whitelistItems":   []string{"model1", "model2"},
+				},
+			})
+			host, status := test.NewTestHost(pluginConfig)
+			defer host.Reset()
+			require.Equal(t, types.OnPluginStartStatusOK, status)
+
+			action := host.CallOnHttpRequestHeaders([][2]string{
+				{":authority", "example.com"},
+				{":path", "/llm/consumer1/v1/chat/completions"},
+				{":method", "POST"},
+				{"Content-Type", "application/json"},
+				{"x-mse-consumer", "consumer1"},
+				{"x-higress-llm-model", "model3"},
+			})
+			require.Equal(t, types.ActionContinue, action)
+
+			localResponse := host.GetLocalResponse()
+			require.NotNil(t, localResponse, "Should return error when model is in consumer routes but not in whitelist")
+			require.Equal(t, uint32(400), localResponse.StatusCode)
+			require.Equal(t, "trip-llm-router.model-not-in-whitelist", localResponse.StatusCodeDetail)
+		})
+
+		t.Run("whitelist enabled - models list returns intersection", func(t *testing.T) {
+			pluginConfig, _ := json.Marshal(map[string]interface{}{
+				"consumers": []map[string]interface{}{
+					{
+						"id": "consumer1",
+						"routes": []map[string]interface{}{
+							{
+								"id":     "route1",
+								"models": []string{"model1", "model2", "model3"},
+								"services": []map[string]interface{}{
+									{"id": "service1", "weight": 100},
+								},
+								"protocols": []string{"openai"},
+							},
+						},
+					},
+				},
+				"modelFilter": map[string]interface{}{
+					"whitelistEnabled": true,
+					"whitelistItems":   []string{"model1", "model3"},
+				},
+				"_config_": map[string]interface{}{
+					"models-list.enabled.global": true,
+				},
+			})
+			host, status := test.NewTestHost(pluginConfig)
+			defer host.Reset()
+			require.Equal(t, types.OnPluginStartStatusOK, status)
+
+			action := host.CallOnHttpRequestHeaders([][2]string{
+				{":authority", "example.com"},
+				{":path", "/llm/consumer1/v1/models"},
+				{":method", "GET"},
+				{"Content-Type", "application/json"},
+				{"x-mse-consumer", "consumer1"},
+			})
+			require.Equal(t, types.ActionContinue, action)
+
+			localResponse := host.GetLocalResponse()
+			require.NotNil(t, localResponse)
+			require.Equal(t, uint32(200), localResponse.StatusCode)
+
+			var response ModelsListResponse
+			err := json.Unmarshal(localResponse.Data, &response)
+			require.NoError(t, err)
+			require.Len(t, response.Data, 2)
+
+			modelIDs := make([]string, len(response.Data))
+			for i, m := range response.Data {
+				modelIDs[i] = m.ID
+			}
+			require.ElementsMatch(t, []string{"model1", "model3"}, modelIDs)
+		})
+
+		t.Run("whitelist disabled - normal routing unchanged", func(t *testing.T) {
+			pluginConfig, _ := json.Marshal(map[string]interface{}{
+				"consumers": []map[string]interface{}{
+					{
+						"id": "consumer1",
+						"routes": []map[string]interface{}{
+							{
+								"id":     "route1",
+								"models": []string{"model1", "model2"},
+								"services": []map[string]interface{}{
+									{"id": "service1", "weight": 100},
+								},
+							},
+						},
+					},
+				},
+				"modelFilter": map[string]interface{}{
+					"whitelistEnabled": false,
+					"whitelistItems":   []string{"model1"},
+				},
+			})
+			host, status := test.NewTestHost(pluginConfig)
+			defer host.Reset()
+			require.Equal(t, types.OnPluginStartStatusOK, status)
+
+			action := host.CallOnHttpRequestHeaders([][2]string{
+				{":authority", "example.com"},
+				{":path", "/llm/consumer1/v1/chat/completions"},
+				{":method", "POST"},
+				{"Content-Type", "application/json"},
+				{"x-mse-consumer", "consumer1"},
+				{"x-higress-llm-model", "model2"},
+			})
+			require.Equal(t, types.ActionContinue, action)
+
+			requestHeaders := host.GetRequestHeaders()
+			found := false
+			for _, header := range requestHeaders {
+				if header[0] == llmServiceIdHeaderName && header[1] == "service1" {
+					found = true
+					break
+				}
+			}
+			require.True(t, found, "When whitelist is disabled, model2 should be routed normally")
+		})
+
+		t.Run("no modelFilter config - normal routing unchanged", func(t *testing.T) {
+			pluginConfig, _ := json.Marshal(map[string]interface{}{
+				"consumers": []map[string]interface{}{
+					{
+						"id": "consumer1",
+						"routes": []map[string]interface{}{
+							{
+								"id":     "route1",
+								"models": []string{"model1", "model2"},
+								"services": []map[string]interface{}{
+									{"id": "service1", "weight": 100},
+								},
+							},
+						},
+					},
+				},
+			})
+			host, status := test.NewTestHost(pluginConfig)
+			defer host.Reset()
+			require.Equal(t, types.OnPluginStartStatusOK, status)
+
+			action := host.CallOnHttpRequestHeaders([][2]string{
+				{":authority", "example.com"},
+				{":path", "/llm/consumer1/v1/chat/completions"},
+				{":method", "POST"},
+				{"Content-Type", "application/json"},
+				{"x-mse-consumer", "consumer1"},
+				{"x-higress-llm-model", "model2"},
+			})
+			require.Equal(t, types.ActionContinue, action)
+
+			requestHeaders := host.GetRequestHeaders()
+			found := false
+			for _, header := range requestHeaders {
+				if header[0] == llmServiceIdHeaderName && header[1] == "service1" {
+					found = true
+					break
+				}
+			}
+			require.True(t, found, "When modelFilter is not configured, model2 should be routed normally")
+		})
+
+		t.Run("no modelFilter config - models list returns all consumer models", func(t *testing.T) {
+			pluginConfig, _ := json.Marshal(map[string]interface{}{
+				"consumers": []map[string]interface{}{
+					{
+						"id": "consumer1",
+						"routes": []map[string]interface{}{
+							{
+								"id":     "route1",
+								"models": []string{"model1", "model2", "model3"},
+								"services": []map[string]interface{}{
+									{"id": "service1", "weight": 100},
+								},
+								"protocols": []string{"openai"},
+							},
+						},
+					},
+				},
+				"_config_": map[string]interface{}{
+					"models-list.enabled.global": true,
+				},
+			})
+			host, status := test.NewTestHost(pluginConfig)
+			defer host.Reset()
+			require.Equal(t, types.OnPluginStartStatusOK, status)
+
+			action := host.CallOnHttpRequestHeaders([][2]string{
+				{":authority", "example.com"},
+				{":path", "/llm/consumer1/v1/models"},
+				{":method", "GET"},
+				{"Content-Type", "application/json"},
+				{"x-mse-consumer", "consumer1"},
+			})
+			require.Equal(t, types.ActionContinue, action)
+
+			localResponse := host.GetLocalResponse()
+			require.NotNil(t, localResponse)
+			require.Equal(t, uint32(200), localResponse.StatusCode)
+
+			var response ModelsListResponse
+			err := json.Unmarshal(localResponse.Data, &response)
+			require.NoError(t, err)
+			require.Len(t, response.Data, 3)
+
+			modelIDs := make([]string, len(response.Data))
+			for i, m := range response.Data {
+				modelIDs[i] = m.ID
+			}
+			require.ElementsMatch(t, []string{"model1", "model2", "model3"}, modelIDs)
+		})
+
+		t.Run("whitelist enabled with empty items - all models rejected", func(t *testing.T) {
+			pluginConfig, _ := json.Marshal(map[string]interface{}{
+				"consumers": []map[string]interface{}{
+					{
+						"id": "consumer1",
+						"routes": []map[string]interface{}{
+							{
+								"id":     "route1",
+								"models": []string{"model1", "model2"},
+								"services": []map[string]interface{}{
+									{"id": "service1", "weight": 100},
+								},
+							},
+						},
+					},
+				},
+				"modelFilter": map[string]interface{}{
+					"whitelistEnabled": true,
+					"whitelistItems":   []string{},
+				},
+			})
+			host, status := test.NewTestHost(pluginConfig)
+			defer host.Reset()
+			require.Equal(t, types.OnPluginStartStatusOK, status)
+
+			action := host.CallOnHttpRequestHeaders([][2]string{
+				{":authority", "example.com"},
+				{":path", "/llm/consumer1/v1/chat/completions"},
+				{":method", "POST"},
+				{"Content-Type", "application/json"},
+				{"x-mse-consumer", "consumer1"},
+				{"x-higress-llm-model", "model1"},
+			})
+			require.Equal(t, types.ActionContinue, action)
+
+			localResponse := host.GetLocalResponse()
+			require.NotNil(t, localResponse, "Should return error when whitelist is empty")
+			require.Equal(t, uint32(400), localResponse.StatusCode)
+			require.Equal(t, "trip-llm-router.model-not-in-whitelist", localResponse.StatusCodeDetail)
+		})
+	})
+}
