@@ -1,6 +1,13 @@
 package provider
 
-import "strings"
+import (
+	"encoding/json"
+	"fmt"
+	"strings"
+
+	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
+)
 
 const anthropicBillingHeaderPrefix = "x-anthropic-billing-header:"
 
@@ -183,12 +190,21 @@ func sanitizeAnthropicMessagesRequestCCH(request *anthropicMessagesRequest) bool
 	}
 
 	changed := sanitizeClaudeSystemPromptCCH(&request.System)
-	if len(request.Messages) == 0 {
-		return changed
+	if sanitizedMessages, messagesChanged := sanitizeAnthropicMessagesMessageContentCCH(request.Messages); messagesChanged {
+		request.Messages = sanitizedMessages
+		changed = true
+	}
+	return changed
+}
+
+func sanitizeAnthropicMessagesMessageContentCCH(messages []claudeChatMessage) ([]claudeChatMessage, bool) {
+	if len(messages) == 0 {
+		return messages, false
 	}
 
-	out := make([]claudeChatMessage, 0, len(request.Messages))
-	for _, message := range request.Messages {
+	out := make([]claudeChatMessage, 0, len(messages))
+	changed := false
+	for _, message := range messages {
 		if message.Content.IsString() {
 			sanitizedText, contentChanged := stripDynamicCCHField(message.Content.GetStringValue())
 			if !contentChanged {
@@ -249,10 +265,64 @@ func sanitizeAnthropicMessagesRequestCCH(request *anthropicMessagesRequest) bool
 		out = append(out, message)
 	}
 
-	if changed {
-		request.Messages = out
+	if !changed {
+		return messages, false
 	}
-	return changed
+	return out, true
+}
+
+// sanitizeAnthropicMessagesRequestBodyCCH 用于 OpenAI provider 的 anthropic/v1/messages
+// capability 链路。这里直接按字段 decode，再用 sjson 局部回写，避免整包重建
+// request body 时把未触碰的 Anthropic union 字段序列化成内部结构。
+func sanitizeAnthropicMessagesRequestBodyCCH(body []byte) ([]byte, bool, error) {
+	changed := false
+	if system := gjson.GetBytes(body, "system"); system.Exists() {
+		var prompt claudeSystemPrompt
+		if err := json.Unmarshal([]byte(system.Raw), &prompt); err != nil {
+			return body, false, fmt.Errorf("unable to unmarshal anthropic system: %v", err)
+		}
+
+		// system 是 string 或 text-block array 的 union，必须走自定义 MarshalJSON。
+		if sanitizeClaudeSystemPromptCCH(&prompt) {
+			rebuiltSystem, err := json.Marshal(&prompt)
+			if err != nil {
+				return body, false, fmt.Errorf("unable to marshal sanitized anthropic system: %v", err)
+			}
+			body, err = sjson.SetRawBytes(body, "system", rebuiltSystem)
+			if err != nil {
+				return body, false, fmt.Errorf("unable to update sanitized anthropic system: %v", err)
+			}
+			changed = true
+		}
+	}
+
+	messages := gjson.GetBytes(body, "messages")
+	if !messages.Exists() {
+		return body, changed, nil
+	}
+
+	var requestMessages []claudeChatMessage
+	if err := json.Unmarshal([]byte(messages.Raw), &requestMessages); err != nil {
+		return body, false, fmt.Errorf("unable to unmarshal anthropic messages: %v", err)
+	}
+
+	// messages[].content 也是 string/array union。这里继续复用 typed sanitizer，
+	// 只在字段级 decode 后把清洗结果局部写回，避免为了“纯 sjson”把 block 删除、
+	// 空 message 剔除等结构操作拆成更难读的 raw-json 下标编辑。
+	sanitizedMessages, messagesChanged := sanitizeAnthropicMessagesMessageContentCCH(requestMessages)
+	if !messagesChanged {
+		return body, changed, nil
+	}
+
+	rebuiltMessages, err := json.Marshal(sanitizedMessages)
+	if err != nil {
+		return body, false, fmt.Errorf("unable to marshal sanitized anthropic messages: %v", err)
+	}
+	body, err = sjson.SetRawBytes(body, "messages", rebuiltMessages)
+	if err != nil {
+		return body, false, fmt.Errorf("unable to update sanitized anthropic messages: %v", err)
+	}
+	return body, true, nil
 }
 
 // sanitizeClaudeSystemPromptCCH 处理 Claude 独立 system 字段。
