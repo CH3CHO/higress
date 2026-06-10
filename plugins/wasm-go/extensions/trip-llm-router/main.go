@@ -82,10 +82,29 @@ var (
 	dryRunBytes = uint32ToBytes(1)
 )
 
+type ModelFilterConfig struct {
+	WhitelistEnabled bool
+	WhitelistSet     map[string]struct{}
+}
+
+func (c *ModelFilterConfig) FromJson(json gjson.Result) {
+	c.WhitelistSet = make(map[string]struct{})
+	if enabled := json.Get("whitelistEnabled"); enabled.Exists() && enabled.Type == gjson.True {
+		c.WhitelistEnabled = true
+	}
+	if items := json.Get("whitelistItems"); items.Exists() && items.IsArray() {
+		items.ForEach(func(_, value gjson.Result) bool {
+			c.WhitelistSet[value.String()] = struct{}{}
+			return true
+		})
+	}
+}
+
 type PluginConfig struct {
 	Consumers             map[string]*ConsumerConfig
 	ServiceRouteHost      string
 	EnabledOnPathPrefixes []string
+	ModelFilterConfig     *ModelFilterConfig
 }
 
 func (c *PluginConfig) FromJson(json gjson.Result) {
@@ -120,6 +139,11 @@ func (c *PluginConfig) FromJson(json gjson.Result) {
 		})
 	} else {
 		c.EnabledOnPathPrefixes = defaultEnabledOnPathPrefixes
+	}
+
+	if modelFilter := json.Get("modelFilter"); modelFilter.Exists() && modelFilter.IsObject() {
+		c.ModelFilterConfig = &ModelFilterConfig{}
+		c.ModelFilterConfig.FromJson(modelFilter)
 	}
 }
 
@@ -188,13 +212,21 @@ func onHttpRequestHeaders(ctx wrapper.HttpContext, config PluginConfig) types.Ac
 			_ = sendErrorResponse(400, "trip-llm-router.models-not-enabled", "Models list endpoint is not available")
 			return types.ActionContinue
 		}
-		return handleOpenaiListModels(ctx, consumerConfig)
+		return handleOpenaiListModels(ctx, config, consumerConfig)
 	}
 
 	model, _ := proxywasm.GetHttpRequestHeader(modelHeaderName)
 	if model == "" {
 		_ = sendErrorResponse(400, "trip-llm-router.missing-model", "No model specified in the request")
 		return types.ActionContinue
+	}
+
+	if config.ModelFilterConfig != nil && config.ModelFilterConfig.WhitelistEnabled {
+		if _, ok := config.ModelFilterConfig.WhitelistSet[model]; !ok {
+			_ = sendErrorResponse(400, "trip-llm-router.model-not-in-whitelist",
+				"Model "+model+" is not in the model whitelist of the gateway.")
+			return types.ActionContinue
+		}
 	}
 
 	routeConfig := consumerConfig.GetRouteConfig(model)
@@ -361,8 +393,17 @@ func isModelsListEnabled(ctx wrapper.HttpContext, consumerId string) bool {
 	return modelsListEnabledDefaultValue
 }
 
-func handleOpenaiListModels(ctx wrapper.HttpContext, consumerConfig *ConsumerConfig) types.Action {
+func handleOpenaiListModels(ctx wrapper.HttpContext, config PluginConfig, consumerConfig *ConsumerConfig) types.Action {
 	models := consumerConfig.GetAvailableModels(ProtocolOpenAI)
+	if config.ModelFilterConfig != nil && config.ModelFilterConfig.WhitelistEnabled {
+		filtered := make([]string, 0, len(models))
+		for _, model := range models {
+			if _, ok := config.ModelFilterConfig.WhitelistSet[model]; ok {
+				filtered = append(filtered, model)
+			}
+		}
+		models = filtered
+	}
 	log.Debugf("building models list response for consumer=%s, protocol=openai, modelCount=%d, models=%v", consumerConfig.ID, len(models), models)
 
 	response := buildModelsListResponse(models)

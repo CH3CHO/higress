@@ -46,8 +46,9 @@ func TestRouteConfig_FromJson(t *testing.T) {
 		assert.NoError(t, err)
 		assert.Equal(t, "route1", c.ID)
 		assert.Len(t, c.Models, 2)
-		assert.Len(t, c.Protocols, 1)
+		assert.Len(t, c.Protocols, 2)
 		assert.Equal(t, ProtocolOpenAI, c.Protocols[0])
+		assert.Equal(t, ProtocolOriginal, c.Protocols[1])
 	})
 
 	t.Run("invalid json", func(t *testing.T) {
