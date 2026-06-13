@@ -105,6 +105,7 @@ type PluginConfig struct {
 	ServiceRouteHost      string
 	EnabledOnPathPrefixes []string
 	ModelFilterConfig     *ModelFilterConfig
+	knownModels           map[string]struct{}
 }
 
 func (c *PluginConfig) FromJson(json gjson.Result) {
@@ -145,6 +146,21 @@ func (c *PluginConfig) FromJson(json gjson.Result) {
 		c.ModelFilterConfig = &ModelFilterConfig{}
 		c.ModelFilterConfig.FromJson(modelFilter)
 	}
+
+	c.knownModels = make(map[string]struct{})
+	for _, consumer := range c.Consumers {
+		for model := range consumer.ModelRoutes {
+			c.knownModels[model] = struct{}{}
+		}
+	}
+}
+
+func (c *PluginConfig) IsModelKnown(model string) bool {
+	if c.knownModels == nil {
+		return false
+	}
+	_, ok := c.knownModels[model]
+	return ok
 }
 
 func (c *PluginConfig) GetConsumerConfig(consumerId string) *ConsumerConfig {
@@ -231,7 +247,11 @@ func onHttpRequestHeaders(ctx wrapper.HttpContext, config PluginConfig) types.Ac
 
 	routeConfig := consumerConfig.GetRouteConfig(model)
 	if routeConfig == nil {
-		_ = sendErrorResponse(403, "trip-llm-router.unauthorized-model", "Consumer "+consumerId+" is not authorized to access model "+model)
+		if !config.IsModelKnown(model) {
+			_ = sendErrorResponse(400, "trip-llm-router.unknown-model", "Model "+model+" is not recognized by the gateway.")
+		} else {
+			_ = sendErrorResponse(403, "trip-llm-router.unauthorized-model", "Consumer "+consumerId+" is not authorized to access model "+model)
+		}
 		return types.ActionContinue
 	}
 

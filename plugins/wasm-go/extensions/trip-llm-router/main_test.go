@@ -271,7 +271,7 @@ func TestE2E(t *testing.T) {
 			}
 		})
 
-		t.Run("unauthorized model", func(t *testing.T) {
+		t.Run("unknown model", func(t *testing.T) {
 			host, status := test.NewTestHost(routerConfig)
 			defer host.Reset()
 			require.Equal(t, types.OnPluginStartStatusOK, status)
@@ -295,13 +295,13 @@ func TestE2E(t *testing.T) {
 
 			localResponse := host.GetLocalResponse()
 			require.NotNil(t, localResponse)
-			require.Equal(t, uint32(403), localResponse.StatusCode, "Response status code should be 403 for unknown consumer")
-			require.Equal(t, "trip-llm-router.unauthorized-model", localResponse.StatusCodeDetail)
+			require.Equal(t, uint32(400), localResponse.StatusCode, "Response status code should be 400 for unknown model")
+			require.Equal(t, "trip-llm-router.unknown-model", localResponse.StatusCodeDetail)
 			require.Equal(t, [][2]string{{"content-type", "application/json"}}, localResponse.Headers)
-			require.Equal(t, `{"code":403,"message":"Consumer consumer1 is not authorized to access model model3"}`, string(localResponse.Data))
+			require.Equal(t, `{"code":400,"message":"Model model3 is not recognized by the gateway."}`, string(localResponse.Data))
 		})
 
-		t.Run("unknown consumer", func(t *testing.T) {
+		t.Run("unauthorized model", func(t *testing.T) {
 			host, status := test.NewTestHost(routerConfig)
 			defer host.Reset()
 			require.Equal(t, types.OnPluginStartStatusOK, status)
@@ -1826,6 +1826,184 @@ func TestModelWhitelistConfig(t *testing.T) {
 
 			localResponse := host.GetLocalResponse()
 			require.NotNil(t, localResponse, "Should return error when whitelist is empty")
+			require.Equal(t, uint32(400), localResponse.StatusCode)
+			require.Equal(t, "trip-llm-router.model-not-in-whitelist", localResponse.StatusCodeDetail)
+		})
+	})
+}
+
+// TestUnknownModelCheck 测试未知模型名称检查功能
+func TestUnknownModelCheck(t *testing.T) {
+	test.RunTest(t, func(t *testing.T) {
+		t.Run("unknown model - not in any consumer's routes", func(t *testing.T) {
+			pluginConfig, _ := json.Marshal(map[string]interface{}{
+				"consumers": []map[string]interface{}{
+					{
+						"id": "consumer1",
+						"routes": []map[string]interface{}{
+							{
+								"id":     "route1",
+								"models": []string{"model1"},
+								"services": []map[string]interface{}{
+									{"id": "service1", "weight": 100},
+								},
+							},
+						},
+					},
+				},
+			})
+			host, status := test.NewTestHost(pluginConfig)
+			defer host.Reset()
+			require.Equal(t, types.OnPluginStartStatusOK, status)
+
+			action := host.CallOnHttpRequestHeaders([][2]string{
+				{":authority", "example.com"},
+				{":path", "/llm/consumer1/v1/chat/completions"},
+				{":method", "POST"},
+				{"Content-Type", "application/json"},
+				{"x-mse-consumer", "consumer1"},
+				{"x-higress-llm-model", "nonexistent-model"},
+			})
+			require.Equal(t, types.ActionContinue, action)
+
+			localResponse := host.GetLocalResponse()
+			require.NotNil(t, localResponse, "Should return error for unknown model")
+			require.Equal(t, uint32(400), localResponse.StatusCode)
+			require.Equal(t, "trip-llm-router.unknown-model", localResponse.StatusCodeDetail)
+			require.Equal(t, `{"code":400,"message":"Model nonexistent-model is not recognized by the gateway."}`, string(localResponse.Data))
+		})
+
+		t.Run("unauthorized model - in another consumer's routes", func(t *testing.T) {
+			pluginConfig, _ := json.Marshal(map[string]interface{}{
+				"consumers": []map[string]interface{}{
+					{
+						"id": "consumer1",
+						"routes": []map[string]interface{}{
+							{
+								"id":     "route1",
+								"models": []string{"model1"},
+								"services": []map[string]interface{}{
+									{"id": "service1", "weight": 100},
+								},
+							},
+						},
+					},
+					{
+						"id": "consumer2",
+						"routes": []map[string]interface{}{
+							{
+								"id":     "route2",
+								"models": []string{"model2"},
+								"services": []map[string]interface{}{
+									{"id": "service2", "weight": 100},
+								},
+							},
+						},
+					},
+				},
+			})
+			host, status := test.NewTestHost(pluginConfig)
+			defer host.Reset()
+			require.Equal(t, types.OnPluginStartStatusOK, status)
+
+			// consumer1 requests model2 which belongs to consumer2
+			action := host.CallOnHttpRequestHeaders([][2]string{
+				{":authority", "example.com"},
+				{":path", "/llm/consumer1/v1/chat/completions"},
+				{":method", "POST"},
+				{"Content-Type", "application/json"},
+				{"x-mse-consumer", "consumer1"},
+				{"x-higress-llm-model", "model2"},
+			})
+			require.Equal(t, types.ActionContinue, action)
+
+			localResponse := host.GetLocalResponse()
+			require.NotNil(t, localResponse, "Should return error for unauthorized model")
+			require.Equal(t, uint32(403), localResponse.StatusCode)
+			require.Equal(t, "trip-llm-router.unauthorized-model", localResponse.StatusCodeDetail)
+			require.Equal(t, `{"code":403,"message":"Consumer consumer1 is not authorized to access model model2"}`, string(localResponse.Data))
+		})
+
+		t.Run("authorized model - normal routing", func(t *testing.T) {
+			pluginConfig, _ := json.Marshal(map[string]interface{}{
+				"consumers": []map[string]interface{}{
+					{
+						"id": "consumer1",
+						"routes": []map[string]interface{}{
+							{
+								"id":     "route1",
+								"models": []string{"model1"},
+								"services": []map[string]interface{}{
+									{"id": "service1", "weight": 100},
+								},
+							},
+						},
+					},
+				},
+			})
+			host, status := test.NewTestHost(pluginConfig)
+			defer host.Reset()
+			require.Equal(t, types.OnPluginStartStatusOK, status)
+
+			action := host.CallOnHttpRequestHeaders([][2]string{
+				{":authority", "example.com"},
+				{":path", "/llm/consumer1/v1/chat/completions"},
+				{":method", "POST"},
+				{"Content-Type", "application/json"},
+				{"x-mse-consumer", "consumer1"},
+				{"x-higress-llm-model", "model1"},
+			})
+			require.Equal(t, types.ActionContinue, action)
+
+			requestHeaders := host.GetRequestHeaders()
+			found := false
+			for _, header := range requestHeaders {
+				if header[0] == llmServiceIdHeaderName && header[1] == "service1" {
+					found = true
+					break
+				}
+			}
+			require.True(t, found, "Authorized model should be routed normally")
+		})
+
+		t.Run("whitelist blocks before unknown check - whitelist error first", func(t *testing.T) {
+			pluginConfig, _ := json.Marshal(map[string]interface{}{
+				"consumers": []map[string]interface{}{
+					{
+						"id": "consumer1",
+						"routes": []map[string]interface{}{
+							{
+								"id":     "route1",
+								"models": []string{"model1"},
+								"services": []map[string]interface{}{
+									{"id": "service1", "weight": 100},
+								},
+							},
+						},
+					},
+				},
+				"modelFilter": map[string]interface{}{
+					"whitelistEnabled": true,
+					"whitelistItems":   []string{"model1"},
+				},
+			})
+			host, status := test.NewTestHost(pluginConfig)
+			defer host.Reset()
+			require.Equal(t, types.OnPluginStartStatusOK, status)
+
+			// model2 is not in whitelist, not in any consumer
+			action := host.CallOnHttpRequestHeaders([][2]string{
+				{":authority", "example.com"},
+				{":path", "/llm/consumer1/v1/chat/completions"},
+				{":method", "POST"},
+				{"Content-Type", "application/json"},
+				{"x-mse-consumer", "consumer1"},
+				{"x-higress-llm-model", "model2"},
+			})
+			require.Equal(t, types.ActionContinue, action)
+
+			localResponse := host.GetLocalResponse()
+			require.NotNil(t, localResponse, "Should return error")
 			require.Equal(t, uint32(400), localResponse.StatusCode)
 			require.Equal(t, "trip-llm-router.model-not-in-whitelist", localResponse.StatusCodeDetail)
 		})
