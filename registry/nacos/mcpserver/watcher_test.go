@@ -27,7 +27,7 @@ import (
 	"github.com/alibaba/higress/v2/registry/memory"
 	"github.com/nacos-group/nacos-sdk-go/v2/model"
 	"github.com/stretchr/testify/mock"
-	wrappers "google.golang.org/protobuf/types/known/wrapperspb"
+	wrapperspb "google.golang.org/protobuf/types/known/wrapperspb"
 	"istio.io/api/networking/v1alpha3"
 	"istio.io/istio/pkg/config"
 	"istio.io/istio/pkg/config/constants"
@@ -75,10 +75,10 @@ func testCallback(msc *McpServerConfig) memory.Cache {
 		NacosNamespace:         "public",
 		NacosGroups:            []string{"dev"},
 		NacosRefreshInterval:   0,
-		EnableMCPServer:        wrappers.Bool(true),
+		EnableMCPServer:        wrapperspb.Bool(true),
 		McpServerExportDomains: []string{"mcp.com"},
 		McpServerBaseUrl:       "/mcp-servers/",
-		EnableScopeMcpServers:  wrappers.Bool(true),
+		EnableScopeMcpServers:  wrapperspb.Bool(true),
 		AllowMcpServers:        []string{"mcp-server-1", "mcp-server-2"},
 		Metadata: map[string]*apiv1.InnerMap{
 			"routeName": {
@@ -561,6 +561,9 @@ func Test_Watcher(t *testing.T) {
 						TrafficPolicy: &v1alpha3.TrafficPolicy{
 							Tls: &v1alpha3.ClientTLSSettings{
 								Mode: v1alpha3.ClientTLSSettings_SIMPLE,
+								InsecureSkipVerify: &wrapperspb.BoolValue{
+									Value: true,
+								},
 							},
 						},
 					},

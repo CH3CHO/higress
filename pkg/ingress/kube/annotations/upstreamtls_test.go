@@ -17,10 +17,10 @@ package annotations
 import (
 	"testing"
 
-	"github.com/golang/protobuf/ptypes/wrappers"
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
 	"google.golang.org/protobuf/testing/protocmp"
+	wrapperspb "google.golang.org/protobuf/types/known/wrapperspb"
 	networking "istio.io/api/networking/v1alpha3"
 )
 
@@ -131,7 +131,46 @@ func TestApplyTrafficPolicy(t *testing.T) {
 				Tls: &networking.ClientTLSSettings{
 					Mode: networking.ClientTLSSettings_SIMPLE,
 					Sni:  "SNI",
-					InsecureSkipVerify: &wrappers.BoolValue{
+					InsecureSkipVerify: &wrapperspb.BoolValue{
+						Value: true,
+					},
+				},
+			},
+		},
+		{
+			// SSLVerify=true → strict, no InsecureSkipVerify
+			input: &networking.TrafficPolicy_PortTrafficPolicy{},
+			config: &Ingress{
+				UpstreamTLS: &UpstreamTLSConfig{
+					BackendProtocol: "HTTPS",
+					EnableSNI:       true,
+					SNI:             "SNI",
+					SSLVerify:       true,
+				},
+			},
+			expect: &networking.TrafficPolicy_PortTrafficPolicy{
+				Tls: &networking.ClientTLSSettings{
+					Mode: networking.ClientTLSSettings_SIMPLE,
+					Sni:  "SNI",
+				},
+			},
+		},
+		{
+			// SSLVerify=false (explicit) → skip verify
+			input: &networking.TrafficPolicy_PortTrafficPolicy{},
+			config: &Ingress{
+				UpstreamTLS: &UpstreamTLSConfig{
+					BackendProtocol: "HTTPS",
+					EnableSNI:       true,
+					SNI:             "SNI",
+					SSLVerify:       false,
+				},
+			},
+			expect: &networking.TrafficPolicy_PortTrafficPolicy{
+				Tls: &networking.ClientTLSSettings{
+					Mode: networking.ClientTLSSettings_SIMPLE,
+					Sni:  "SNI",
+					InsecureSkipVerify: &wrapperspb.BoolValue{
 						Value: true,
 					},
 				},

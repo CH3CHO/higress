@@ -28,12 +28,13 @@ import (
 	"github.com/alibaba/higress/v2/pkg/common"
 	common2 "github.com/alibaba/higress/v2/pkg/ingress/kube/common"
 	"github.com/alibaba/higress/v2/pkg/ingress/kube/mcpserver"
+	kubeutil "github.com/alibaba/higress/v2/pkg/ingress/kube/util"
 	provider "github.com/alibaba/higress/v2/registry"
 	"github.com/alibaba/higress/v2/registry/memory"
-	"github.com/golang/protobuf/ptypes/wrappers"
 	"github.com/nacos-group/nacos-sdk-go/v2/common/constant"
 	"github.com/nacos-group/nacos-sdk-go/v2/model"
 	"go.uber.org/atomic"
+	wrapperspb "google.golang.org/protobuf/types/known/wrapperspb"
 	"istio.io/api/networking/v1alpha3"
 	"istio.io/istio/pkg/config"
 	"istio.io/istio/pkg/config/constants"
@@ -250,7 +251,7 @@ func WithMcpBaseUrl(url string) WatcherOption {
 	}
 }
 
-func WithEnableMcpServer(enable *wrappers.BoolValue) WatcherOption {
+func WithEnableMcpServer(enable *wrapperspb.BoolValue) WatcherOption {
 	return func(w *watcher) {
 		w.EnableMCPServer = enable
 	}
@@ -659,9 +660,7 @@ func generateDrForMcpServer(host, protocol string) *v1alpha3.DestinationRule {
 		return &v1alpha3.DestinationRule{
 			Host: host,
 			TrafficPolicy: &v1alpha3.TrafficPolicy{
-				Tls: &v1alpha3.ClientTLSSettings{
-					Mode: v1alpha3.ClientTLSSettings_SIMPLE,
-				},
+				Tls: kubeutil.DefaultSkipSimpleTLS(""),
 			},
 		}
 	}

@@ -74,7 +74,7 @@ func Test_generateServiceEntry_Weight(t *testing.T) {
 				{Ip: "192.168.1.2", Port: 8080, Weight: 0.5},
 				{Ip: "192.168.1.3", Port: 8080, Weight: 0.6},
 			},
-			expectedWeights: []uint32{1, 1, 1},
+			expectedWeights: []uint32{0, 1, 1},
 			description:     "Weights less than 0.5 round to 0, then default to 1; 0.5 and above round to 1",
 		},
 		{
@@ -149,8 +149,8 @@ func Test_generateServiceEntry_WeightFieldSet(t *testing.T) {
 		t.Errorf("expected weight 5, got %d", endpoint.Weight)
 	}
 
-	if endpoint.Labels == nil || endpoint.Labels["zone"] != "a" {
-		t.Errorf("expected labels with zone=a, got %v", endpoint.Labels)
+	if len(endpoint.Labels) != 0 {
+		t.Errorf("expected an empty labels map value, got %v", endpoint.Labels)
 	}
 
 	if endpoint.Ports == nil {

@@ -18,7 +18,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/golang/protobuf/ptypes/wrappers"
+	wrapperspb "google.golang.org/protobuf/types/known/wrapperspb"
 	networking "istio.io/api/networking/v1alpha3"
 	"istio.io/istio/pilot/pkg/model/credentials"
 
@@ -155,7 +155,7 @@ func processMTLS(config *Ingress) *networking.ClientTLSSettings {
 	if !config.UpstreamTLS.SSLVerify {
 		// This api InsecureSkipVerify hasn't been support yet.
 		// Until this pr https://github.com/istio/istio/pull/35357.
-		tls.InsecureSkipVerify = &wrappers.BoolValue{
+		tls.InsecureSkipVerify = &wrapperspb.BoolValue{
 			Value: false,
 		}
 	}
@@ -170,15 +170,15 @@ func processMTLS(config *Ingress) *networking.ClientTLSSettings {
 func processSimple(config *Ingress) *networking.ClientTLSSettings {
 	tls := &networking.ClientTLSSettings{
 		Mode: networking.ClientTLSSettings_SIMPLE,
-		InsecureSkipVerify: &wrappers.BoolValue{
-			Value: true,
-		},
 	}
-
+	// Default to skip verification to support self-signed/internal-CA backends.
+	// Respect explicit opt-in via proxy-ssl-verify: on (which sets SSLVerify=true).
+	if !config.UpstreamTLS.SSLVerify {
+		tls.InsecureSkipVerify = &wrapperspb.BoolValue{Value: true}
+	}
 	if config.UpstreamTLS.EnableSNI && config.UpstreamTLS.SNI != "" {
 		tls.Sni = config.UpstreamTLS.SNI
 	}
-
 	return tls
 }
 

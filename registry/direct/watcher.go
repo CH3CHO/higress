@@ -27,6 +27,7 @@ import (
 	apiv1 "github.com/alibaba/higress/v2/api/networking/v1"
 	"github.com/alibaba/higress/v2/pkg/common"
 	ingress "github.com/alibaba/higress/v2/pkg/ingress/kube/common"
+	kubeutil "github.com/alibaba/higress/v2/pkg/ingress/kube/util"
 	"github.com/alibaba/higress/v2/registry"
 	provider "github.com/alibaba/higress/v2/registry"
 	"github.com/alibaba/higress/v2/registry/memory"
@@ -226,7 +227,6 @@ func (w *watcher) generateDestinationRule(se *v1alpha3.ServiceEntry) *v1alpha3.D
 	if !common.Protocol(se.Ports[0].Protocol).IsHTTPS() {
 		return nil
 	}
-	sni := w.getSni(se)
 	return &v1alpha3.DestinationRule{
 		Host: se.Hosts[0],
 		TrafficPolicy: &v1alpha3.TrafficPolicy{
@@ -235,10 +235,7 @@ func (w *watcher) generateDestinationRule(se *v1alpha3.ServiceEntry) *v1alpha3.D
 					Port: &v1alpha3.PortSelector{
 						Number: se.Ports[0].Number,
 					},
-					Tls: &v1alpha3.ClientTLSSettings{
-						Mode: v1alpha3.ClientTLSSettings_SIMPLE,
-						Sni:  sni,
-					},
+					Tls: kubeutil.DefaultSkipSimpleTLS(w.getSni(se)),
 				},
 			},
 		},
