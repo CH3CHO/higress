@@ -112,19 +112,17 @@ func (c *PluginConfig) FromJson(json gjson.Result) {
 	c.Consumers = make(map[string]*ConsumerConfig)
 
 	consumers := json.Get("consumers")
-	if !consumers.Exists() {
-		return
+	if consumers.Exists() && consumers.IsArray() {
+		consumers.ForEach(func(_, value gjson.Result) bool {
+			consumerConfig := &ConsumerConfig{}
+			if err := consumerConfig.FromJson(value); err != nil {
+				log.Errorf("Failed to parse consumer config: %v\n%s", err, value.Raw)
+			} else {
+				c.Consumers[consumerConfig.ID] = consumerConfig
+			}
+			return true
+		})
 	}
-
-	consumers.ForEach(func(_, value gjson.Result) bool {
-		consumerConfig := &ConsumerConfig{}
-		if err := consumerConfig.FromJson(value); err != nil {
-			log.Errorf("Failed to parse consumer config: %v\n%s", err, value.Raw)
-		} else {
-			c.Consumers[consumerConfig.ID] = consumerConfig
-		}
-		return true
-	})
 
 	if host := json.Get("serviceRouteHost"); host.Exists() && host.Type == gjson.String {
 		c.ServiceRouteHost = host.String()
