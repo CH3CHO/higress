@@ -1,0 +1,19 @@
+.gitignore
+  s_d28da05a6e2949::t_03f17ceda02577 20
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.24-trip",
+  "base_commit_sha": "bd47c181be74658edce0d98d6cbec921c491c929",
+  "prompts": {},
+  "sessions": {
+    "s_d28da05a6e2949": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "5332c18b-d7d6-4598-8c41-89f9c5ac4612",
+        "model": "kimi-k2.7-code"
+      },
+      "human_author": "CH3CHO <ch3cho@qq.com>"
+    }
+  }
+}
