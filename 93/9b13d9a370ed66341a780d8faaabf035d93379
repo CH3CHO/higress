@@ -1,0 +1,23 @@
+plugins/wasm-go/extensions/ai-statistics/main.go
+  s_d28da05a6e2949::t_e1cf1b9b700090 1125
+  s_d28da05a6e2949::t_9138db621b882c 1191-1193,1195,1197-1199
+  s_d28da05a6e2949::t_80e9252f0a91ad 876-881
+  s_d28da05a6e2949::t_1ab151a7e2ac72 894
+  s_d28da05a6e2949::t_f7e07bc5a039e9 1214
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.24-trip",
+  "base_commit_sha": "939b13d9a370ed66341a780d8faaabf035d93379",
+  "prompts": {},
+  "sessions": {
+    "s_d28da05a6e2949": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "5332c18b-d7d6-4598-8c41-89f9c5ac4612",
+        "model": "kimi-k2.7-code"
+      },
+      "human_author": null
+    }
+  }
+}
