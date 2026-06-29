@@ -1,0 +1,21 @@
+plugins/wasm-go/scripts/submit-wasm.sh
+  s_b456b6bad6e3c8::t_3d255a6218eebb 91,93
+  s_b456b6bad6e3c8::t_cb6cd69ba97d74 68-72,74-76
+  s_b456b6bad6e3c8::t_3cdfc540bf4a15 125-130
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.10-trip",
+  "base_commit_sha": "141758cb90a11c317e2eecd660014c3568d82dee",
+  "prompts": {},
+  "sessions": {
+    "s_b456b6bad6e3c8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "faa14c3e-39bc-40a6-897d-253007d06721",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Zhongyuan Yan (严忠远) <zhongyuan.yan@trip.com>"
+    }
+  }
+}

@@ -1,0 +1,25 @@
+plugins/wasm-go/extensions/ai-statistics/main.go
+  s_41f882d947556f::t_f5bd1a356d1216 871
+  s_41f882d947556f::t_9de16fca1bbc6b 948-952
+  s_41f882d947556f::t_92be4efa4f225a 925
+  s_41f882d947556f::t_6bd180a31a5a25 954
+plugins/wasm-go/extensions/ai-statistics/main_test.go
+  s_41f882d947556f::t_74cada357cdf19 1793-1835,1862
+  s_41f882d947556f::t_ca482e82ad99e2 1859-1861,1863-1888
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.24-trip",
+  "base_commit_sha": "8c7757e7fe8b0237e77106e7a70cb9b6bde983a3",
+  "prompts": {},
+  "sessions": {
+    "s_41f882d947556f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "bf023897-a168-4231-9653-4f641754cd44",
+        "model": "kimi-k2.7-code"
+      },
+      "human_author": "CH3CHO <ch3cho@qq.com>"
+    }
+  }
+}
