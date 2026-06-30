@@ -1,0 +1,23 @@
+plugins/wasm-go/extensions/ai-statistics/main_test.go
+  s_d28da05a6e2949::t_1685db6d08f8f3 1936-1938
+  s_d28da05a6e2949::t_40df8d2ba94e09 1924
+  s_d28da05a6e2949::t_f262e0d1e417fe 1913-1923,1925,1927-1929,1932-1935,1939-1956
+  s_d28da05a6e2949::t_124c5d9c87bd35 1926
+  s_d28da05a6e2949::t_965e25ecaf2cd6 1930-1931
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.24-trip",
+  "base_commit_sha": "0415ab246e2d02b3d97671629aff89f68aaa8fce",
+  "prompts": {},
+  "sessions": {
+    "s_d28da05a6e2949": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "5332c18b-d7d6-4598-8c41-89f9c5ac4612",
+        "model": "kimi-k2.7-code"
+      },
+      "human_author": "CH3CHO <ch3cho@qq.com>"
+    }
+  }
+}
