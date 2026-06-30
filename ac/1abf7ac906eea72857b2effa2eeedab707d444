@@ -1,0 +1,26 @@
+plugins/wasm-go/extensions/ai-proxy/provider/vertex.go
+  s_f01a56d35575d5::t_70dd8bb7d52cf5 486-487
+plugins/wasm-go/extensions/ai-proxy/provider/vertex_test.go
+  s_f01a56d35575d5::t_ea4a94564f4aa6 100-129
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.26-trip",
+  "base_commit_sha": "ac1abf7ac906eea72857b2effa2eeedab707d444",
+  "prompts": {},
+  "humans": {
+    "h_0f3647d1d3d241": {
+      "author": "jkma <jkma@trip.com>"
+    }
+  },
+  "sessions": {
+    "s_f01a56d35575d5": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f1711-3248-7751-a360-de0e5b5975c6",
+        "model": "gpt-5.5-2026-04-24"
+      },
+      "human_author": "jkma <jkma@trip.com>"
+    }
+  }
+}
