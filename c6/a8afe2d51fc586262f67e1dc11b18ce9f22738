@@ -1,0 +1,27 @@
+plugins/wasm-go/extensions/ai-statistics/main_test.go
+  s_fbd3009603aaa7::t_3321032ec657a0 1629-1633,1665-1668
+  s_fbd3009603aaa7::t_4f7215ce1927c7 573-597,1098-1105,1583-1626,1628,1634-1638,1645-1652,1664,1674-1751
+  s_fbd3009603aaa7::t_eed72fdf51ff6a 1627,1654-1661
+  s_fbd3009603aaa7::t_ddcc6a6ebfe608 1639-1644,1653,1662-1663,1669-1673
+plugins/wasm-go/extensions/ai-statistics/responses_protocol.go
+  s_fbd3009603aaa7::t_783125de761a59 240-253
+plugins/wasm-go/extensions/ai-statistics/main.go
+  s_fbd3009603aaa7::t_7aecd1b539f761 1114
+  s_fbd3009603aaa7::t_b44fc73499eb2a 634-635,788,808,1225,1257,1261-1266,1272,1276,1279-1282,1289-1291,1294-1296,1298
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.26-trip",
+  "base_commit_sha": "c6a8afe2d51fc586262f67e1dc11b18ce9f22738",
+  "prompts": {},
+  "sessions": {
+    "s_fbd3009603aaa7": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f1712-56dc-7b21-b3a3-43fd720cb775",
+        "model": "gpt-5.5-2026-04-24"
+      },
+      "human_author": null
+    }
+  }
+}
