@@ -1,0 +1,31 @@
+plugins/wasm-go/extensions/ai-statistics/main.go
+  s_fbd3009603aaa7::t_a3ecd19f4240fa 62,1208,1226,1258-1259,1263,1269,1272-1274,1277-1278,1281-1282,1284-1285
+  s_fbd3009603aaa7::t_7aecd1b539f761 1115
+  s_fbd3009603aaa7::t_b44fc73499eb2a 635-636,789,809,1283,1292-1294,1297-1299,1301
+plugins/wasm-go/extensions/ai-statistics/main_test.go
+  s_fbd3009603aaa7::t_3321032ec657a0 1629-1633,1665-1668
+  s_fbd3009603aaa7::t_c3db073ac232dc 1712-1755
+  s_fbd3009603aaa7::t_7289e715bca6c7 1795-1839
+  s_fbd3009603aaa7::t_4f7215ce1927c7 573-597,1098-1105,1583-1626,1628,1634-1638,1645-1652,1664,1674-1711,1756-1784,1840
+  s_fbd3009603aaa7::t_ddcc6a6ebfe608 1639-1644,1653,1662-1663,1669-1673
+  s_fbd3009603aaa7::t_eed72fdf51ff6a 1627,1654-1661
+plugins/wasm-go/extensions/ai-statistics/responses_protocol.go
+  s_fbd3009603aaa7::t_783125de761a59 239-252
+  s_fbd3009603aaa7::t_9e520278f9a59a 113-123
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.26-trip",
+  "base_commit_sha": "f7d2a74b4231da563d031a0f69c9525cc499c92b",
+  "prompts": {},
+  "sessions": {
+    "s_fbd3009603aaa7": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f1712-56dc-7b21-b3a3-43fd720cb775",
+        "model": "gpt-5.5-2026-04-24"
+      },
+      "human_author": null
+    }
+  }
+}
