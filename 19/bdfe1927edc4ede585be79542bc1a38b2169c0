@@ -1,0 +1,40 @@
+plugins/wasm-go/extensions/ai-proxy/provider/vertex.go
+  s_f01a56d35575d5::t_08fec46bff531f 812-813,846-847
+  s_f01a56d35575d5::t_15fda939302ed8 45,797
+plugins/wasm-go/extensions/ai-proxy/provider/vertex_test.go
+  s_f01a56d35575d5::t_699d48e08369bc 57,153
+plugins/wasm-go/extensions/ai-proxy/HIGRESS_DEV_README.md
+  s_f57ddb10d28cc8::t_a6693d7d8188ba 260,267-285,1239,1241-1242,1246-1247
+  s_f57ddb10d28cc8::t_d88795fba6a54c 178-180
+  s_f57ddb10d28cc8::t_bec2b08a6ff1e5 286-288,298-299
+  s_f01a56d35575d5::t_e82ea1089cc1d5 289-297
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.26-trip",
+  "base_commit_sha": "19bdfe1927edc4ede585be79542bc1a38b2169c0",
+  "prompts": {},
+  "humans": {
+    "h_0f3647d1d3d241": {
+      "author": "jkma <jkma@trip.com>"
+    }
+  },
+  "sessions": {
+    "s_f01a56d35575d5": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f1711-3248-7751-a360-de0e5b5975c6",
+        "model": "gpt-5.5-2026-04-24"
+      },
+      "human_author": "jkma <jkma@trip.com>"
+    },
+    "s_f57ddb10d28cc8": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f1189-308b-7dd2-a3ee-91f5c2c7f0ea",
+        "model": "gpt-5.4-2026-03-05"
+      },
+      "human_author": "jkma <jkma@trip.com>"
+    }
+  }
+}
