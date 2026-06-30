@@ -1,0 +1,54 @@
+plugins/wasm-go/extensions/ai-proxy/util/http.go
+  s_cf626c665e528b::t_c2699a29862b3c 23
+  s_cf626c665e528b::t_55f174951afd24 24
+plugins/wasm-go/extensions/ai-proxy/provider/chat_completions_to_responses_test.go
+  s_cf626c665e528b::t_027282c9e38b22 97
+  s_cf626c665e528b::t_b3a29efb2003ec 131-167,225-255
+  s_cf626c665e528b::t_6efd432b00f34f 1-96,98-130,168-224,256-281
+plugins/wasm-go/extensions/ai-proxy/provider/openai.go
+  s_cf626c665e528b::t_c1ff20fcb8d480 279-280
+  s_cf626c665e528b::t_2aa5c207f64f4a 278
+plugins/wasm-go/extensions/ai-proxy/provider/chat_completions_to_responses.go
+  s_cf626c665e528b::t_b11e84b3371740 239,278-290,321-338,391-423,438-489
+  s_cf626c665e528b::t_72d5b2954ae5bb 243,303
+  s_cf626c665e528b::t_a0b0a6b12fd99e 17
+  s_cf626c665e528b::t_78ea61ba8beed9 1-5,7-16,18-19,22-27,32-50,56-57,59-60,62,64-66,68-70,72-77,79-81,83-88,90-95,97-99,131-134,136-140,142-144,146-148,150-222,227-230,232-238,240-242,244-277,291-302,304-320,339-390,424-437,490-531,533-540,544-549,555-556,637-641,648-649,653-661,671-696,935-957,959-990,992-1386
+  s_cf626c665e528b::t_6f0563d3eafd1f 6,20-21,28-31,51-55,58,61,63,67,71,78,82,89,96,102-112,114-121,123-128,145,149,223-226,231,532,550,559,587,627,630,744-934,958,991
+  s_cf626c665e528b::t_acf47993617ae0 100-101,113,122,129-130,135,141,541-543,551-554,557-558,560-586,588-626,628-629,631-636,642-647,650-652,662-670,697-743
+plugins/wasm-go/extensions/ai-proxy/main.go
+  s_cf626c665e528b::t_a0b0a6b12fd99e 43-45,49-51
+  s_cf626c665e528b::t_7ab10522346afe 46,52,536
+  s_cf626c665e528b::t_ab06e6e8b11516 580-584,588
+  s_cf626c665e528b::t_5faa3355406865 585-587
+  s_cf626c665e528b::t_b53fb1ef1438c8 162
+  s_cf626c665e528b::t_d38784c76ff1b0 180
+  s_cf626c665e528b::t_a90561e6e34be2 298-304,376-377,411,413-418,420-424,457-458,471,589-625,629-645,651-654
+  s_cf626c665e528b::t_f5ca24ebda889d 626-628,646-650
+  s_cf626c665e528b::t_c99139b0df2bcc 655-675
+  s_cf626c665e528b::t_9a6328e7045b83 173-174
+plugins/wasm-go/extensions/ai-proxy/test/openai.go
+  s_cf626c665e528b::t_e4d7a617bd7983 868-928,1357
+  s_cf626c665e528b::t_6b4afca53bc8da 11,129-159,259-268,494-515,819-866,1358
+  s_cf626c665e528b::t_3c6e9961638b97 1068-1095,1273-1356
+plugins/wasm-go/extensions/ai-proxy/provider/provider.go
+  s_cf626c665e528b::t_b1e55e2987a1b9 391-393,551-554,573,1054,1072-1074,1080-1086
+  s_cf626c665e528b::t_ee38b000eccc1c 1070-1071,1076-1078
+  s_cf626c665e528b::t_54b8ba901886ff 1075,1079
+  s_cf626c665e528b::t_6e0be8604080e8 1069
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.26-trip",
+  "base_commit_sha": "e1ecdee09159180cf9b03f485f913ba33a1ac6d3",
+  "prompts": {},
+  "sessions": {
+    "s_cf626c665e528b": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f128a-372f-7110-aba7-50f6aa366420",
+        "model": "gpt-5.4-2026-03-05"
+      },
+      "human_author": null
+    }
+  }
+}
