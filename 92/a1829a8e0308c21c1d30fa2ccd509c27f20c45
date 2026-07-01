@@ -1,0 +1,21 @@
+plugins/wasm-go/extensions/ai-proxy/provider/chat_completions_to_responses.go
+  s_28eec29b16b056::t_31342efdf237a6 1510,1549
+plugins/wasm-go/extensions/ai-proxy/provider/chat_completions_to_responses_test.go
+  s_28eec29b16b056::t_84cdd8b66fd2d9 131-180
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.26-trip",
+  "base_commit_sha": "92a1829a8e0308c21c1d30fa2ccd509c27f20c45",
+  "prompts": {},
+  "sessions": {
+    "s_28eec29b16b056": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f1c73-4fd3-7240-8277-d01dd0fbce81",
+        "model": "gpt-5.5-2026-04-24"
+      },
+      "human_author": "jkma <jkma@trip.com>"
+    }
+  }
+}
