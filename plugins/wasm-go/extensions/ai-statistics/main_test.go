@@ -1789,3 +1789,138 @@ func TestSkipBothBodyLogStreaming(t *testing.T) {
 		})
 	})
 }
+
+func setupResponsesStreamWithoutEndOfStream(t *testing.T) test.TestHost {
+	host, status := test.NewTestHost(emptyAttributesConfig)
+	require.Equal(t, types.OnPluginStartStatusOK, status)
+
+	host.SetRouteName("api-v1")
+	host.SetClusterName("cluster-1")
+
+	action := host.CallOnHttpRequestHeaders([][2]string{
+		{":authority", "example.com"},
+		{":path", "/v1/responses"},
+		{":method", "POST"},
+		{"x-mse-consumer", "user5"},
+	})
+	require.Equal(t, types.HeaderStopIteration, action)
+
+	requestBody := []byte(`{
+		"model": "gpt-5.4",
+		"input": "Hello",
+		"stream": true
+	}`)
+	action = host.CallOnHttpRequestBody(requestBody)
+	require.Equal(t, types.ActionContinue, action)
+
+	action = host.CallOnHttpResponseHeaders([][2]string{
+		{":status", "200"},
+		{"content-type", "text/event-stream"},
+	})
+	require.Equal(t, types.ActionContinue, action)
+
+	firstChunk := []byte("data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_123\",\"object\":\"response\",\"created_at\":1,\"status\":\"in_progress\",\"model\":\"gpt-5.4\",\"output\":[]}}\n\n")
+	action = host.CallOnHttpStreamingResponseBody(firstChunk, false)
+	require.Equal(t, types.ActionContinue, action)
+
+	finalChunkWithoutEOS := []byte("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_123\",\"object\":\"response\",\"created_at\":1,\"completed_at\":2,\"status\":\"completed\",\"model\":\"gpt-5.4\",\"output\":[{\"id\":\"msg_123\",\"type\":\"message\",\"status\":\"completed\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"Hello world\"}]}],\"usage\":{\"input_tokens\":10,\"output_tokens\":5,\"total_tokens\":15}}}\n\n")
+	action = host.CallOnHttpStreamingResponseBody(finalChunkWithoutEOS, false)
+	require.Equal(t, types.ActionContinue, action)
+
+	return host
+}
+
+func TestResponsesStreamingLogFlushedOnStreamDoneWithoutEndOfStream(t *testing.T) {
+	test.RunTest(t, func(t *testing.T) {
+		host := setupResponsesStreamWithoutEndOfStream(t)
+		defer host.Reset()
+
+		aiLogRaw, err := host.GetProperty([]string{"ai_log"})
+		require.NoError(t, err)
+		aiLogStr := wrapper.UnmarshalStr(string(aiLogRaw))
+
+		// access log fields should already be flushed when the usage chunk was processed
+		responseBodyLog := gjson.Get(aiLogStr, "response_body").String()
+		require.NotEmpty(t, responseBodyLog)
+		require.Equal(t, "completed", gjson.Get(responseBodyLog, "status").String())
+		require.Equal(t, int64(10), gjson.Get(aiLogStr, "usage.input_tokens").Int())
+		require.Equal(t, int64(5), gjson.Get(aiLogStr, "usage.output_tokens").Int())
+		require.Equal(t, int64(15), gjson.Get(aiLogStr, "usage.total_tokens").Int())
+		require.Equal(t, int64(10), gjson.Get(aiLogStr, "input_token").Int())
+		require.Equal(t, int64(5), gjson.Get(aiLogStr, "output_token").Int())
+		require.Equal(t, int64(15), gjson.Get(aiLogStr, "total_token").Int())
+
+		host.CompleteHttp()
+
+		// completing the stream should not corrupt or lose the already flushed fields
+		aiLogRaw, err = host.GetProperty([]string{"ai_log"})
+		require.NoError(t, err)
+		aiLogStr = wrapper.UnmarshalStr(string(aiLogRaw))
+		require.Equal(t, "completed", gjson.Get(gjson.Get(aiLogStr, "response_body").String(), "status").String())
+		require.Equal(t, int64(15), gjson.Get(aiLogStr, "usage.total_tokens").Int())
+	})
+}
+
+func TestResponsesStreamingLogFlushedWhenUsageChunkArrives(t *testing.T) {
+	test.RunTest(t, func(t *testing.T) {
+		host := setupResponsesStreamWithoutEndOfStream(t)
+		defer host.Reset()
+
+		aiLogRaw, err := host.GetProperty([]string{"ai_log"})
+		require.NoError(t, err)
+		aiLogStr := wrapper.UnmarshalStr(string(aiLogRaw))
+
+		require.Contains(t, aiLogStr, "\"usage\"")
+		require.Equal(t, int64(10), gjson.Get(aiLogStr, "usage.input_tokens").Int())
+		require.Equal(t, int64(5), gjson.Get(aiLogStr, "usage.output_tokens").Int())
+		require.Equal(t, int64(15), gjson.Get(aiLogStr, "usage.total_tokens").Int())
+
+		responseBodyLog := gjson.Get(aiLogStr, "response_body").String()
+		require.NotEmpty(t, responseBodyLog)
+		require.Equal(t, "completed", gjson.Get(responseBodyLog, "status").String())
+	})
+}
+
+func TestStreamingLogFlushedOnFirstNonEmptyChunk(t *testing.T) {
+	test.RunTest(t, func(t *testing.T) {
+		host, status := test.NewTestHost(basicConfig)
+		defer host.Reset()
+		require.Equal(t, types.OnPluginStartStatusOK, status)
+
+		action := host.CallOnHttpRequestHeaders([][2]string{
+			{":authority", "example.com"},
+			{":path", "/v1/chat/completions"},
+			{":method", "POST"},
+			{"content-type", "application/json"},
+		})
+		require.Equal(t, types.HeaderStopIteration, action)
+
+		requestBody := []byte(`{
+			"model": "gpt-4",
+			"messages": [{"role": "user", "content": "hi"}],
+			"stream": true
+		}`)
+		action = host.CallOnHttpRequestBody(requestBody)
+		require.Equal(t, types.ActionContinue, action)
+
+		// Add a small delay to ensure llm_first_token_duration is greater than 0.
+		time.Sleep(10 * time.Millisecond)
+
+		action = host.CallOnHttpResponseHeaders([][2]string{
+			{":status", "200"},
+			{"content-type", "text/event-stream"},
+		})
+		require.Equal(t, types.ActionContinue, action)
+
+		firstChunk := []byte("data: {\"id\":\"chatcmpl-123\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"gpt-4\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"Hello\"},\"finish_reason\":null}]}\n\n")
+		action = host.CallOnHttpStreamingResponseBody(firstChunk, false)
+		require.Equal(t, types.ActionContinue, action)
+
+		aiLogRaw, err := host.GetProperty([]string{"ai_log"})
+		require.NoError(t, err)
+		aiLogStr := wrapper.UnmarshalStr(string(aiLogRaw))
+		require.NotEmpty(t, aiLogStr)
+		require.Equal(t, "gpt-4", gjson.Get(aiLogStr, "request_model_final").String())
+		require.Greater(t, gjson.Get(aiLogStr, "llm_first_token_duration").Int(), int64(0))
+	})
+}

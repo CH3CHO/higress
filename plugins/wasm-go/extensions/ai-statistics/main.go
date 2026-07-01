@@ -66,6 +66,7 @@ const (
 	NeedDropAdditionalUsageChunk           = "need_drop_additional_usage_chunk"
 	RequestApiName                         = "request_api_name"
 	IsRawRequest                           = "is_original_request"
+	AILogDirty                             = "ai_log_dirty"
 
 	// AI API Paths
 	PathOpenAIChatCompletions       = "/chat/completions"
@@ -470,9 +471,9 @@ func onHttpRequestHeaders(ctx wrapper.HttpContext, config AIStatisticsConfig) ty
 	// Set span attributes for ARMS.
 	setSpanAttribute(ArmsSpanKind, "LLM")
 	// Set user defined log & span attributes which type is fixed_value
-	setAttributeBySource(ctx, config, FixedValue, nil, nil)
+	_ = setAttributeBySource(ctx, config, FixedValue, nil, nil)
 	// Set user defined log & span attributes which type is request_header
-	setAttributeBySource(ctx, config, RequestHeader, nil, nil)
+	_ = setAttributeBySource(ctx, config, RequestHeader, nil, nil)
 
 	// Batch record request headers if configured
 	if len(config.requestHeadersToLog) > 0 {
@@ -564,7 +565,7 @@ func onHttpRequestBody(ctx wrapper.HttpContext, config AIStatisticsConfig, body 
 	}
 
 	// Set user defined log & span attributes.
-	setAttributeBySource(ctx, config, RequestBody, body, nil)
+	_ = setAttributeBySource(ctx, config, RequestBody, body, nil)
 	// Set span attributes for ARMS.
 	requestModel := "UNKNOWN"
 	if model := gjson.GetBytes(body, "model"); model.Exists() {
@@ -794,7 +795,7 @@ func onHttpResponseHeaders(ctx wrapper.HttpContext, config AIStatisticsConfig) t
 	}
 
 	// Set user defined log & span attributes.
-	setAttributeBySource(ctx, config, ResponseHeader, nil, nil)
+	_ = setAttributeBySource(ctx, config, ResponseHeader, nil, nil)
 
 	status, _ := proxywasm.GetHttpResponseHeader(":status")
 	if status != "200" && ctx.HasResponseBody() {
@@ -834,6 +835,7 @@ func onHttpStreamingResponseBody(ctx wrapper.HttpContext, config AIStatisticsCon
 			firstTokenTime := time.Now().UnixMilli()
 			ctx.SetContext(StatisticsFirstTokenTime, firstTokenTime)
 			ctx.SetUserAttribute(LLMFirstTokenDuration, firstTokenTime-requestStartTime)
+			markAILogDirty(ctx)
 		}
 
 		// Set information about this request
@@ -844,36 +846,40 @@ func onHttpStreamingResponseBody(ctx wrapper.HttpContext, config AIStatisticsCon
 				setSpanAttribute(ArmsModelName, usage.Model)
 				setSpanAttribute(ArmsInputToken, usage.InputToken)
 				setSpanAttribute(ArmsOutputToken, usage.OutputToken)
+				markAILogDirty(ctx)
 			}
 		}
-		enrichAnthropicMessagesUsage(ctx, data)
+		if enrichAnthropicMessagesUsage(ctx, data) {
+			markAILogDirty(ctx)
+		}
 	}
 
 	var streamEvents []StreamEvent
 	if ctx.GetBoolContext(IsSseResponse, false) {
 		streamEvents = ExtractStreamingEvents(ctx, data)
 	}
-	setAttributeBySource(ctx, config, ResponseStreamingBody, data, streamEvents)
+	if setAttributeBySource(ctx, config, ResponseStreamingBody, data, streamEvents) {
+		markAILogDirty(ctx)
+	}
 
 	data = postProcessResponseData(ctx, config, data, streamEvents)
 
 	// If the end of the stream is reached, record metrics/logs/spans.
 	if endOfStream {
+		log.Debugf("streaming response reached end of stream, finalizing")
 		if requestStartTime > 0 {
 			responseEndTime := time.Now().UnixMilli()
 			ctx.SetUserAttribute(LLMServiceDuration, responseEndTime-requestStartTime)
 		}
-
-		// Write log
-		_ = ctx.WriteUserAttributeToLogWithKey(wrapper.AILogKey)
-
-		// Write metrics
-		writeMetric(ctx, config)
-	} else if !ctx.GetBoolContext(StreamingResponseBodyLogged, false) {
-		// For streaming response, we only log once when the first non-empty streaming body chunk is received,
-		// to avoid missing logs in case of stream interruption.
-		ctx.SetContext(StreamingResponseBodyLogged, true)
-		_ = ctx.WriteUserAttributeToLogWithKey(wrapper.AILogKey)
+		flushAILogAndMetrics(ctx, config)
+	} else {
+		// For streaming response, ensure the first non-empty streaming body chunk is logged,
+		// so that response_body is captured even if the stream is interrupted before any milestone.
+		if !ctx.GetBoolContext(StreamingResponseBodyLogged, false) && len(data) > 0 {
+			markAILogDirty(ctx)
+			ctx.SetContext(StreamingResponseBodyLogged, true)
+		}
+		flushAILogIfDirty(ctx)
 	}
 
 	return data
@@ -884,6 +890,8 @@ func onHttpResponseBody(ctx wrapper.HttpContext, config AIStatisticsConfig, body
 	if ctx.GetBoolContext(SkipProcessing, false) {
 		return types.ActionContinue
 	}
+	// For non-streaming requests, receiving the complete response body is equivalent to reaching end-of-stream.
+	log.Debugf("non-streaming response body received, finalizing")
 
 	// Get requestStartTime from http context
 	requestStartTime, _ := ctx.GetContext(StatisticsRequestStartTime).(int64)
@@ -911,22 +919,36 @@ func onHttpResponseBody(ctx wrapper.HttpContext, config AIStatisticsConfig, body
 			setSpanAttribute(ArmsTotalToken, usage.TotalToken)
 		}
 	}
-	enrichAnthropicMessagesUsage(ctx, body)
+	_ = enrichAnthropicMessagesUsage(ctx, body)
 
 	if !config.skipResponseBodyLog {
 		ctx.SetUserAttribute(ResponseBody, getResponseBodyToLog(ctx, body, &config))
 	}
 
 	// Set user defined log & span attributes.
-	setAttributeBySource(ctx, config, ResponseBody, body, nil)
+	_ = setAttributeBySource(ctx, config, ResponseBody, body, nil)
 
-	// Write log
-	_ = ctx.WriteUserAttributeToLogWithKey(wrapper.AILogKey)
-
-	// Write metrics
-	writeMetric(ctx, config)
+	flushAILogAndMetrics(ctx, config)
 
 	return types.ActionContinue
+}
+
+func markAILogDirty(ctx wrapper.HttpContext) {
+	ctx.SetContext(AILogDirty, true)
+}
+
+func flushAILogIfDirty(ctx wrapper.HttpContext) {
+	if ctx.GetBoolContext(AILogDirty, false) {
+		_ = ctx.WriteUserAttributeToLogWithKey(wrapper.AILogKey)
+		ctx.SetContext(AILogDirty, false)
+	}
+}
+
+func flushAILogAndMetrics(ctx wrapper.HttpContext, config AIStatisticsConfig) {
+	log.Debugf("flushing ai log and metrics")
+	_ = ctx.WriteUserAttributeToLogWithKey(wrapper.AILogKey)
+	ctx.SetContext(AILogDirty, false)
+	writeMetric(ctx, config)
 }
 
 func getResponseBodyToLog(ctx wrapper.HttpContext, body []byte, config *AIStatisticsConfig) string {
@@ -1015,17 +1037,21 @@ func getResponseBodyToLogForAnthropicMessages(body []byte, limit int) string {
 	return newBody
 }
 
-func enrichAnthropicMessagesUsage(ctx wrapper.HttpContext, body []byte) {
+func enrichAnthropicMessagesUsage(ctx wrapper.HttpContext, body []byte) bool {
 	apiName, _ := ctx.GetContext(RequestApiName).(ApiName)
 	if apiName != ApiNameAnthropicMessages {
-		return
+		return false
 	}
+
+	changed := false
 
 	if chatID := wrapper.GetValueFromBody(body, []string{"message.id", "id"}); chatID != nil {
 		ctx.SetUserAttribute(ChatID, chatID.String())
+		changed = true
 	}
 	if model := wrapper.GetValueFromBody(body, []string{"message.model", "model"}); model != nil {
 		ctx.SetUserAttribute(tokenusage.CtxKeyModel, model.String())
+		changed = true
 	}
 
 	inputToken := getLatestInt64Value(ctx, tokenusage.CtxKeyInputToken, body,
@@ -1037,14 +1063,17 @@ func enrichAnthropicMessagesUsage(ctx wrapper.HttpContext, body []byte) {
 
 	if inputToken > 0 {
 		ctx.SetUserAttribute(tokenusage.CtxKeyInputToken, inputToken)
+		changed = true
 	}
 	if outputToken > 0 {
 		ctx.SetUserAttribute(tokenusage.CtxKeyOutputToken, outputToken)
+		changed = true
 	}
 
 	totalToken := inputToken + outputToken + cacheCreationInputToken + cacheReadInputToken
 	if totalToken > 0 {
 		ctx.SetUserAttribute(tokenusage.CtxKeyTotalToken, totalToken)
+		changed = true
 	}
 
 	setSpanAttribute(ArmsModelName, ctx.GetUserAttribute(tokenusage.CtxKeyModel))
@@ -1057,6 +1086,8 @@ func enrichAnthropicMessagesUsage(ctx wrapper.HttpContext, body []byte) {
 	if totalToken > 0 {
 		setSpanAttribute(ArmsTotalToken, totalToken)
 	}
+
+	return changed
 }
 
 func getLatestInt64Value(ctx wrapper.HttpContext, key string, body []byte, paths ...string) int64 {
@@ -1090,7 +1121,8 @@ func setResponseType(ctx wrapper.HttpContext, responseType string, overwrite boo
 
 // fetches the tracing span value from the specified source.
 
-func setAttributeBySource(ctx wrapper.HttpContext, config AIStatisticsConfig, source string, body []byte, streamEvents []StreamEvent) {
+func setAttributeBySource(ctx wrapper.HttpContext, config AIStatisticsConfig, source string, body []byte, streamEvents []StreamEvent) bool {
+	newAttributeAdded := false
 	apiName, _ := ctx.GetContext(RequestApiName).(ApiName)
 
 	if source == ResponseStreamingBody {
@@ -1115,7 +1147,7 @@ func setAttributeBySource(ctx wrapper.HttpContext, config AIStatisticsConfig, so
 
 		if logRawResponseBody {
 			// skip attribute extraction from streaming body when just logging raw response body
-			return
+			return false
 		}
 	}
 
@@ -1156,8 +1188,15 @@ func setAttributeBySource(ctx wrapper.HttpContext, config AIStatisticsConfig, so
 					if err := proxywasm.SetProperty([]string{key}, []byte(marshalledJsonStr)); err != nil {
 						log.Warnf("failed to set %s in filter state, raw is %s, err is %v", key, marshalledJsonStr, err)
 					}
+					// AsSeparateLogField 直接写入 filter state，无法简单判断是否为新增；
+					// 但通常不用于 streaming body 的 append 文本场景，保持原行为。
+					newAttributeAdded = true
 				} else {
+					isNewAttribute := ctx.GetUserAttribute(key) == nil && value != nil && value != ""
 					ctx.SetUserAttribute(key, value)
+					if isNewAttribute {
+						newAttributeAdded = true
+					}
 				}
 			}
 			// for metrics
@@ -1172,6 +1211,7 @@ func setAttributeBySource(ctx wrapper.HttpContext, config AIStatisticsConfig, so
 			}
 		}
 	}
+	return newAttributeAdded
 }
 
 func appendRawStreamingResponseBodyToLog(ctx wrapper.HttpContext, config *AIStatisticsConfig, body []byte) {
