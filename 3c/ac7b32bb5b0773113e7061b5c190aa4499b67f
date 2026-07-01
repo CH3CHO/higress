@@ -1,0 +1,27 @@
+plugins/wasm-go/extensions/ai-proxy/provider/chat_completions_to_responses_test.go
+  s_28eec29b16b056::t_80abd76f68e104 544-589
+  s_28eec29b16b056::t_6387ab15b4c11c 645,649,653-661
+  s_28eec29b16b056::t_6566cdd21c2f2c 52-66
+plugins/wasm-go/extensions/ai-proxy/provider/chat_completions_to_responses.go
+  s_28eec29b16b056::t_e595e769f6d575 122
+  s_28eec29b16b056::t_a05847e093912b 121,123-127
+  s_28eec29b16b056::t_96f9961e1939b6 260-274
+  s_28eec29b16b056::t_da6f0a08b1822f 2023-2026
+  s_28eec29b16b056::t_94d0530dfe0694 275,458-459,463-473,479-483,494-504
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.26-trip",
+  "base_commit_sha": "3cac7b32bb5b0773113e7061b5c190aa4499b67f",
+  "prompts": {},
+  "sessions": {
+    "s_28eec29b16b056": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f1c73-4fd3-7240-8277-d01dd0fbce81",
+        "model": "gpt-5.5-2026-04-24"
+      },
+      "human_author": "jkma <jkma@trip.com>"
+    }
+  }
+}
