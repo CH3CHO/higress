@@ -1,0 +1,44 @@
+plugins/wasm-go/extensions/ai-proxy/provider/bedrock_messages_test.go
+  s_28eec29b16b056::t_4d377a490b3d44 158-163
+  s_28eec29b16b056::t_85a637d190d838 164-165,180-189
+  s_28eec29b16b056::t_63d8be82cedd98 166-179
+plugins/wasm-go/extensions/ai-proxy/provider/bedrock/util_test.go
+  s_28eec29b16b056::t_7fc5df6d5704f8 741-761,763-764,766-787
+  s_28eec29b16b056::t_ed3dc0c4cacc5d 762,765
+plugins/wasm-go/extensions/ai-proxy/provider/bedrock.go
+  s_28eec29b16b056::t_ff392474ac6bf2 847-854,857
+plugins/wasm-go/extensions/ai-proxy/provider/chat_completions_to_responses.go
+  s_28eec29b16b056::t_a25f1e081b7c7d 2028,2033-2047,2224,2229-2239
+plugins/wasm-go/extensions/ai-proxy/provider/bedrock/util.go
+  s_28eec29b16b056::t_859ccbd4df4e4c 22,159-160,166-168,170-171
+  s_28eec29b16b056::t_b90bbfc3f7cae7 172-175
+  s_28eec29b16b056::t_59a6750db6044f 21,23-36,161-165,169,176-187
+plugins/wasm-go/extensions/ai-proxy/main.go
+  s_28eec29b16b056::t_e32ce2d5327227 225-228
+  s_28eec29b16b056::t_8142991a5e6393 579
+  s_28eec29b16b056::t_f94c0241586db1 171-177,183-189
+  s_28eec29b16b056::t_4fabe52763e9fd 166-170,179-180,224
+  s_28eec29b16b056::t_0d6327010e391d 178,181-182
+  s_28eec29b16b056::t_15dccad7eb9ec8 205
+plugins/wasm-go/extensions/ai-proxy/provider/chat_completions_to_responses_test.go
+  s_28eec29b16b056::t_85d152a01ec8fd 307,319,547,560,576,590
+plugins/wasm-go/extensions/ai-proxy/test/openai.go
+  s_28eec29b16b056::t_e67b8425c00e28 8-9,517-519
+  s_28eec29b16b056::t_c0a238beca8dd7 1293-1296
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.26-trip",
+  "base_commit_sha": "907cf25fdc1c700b8381bda93507822444bac742",
+  "prompts": {},
+  "sessions": {
+    "s_28eec29b16b056": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f1c73-4fd3-7240-8277-d01dd0fbce81",
+        "model": "gpt-5.5-2026-04-24"
+      },
+      "human_author": "jkma <jkma@trip.com>"
+    }
+  }
+}
