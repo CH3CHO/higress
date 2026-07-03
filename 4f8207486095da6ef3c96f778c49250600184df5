@@ -1,0 +1,21 @@
+plugins/wasm-go/extensions/ai-statistics/main.go
+  s_bcae8127ec8fde::t_52ef4ffc2294ab 51-71
+plugins/wasm-go/extensions/ai-statistics/responses_protocol.go
+  ai_agent 116-122,124-131,141-157
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.28-trip",
+  "base_commit_sha": "4f8207486095da6ef3c96f778c49250600184df5",
+  "prompts": {},
+  "sessions": {
+    "s_bcae8127ec8fde": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f2614-1451-74a1-a3f2-63a21ba2a189",
+        "model": "gpt-5.5-2026-04-24"
+      },
+      "human_author": "jkma <jkma@trip.com>"
+    }
+  }
+}

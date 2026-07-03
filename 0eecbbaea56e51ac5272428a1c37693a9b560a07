@@ -1,0 +1,52 @@
+plugins/wasm-go/extensions/ai-proxy/provider/stream_events_mock_test.go
+  s_bcae8127ec8fde::t_b725dcc6aed5ee 7-9
+plugins/wasm-go/extensions/ai-proxy/provider/chat_completions_to_responses_test.go
+  s_bcae8127ec8fde::t_531cdee8a777d0 116-158
+  s_bcae8127ec8fde::t_8a66e4c96fc408 752,760,763,767-768,778,781,803,851,872,879,886,889,893-903,905-907,909-930
+plugins/wasm-go/extensions/ai-proxy/provider/provider.go
+  s_bcae8127ec8fde::t_e850903a2657db 437
+  s_bcae8127ec8fde::t_94910e57759a8e 951-953
+plugins/wasm-go/extensions/ai-proxy/provider/bedrock_messages_test.go
+  s_bcae8127ec8fde::t_5bca54977e38c5 124-125,128,146,167,178-179
+plugins/wasm-go/extensions/ai-proxy/provider/bedrock.go
+  s_bcae8127ec8fde::t_b3476cbdb9c728 845,856-857
+plugins/wasm-go/extensions/ai-proxy/provider/bedrock/util.go
+  s_bcae8127ec8fde::t_1bbe3495be3e8c 166-167,174,179
+  s_bcae8127ec8fde::t_94910e57759a8e 159-161
+plugins/wasm-go/extensions/ai-proxy/provider/chat_completions_to_responses.go
+  s_bcae8127ec8fde::t_46fd36a1e209f2 1637-1643,1646-1651
+  s_bcae8127ec8fde::t_94910e57759a8e 18-22,1644-1645,2115-2116
+  s_bcae8127ec8fde::t_3fdd5713d84f23 2114,2120,2129,2137,2149
+  s_bcae8127ec8fde::t_80c1afd64f6094 1241
+plugins/wasm-go/extensions/ai-proxy/main.go
+  s_bcae8127ec8fde::t_04ddd592cfa4f9 342-345,348-352
+  s_bcae8127ec8fde::t_94910e57759a8e 346-347
+  s_bcae8127ec8fde::t_e4a892aff37f67 582
+  s_bcae8127ec8fde::t_83cc13a2d365f4 621-622
+  s_bcae8127ec8fde::t_5727966b786210 629-636,663,693
+plugins/wasm-go/extensions/ai-proxy/provider/model.go
+  s_bcae8127ec8fde::t_94910e57759a8e 521-522
+plugins/wasm-go/extensions/ai-proxy/provider/bedrock/util_test.go
+  s_bcae8127ec8fde::t_abe0b8ff94b09a 756,759,769,771,774,776-777
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.28-trip",
+  "base_commit_sha": "0eecbbaea56e51ac5272428a1c37693a9b560a07",
+  "prompts": {},
+  "humans": {
+    "h_0f3647d1d3d241": {
+      "author": "jkma <jkma@trip.com>"
+    }
+  },
+  "sessions": {
+    "s_bcae8127ec8fde": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f2614-1451-74a1-a3f2-63a21ba2a189",
+        "model": "gpt-5.5-2026-04-24"
+      },
+      "human_author": "jkma <jkma@trip.com>"
+    }
+  }
+}
