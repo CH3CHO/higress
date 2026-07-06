@@ -1,0 +1,20 @@
+docs/superpowers/specs/2026-07-06-version-scoped-wasm-plugin-releases-design.md
+  s_ad5bbf1ba0ac46::t_b6dee1276d85a2 251,255-256,259,262-264
+  s_ad5bbf1ba0ac46::t_c85544d3351811 1-250,252-254,257-258,260-261,265-388
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.28-trip",
+  "base_commit_sha": "67e3814b600df284134a485594861af3f07fd0d9",
+  "prompts": {},
+  "sessions": {
+    "s_ad5bbf1ba0ac46": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e8bf38a2-7a46-4b54-8352-9e083677883f",
+        "model": "MiniMax-M3"
+      },
+      "human_author": "CH3CHO <ch3cho@qq.com>"
+    }
+  }
+}
