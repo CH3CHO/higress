@@ -48,25 +48,27 @@ const (
 	defaultMaxBodyBytes uint32 = 100 * 1024 * 1024
 
 	// Context consts
-	StatisticsRequestStartTime             = "ai-statistics-request-start-time"
-	StatisticsFirstTokenTime               = "ai-statistics-first-token-time"
-	RouteName                              = "route"
-	ClusterName                            = "cluster"
-	APIName                                = "api"
-	ConsumerKey                            = "x-mse-consumer"
-	RequestPath                            = "request_path"
-	SkipProcessing                         = "skip_processing"
-	LogRawResponseBody                     = "log_raw_response_body"
-	StreamingResponseBodyLogged            = "streaming_response_body_logged"
-	StreamEventFoundInResponseBody         = "stream_event_found_in_response_body"
-	SkipStreamingRequestBodyLogProcessing  = "skip_streaming_request_body_log_processing"
-	SkipStreamingResponseBodyLogProcessing = "skip_streaming_response_body_log_processing"
-	IsSseResponse                          = "is_sse_response"
-	SseStreamStopped                       = "sse_stream_stopped"
-	NeedDropAdditionalUsageChunk           = "need_drop_additional_usage_chunk"
-	RequestApiName                         = "request_api_name"
-	IsRawRequest                           = "is_original_request"
-	AILogDirty                             = "ai_log_dirty"
+	StatisticsRequestStartTime                   = "ai-statistics-request-start-time"
+	StatisticsFirstTokenTime                     = "ai-statistics-first-token-time"
+	RouteName                                    = "route"
+	ClusterName                                  = "cluster"
+	APIName                                      = "api"
+	ConsumerKey                                  = "x-mse-consumer"
+	RequestPath                                  = "request_path"
+	SkipProcessing                               = "skip_processing"
+	LogRawResponseBody                           = "log_raw_response_body"
+	StreamingResponseBodyLogged                  = "streaming_response_body_logged"
+	StreamEventFoundInResponseBody               = "stream_event_found_in_response_body"
+	StreamingResponseBodyForLogAccumulator       = "streaming_response_body_for_log_accumulator"
+	SkipStreamingRequestBodyLogProcessing        = "skip_streaming_request_body_log_processing"
+	SkipStreamingResponseBodyLogProcessing       = "skip_streaming_response_body_log_processing"
+	SkipStreamingResponseBodyContentAccumulation = "skip_streaming_response_body_content_accumulation"
+	IsSseResponse                                = "is_sse_response"
+	SseStreamStopped                             = "sse_stream_stopped"
+	NeedDropAdditionalUsageChunk                 = "need_drop_additional_usage_chunk"
+	RequestApiName                               = "request_api_name"
+	IsRawRequest                                 = "is_original_request"
+	AILogDirty                                   = "ai_log_dirty"
 
 	// AI API Paths
 	PathOpenAIChatCompletions       = "/chat/completions"
@@ -632,6 +634,8 @@ func getRequestBodyToLog(ctx wrapper.HttpContext, body []byte, config *AIStatist
 	switch apiName {
 	case ApiNameChatCompletions:
 		return getRequestBodyToLogForChatCompletions(body, requestBodyLengthLimit)
+	case ApiNameResponses:
+		return getRequestBodyToLogForResponses(body, requestBodyLengthLimit)
 	case ApiNameAnthropicMessages:
 		return getRequestBodyToLogForAnthropicMessages(body, requestBodyLengthLimit)
 	case ApiNameCompletions:
@@ -784,6 +788,7 @@ func onHttpResponseHeaders(ctx wrapper.HttpContext, config AIStatisticsConfig) t
 
 	if strings.Contains(contentType, "application/json") {
 		// Non-streaming JSON response body will be processed in onHttpResponseBody
+		ctx.SetResponseBodyBufferLimit(defaultMaxBodyBytes)
 		ctx.BufferResponseBody()
 	} else if strings.Contains(contentType, "text/event-stream") {
 		// Do nothing, streaming body will be processed in onHttpStreamingResponseBody
@@ -803,6 +808,7 @@ func onHttpResponseHeaders(ctx wrapper.HttpContext, config AIStatisticsConfig) t
 		// Because if we don't do this, following plugins may just break the chain when processing the header,
 		// such as triggering request fallback, which will cause us unable to log the response body at all.
 		// And usually non-200 responses are not that large, so we can afford buffering them.
+		ctx.SetResponseBodyBufferLimit(defaultMaxBodyBytes)
 		ctx.BufferResponseBody()
 		return types.HeaderStopIteration
 	}
@@ -1139,7 +1145,7 @@ func setAttributeBySource(ctx wrapper.HttpContext, config AIStatisticsConfig, so
 			}
 
 			if !ctx.GetBoolContext(StreamEventFoundInResponseBody, false) {
-				// as long as no streaming event hasn't been found in the response body,
+				// As long as no streaming event has been found in the response body,
 				// we can directly use the raw response body for logging just in case that the body isn't a streaming one.
 				appendRawStreamingResponseBodyToLog(ctx, &config, body)
 			}
@@ -1240,6 +1246,7 @@ func combineStreamingEventsForLog(ctx wrapper.HttpContext, config *AIStatisticsC
 		ctx.SetContext(StreamEventFoundInResponseBody, true)
 		// reset response body for combining
 		ctx.SetUserAttribute(ResponseBody, "")
+		ctx.SetContext(StreamingResponseBodyForLogAccumulator, "")
 	}
 
 	if ctx.GetContext(SkipStreamingResponseBodyLogProcessing) != nil {
@@ -1257,10 +1264,20 @@ func combineStreamingEventsForLog(ctx wrapper.HttpContext, config *AIStatisticsC
 		return
 	}
 
-	responseBody, _ := ctx.GetUserAttribute(ResponseBody).(string)
+	// TODO：这里与 Anthropic、Responses 的流式日志路径骨架相同，
+	// 后续可抽通用累加循环，统一处理 skipContent、mergeUsage 和超限 compact。
+	responseBody := getStreamingResponseBodyForLogAccumulator(ctx)
 
 	processedFields := make(map[string]bool)
 	for i, event := range events {
+		// 内容累加守卫：超限后跳过内容类 parse/累加，防止批内峰值放大与 CPU 回归。
+		// usage 不受此守卫影响，走旁路提取，保证 body 里的 usage 段始终落库。
+		skipContent := ctx.GetBoolContext(SkipStreamingResponseBodyContentAccumulation, false)
+		if skipContent {
+			// 超限后只提取 usage，不再 parse 整个 event 做内容累加。
+			mergeUsageFromChatCompletionEvent(&responseBody, event.Data)
+			continue
+		}
 		log.Debugf("processing streaming event %d: %s", i, event.Data)
 		dataJson := gjson.Parse(event.Data)
 		if !dataJson.Exists() || !dataJson.IsObject() {
@@ -1288,316 +1305,117 @@ func combineStreamingEventsForLog(ctx wrapper.HttpContext, config *AIStatisticsC
 			}
 			return true
 		})
+		mergeUsageFromChatCompletionEvent(&responseBody, event.Data)
 		if len(responseBody) > config.responseBodyLengthLimit {
-			log.Debugf("combined response body length for log exceeds limit %d, stop processing further streaming events", config.responseBodyLengthLimit)
-			ctx.SetContext(SkipStreamingResponseBodyLogProcessing, true)
-		} else {
-			ctx.SetUserAttribute(ResponseBody, responseBody)
+			responseBody = compactStreamingResponseBodyForLog(ctx, config, responseBody)
+			if len(responseBody) > config.responseBodyLengthLimit {
+				responseBody = boundedBodyToLongPlaceholder(config.responseBodyLengthLimit)
+			}
+			ctx.SetContext(SkipStreamingResponseBodyContentAccumulation, true)
 		}
 	}
+
+	setStreamingResponseBodyForLog(ctx, config, responseBody)
 }
 
 func combineAnthropicStreamingEventsForLog(ctx wrapper.HttpContext, config *AIStatisticsConfig, events []StreamEvent) {
-	responseBody, _ := ctx.GetUserAttribute(ResponseBody).(string)
+	responseBody := getStreamingResponseBodyForLogAccumulator(ctx)
 
 	for _, event := range events {
-		responseBody = combineAnthropicStreamingEventForLog(responseBody, &event)
-		if len(responseBody) > config.responseBodyLengthLimit {
-			ctx.SetContext(SkipStreamingResponseBodyLogProcessing, true)
-			return
-		}
-	}
-
-	ctx.SetUserAttribute(ResponseBody, responseBody)
-}
-
-// aggregateResponsesStreamingEventsForLog 会把一批 Responses SSE event
-// 折叠成用于最终日志的 ResponseBody。
-// 目标是尽量还原成非流式 /v1/responses 的 body 形态，方便最终
-// ai_log.response_body 保留一份可读的聚合结果。
-func aggregateResponsesStreamingEventsForLog(ctx wrapper.HttpContext, config *AIStatisticsConfig, events []StreamEvent) {
-	responseBody, _ := ctx.GetUserAttribute(ResponseBody).(string)
-
-	for _, event := range events {
-		responseBody = applyResponsesStreamingEventForLog(responseBody, &event)
-	}
-
-	if responseBody == "" {
-		return
-	}
-
-	responseBody = compactResponsesBodyForLog(responseBody, config.responseBodyLengthLimit)
-	ctx.SetUserAttribute(ResponseBody, responseBody)
-}
-
-// applyResponsesStreamingEventForLog 会把一个 Responses SSE event 应用到
-// 当前聚合中的 body 上。这里不只是“追加”：
-// - delta 类 event 会追加 text / arguments
-// - added/done 类 event 会设置结构化字段
-// - created/in_progress 类 event 会合并顶层元数据
-// - completed/failed/incomplete 类 event 可能直接用最终 response 整体覆盖
-func applyResponsesStreamingEventForLog(body string, event *StreamEvent) string {
-	if event == nil || event.Data == "" {
-		return body
-	}
-
-	data := gjson.Parse(event.Data)
-	if !data.Exists() || !data.IsObject() {
-		return body
-	}
-
-	eventType := data.Get("type").String()
-	if eventType == "" {
-		eventType = event.Event
-	}
-
-	switch eventType {
-	case "response.created", "response.in_progress":
-		body = mergeResponsesRootForLog(body, data.Get("response"))
-	case "response.output_item.added", "response.output_item.done":
-		body = setJSONRawField(body, fmt.Sprintf("output.%d", int(data.Get("output_index").Int())), firstExistingResult(data, "item", "output_item"))
-	case "response.content_part.added", "response.content_part.done":
-		body = setJSONRawField(body, fmt.Sprintf("output.%d.content.%d", int(data.Get("output_index").Int()), int(data.Get("content_index").Int())), firstExistingResult(data, "part", "content_part"))
-	case "response.output_text.delta":
-		body = updateResponsesOutputTextForLog(body, data, true)
-	case "response.output_text.done":
-		body = updateResponsesOutputTextForLog(body, data, false)
-	case "response.function_call_arguments.delta":
-		body = updateResponsesFunctionCallArgumentsForLog(body, data, true)
-	case "response.function_call_arguments.done":
-		body = updateResponsesFunctionCallArgumentsForLog(body, data, false)
-	case "response.completed", "response.failed", "response.incomplete":
-		if response := data.Get("response"); response.Exists() && response.IsObject() {
-			body = response.Raw
-		}
-	default:
-		if response := data.Get("response"); response.Exists() && response.IsObject() {
-			body = mergeResponsesRootForLog(body, response)
-		}
-	}
-
-	return body
-}
-
-// mergeResponsesRootForLog 只合并顶层稳定字段。
-// 这些字段即使后续为了日志长度做压缩，也应该尽量保留下来。
-func mergeResponsesRootForLog(body string, response gjson.Result) string {
-	if !response.Exists() || !response.IsObject() {
-		return body
-	}
-
-	for _, field := range []string{"id", "object", "created_at", "completed_at", "status", "background", "error", "incomplete_details", "model"} {
-		body = setJSONRawField(body, field, response.Get(field))
-	}
-	body = setJSONRawField(body, "usage", response.Get("usage"))
-
-	return body
-}
-
-func updateResponsesOutputTextForLog(body string, data gjson.Result, appendDelta bool) string {
-	outputIndex := int(data.Get("output_index").Int())
-	contentIndex := int(data.Get("content_index").Int())
-	contentPath := fmt.Sprintf("output.%d.content.%d", outputIndex, contentIndex)
-
-	body = setJSONFieldIfAbsent(body, contentPath+".type", "output_text")
-
-	text := data.Get("text").String()
-	if appendDelta {
-		text = gjson.Get(body, contentPath+".text").String() + data.Get("delta").String()
-	}
-	if text == "" && !appendDelta {
-		return body
-	}
-	return setJSONStringField(body, contentPath+".text", text)
-}
-
-func updateResponsesFunctionCallArgumentsForLog(body string, data gjson.Result, appendDelta bool) string {
-	outputIndex := int(data.Get("output_index").Int())
-	outputPath := fmt.Sprintf("output.%d", outputIndex)
-
-	body = setJSONFieldIfAbsent(body, outputPath+".type", "function_call")
-	body = setJSONRawField(body, outputPath+".id", data.Get("item_id"))
-	body = setJSONRawField(body, outputPath+".call_id", data.Get("call_id"))
-	body = setJSONRawField(body, outputPath+".name", data.Get("name"))
-
-	args := data.Get("arguments")
-	if appendDelta || !args.Exists() {
-		args = data.Get("delta")
-	}
-	if !args.Exists() {
-		return body
-	}
-
-	value := args.String()
-	if appendDelta {
-		value = gjson.Get(body, outputPath+".arguments").String() + value
-	}
-	return setJSONStringField(body, outputPath+".arguments", value)
-}
-
-// compactResponsesBodyForLog 会在裁剪超长 output 的同时保留根字段和 usage。
-// 这里改成“按预算渐进构建摘要”：
-// 先稳定保留根字段，再按剩余长度预算尽量追加 output，避免反复重建整段 JSON。
-func compactResponsesBodyForLog(body string, limit int) string {
-	if limit <= 0 || len(body) <= limit {
-		return body
-	}
-
-	response := gjson.Parse(body)
-	if !response.Exists() || !response.IsObject() {
-		return bodyToLongPlaceholder
-	}
-
-	if summary := buildResponsesSummaryForLog(response, limit); summary != "" && len(summary) <= limit {
-		return summary
-	}
-
-	return bodyToLongPlaceholder
-}
-
-// buildResponsesSummaryForLog 会先构造固定根字段，再按剩余 budget 逐步补 output。
-// 这样只需要构造一次根摘要，后续是否保留 output 由剩余预算决定。
-func buildResponsesSummaryForLog(response gjson.Result, limit int) string {
-	summaryBuilder := newJSONObjectBuilder()
-	for _, field := range []string{"id", "object", "created_at", "completed_at", "status", "background", "error", "incomplete_details", "model"} {
-		summaryBuilder.AddResultField(field, response.Get(field))
-	}
-	summaryBuilder.AddResultField("usage", response.Get("usage"))
-	summaryBuilder.AddRawField("output_truncated", "true")
-
-	summary := summaryBuilder.String()
-	if len(summary) > limit {
-		return ""
-	}
-
-	output := response.Get("output")
-	if !output.Exists() || !output.IsArray() {
-		return summary
-	}
-
-	remainingBudget := limit - len(summary) - len(`,"output":`)
-	if remainingBudget < 2 {
-		return summary
-	}
-
-	outputSummary := buildJSONArrayForLog(output.Array(), remainingBudget, buildResponsesOutputItemForLog)
-	if outputSummary == "" {
-		return summary
-	}
-
-	return summary[:len(summary)-1] + `,"output":` + outputSummary + `}`
-}
-
-// buildResponsesOutputItemForLog 会优先保留 output item 的稳定元数据，
-// 再用剩余预算尽量补 arguments 和 content。
-func buildResponsesOutputItemForLog(item gjson.Result, budget int) string {
-	if !item.Exists() || !item.IsObject() {
-		return ""
-	}
-
-	summaryBuilder := newJSONObjectBuilder()
-	for _, field := range []string{"id", "type", "status", "role", "phase", "call_id", "name"} {
-		summaryBuilder.AddResultFieldIfFits(field, item.Get(field), budget)
-	}
-
-	appendTruncatedJSONResultFieldForLog(summaryBuilder, "arguments", item.Get("arguments"), budget)
-
-	content := item.Get("content")
-	if content.Exists() && content.IsArray() {
-		contentSummary := buildJSONArrayForLog(content.Array(), summaryBuilder.ExtraValueCapacity("content", budget), buildResponsesContentPartForLog)
-		if contentSummary != "" {
-			summaryBuilder.AddRawField("content", contentSummary)
-		}
-	}
-
-	if !summaryBuilder.HasField() {
-		return ""
-	}
-
-	return summaryBuilder.String()
-}
-
-// buildJSONArrayForLog 负责在总 budget 内尽量多保留数组元素。
-// 每个元素的具体摘要策略由 buildItem 控制；一旦下一个元素放不下就停止追加。
-func buildJSONArrayForLog(items []gjson.Result, budget int, buildItem func(gjson.Result, int) string) string {
-	if budget < 2 || len(items) == 0 {
-		return ""
-	}
-
-	builder := newJSONArrayBuilder()
-	for _, item := range items {
-		if !item.Exists() || !item.IsObject() {
+		// 内容累加守卫：超限后跳过内容类 parse/累加，防止批内峰值放大与 CPU 回归。
+		// usage 不受此守卫影响，走旁路提取，保证 body 里的 usage 段始终落库。
+		skipContent := ctx.GetBoolContext(SkipStreamingResponseBodyContentAccumulation, false)
+		if skipContent {
+			mergeAnthropicUsageIntoBody(&responseBody, event.Data)
 			continue
 		}
-
-		itemSummary := buildItem(item, builder.ExtraValueCapacity(budget))
-		if itemSummary == "" {
-			break
-		}
-		builder.AddRawValue(itemSummary)
-	}
-
-	if !builder.HasValue() {
-		return ""
-	}
-
-	return builder.String()
-}
-
-func buildResponsesContentPartForLog(part gjson.Result, budget int) string {
-	if !part.Exists() || !part.IsObject() {
-		return ""
-	}
-
-	summaryBuilder := newJSONObjectBuilder()
-	summaryBuilder.AddResultFieldIfFits("type", part.Get("type"), budget)
-	if !summaryBuilder.HasField() {
-		return ""
-	}
-
-	for _, field := range []string{"text", "refusal"} {
-		appendTruncatedJSONResultFieldForLog(summaryBuilder, field, part.Get(field), budget)
-	}
-
-	return summaryBuilder.String()
-}
-
-func setJSONRawField(body string, path string, value gjson.Result) string {
-	if !value.Exists() {
-		return body
-	}
-	if newBody, err := sjson.SetRaw(body, path, value.Raw); err == nil {
-		return newBody
-	}
-	return body
-}
-
-func firstExistingResult(data gjson.Result, paths ...string) gjson.Result {
-	for _, path := range paths {
-		value := data.Get(path)
-		if value.Exists() {
-			return value
+		responseBody = combineAnthropicStreamingEventForLog(responseBody, &event)
+		mergeAnthropicUsageIntoBody(&responseBody, event.Data)
+		if len(responseBody) > config.responseBodyLengthLimit {
+			responseBody = compactStreamingResponseBodyForLog(ctx, config, responseBody)
+			if len(responseBody) > config.responseBodyLengthLimit {
+				responseBody = boundedBodyToLongPlaceholder(config.responseBodyLengthLimit)
+			}
+			ctx.SetContext(SkipStreamingResponseBodyContentAccumulation, true)
 		}
 	}
-	return gjson.Result{}
+
+	setStreamingResponseBodyForLog(ctx, config, responseBody)
 }
 
-func setJSONStringField(body string, path string, value string) string {
-	if newBody, err := sjson.Set(body, path, value); err == nil {
-		return newBody
+func getStreamingResponseBodyForLogAccumulator(ctx wrapper.HttpContext) string {
+	if responseBody, ok := ctx.GetContext(StreamingResponseBodyForLogAccumulator).(string); ok {
+		return responseBody
 	}
-	return body
+
+	responseBody, _ := ctx.GetUserAttribute(ResponseBody).(string)
+	return responseBody
 }
 
-// setJSONFieldIfAbsent 只在字段缺失时写入给定值，不会覆盖已有值。
-func setJSONFieldIfAbsent(body string, path string, value interface{}) string {
-	if gjson.Get(body, path).Exists() {
-		return body
+func setStreamingResponseBodyForLog(ctx wrapper.HttpContext, config *AIStatisticsConfig, responseBody string) {
+	if len(responseBody) > config.responseBodyLengthLimit {
+		log.Debugf("combined response body length for log exceeds limit %d, compact response body for log", config.responseBodyLengthLimit)
+		responseBody = compactStreamingResponseBodyForLog(ctx, config, responseBody)
+		if len(responseBody) > config.responseBodyLengthLimit {
+			log.Debugf("compacted response body length %d still exceeds limit %d, use placeholder for log", len(responseBody), config.responseBodyLengthLimit)
+			responseBody = boundedBodyToLongPlaceholder(config.responseBodyLengthLimit)
+		}
 	}
-	if newBody, err := sjson.Set(body, path, value); err == nil {
-		return newBody
+
+	ctx.SetContext(StreamingResponseBodyForLogAccumulator, responseBody)
+	ctx.SetUserAttribute(ResponseBody, responseBody)
+}
+
+func compactStreamingResponseBodyForLog(ctx wrapper.HttpContext, config *AIStatisticsConfig, responseBody string) string {
+	if responseBody == "" {
+		return responseBody
 	}
-	return body
+
+	// TODO：极长流超限后可能反复触发 compact，可考虑缓存首次 compact 结果或只压缩一次。
+	compacted := getResponseBodyToLog(ctx, []byte(responseBody), config)
+	if compacted == "" {
+		return bodyToLongPlaceholder
+	}
+	return compacted
+}
+
+// mergeUsageFromChatCompletionEvent 从 Chat Completions 流式 event 中提取 usage 字段，
+// 轻量合入 body，不重建整段内容。用于内容累加超限后的 usage 旁路，保证 body 里 usage 段不丢。
+func mergeUsageFromChatCompletionEvent(body *string, data string) {
+	if usage := gjson.Get(data, "usage"); usage.Exists() && usage.IsObject() {
+		if newBody, err := sjson.SetRawOptions(*body, "usage", usage.Raw, nil); err == nil {
+			*body = string(newBody)
+		}
+	}
+}
+
+// mergeAnthropicUsageIntoBody 从 Anthropic messages 流式 event 中提取 usage，
+// 兼容顶层 usage 与 amazon-bedrock-invocationMetrics，轻量合入 body。
+func mergeAnthropicUsageIntoBody(body *string, data string) {
+	parsed := gjson.Parse(data)
+	if !parsed.Exists() || !parsed.IsObject() {
+		return
+	}
+	if usage := parsed.Get("usage"); usage.Exists() && usage.IsObject() {
+		if newBody, err := sjson.SetRawOptions(*body, "usage", usage.Raw, nil); err == nil {
+			*body = string(newBody)
+		}
+	}
+	if metrics := parsed.Get("amazon-bedrock-invocationMetrics"); metrics.Exists() && metrics.IsObject() {
+		if newBody, err := sjson.SetRawOptions(*body, "amazon-bedrock-invocationMetrics", metrics.Raw, nil); err == nil {
+			*body = string(newBody)
+		}
+	}
+}
+
+func boundedBodyToLongPlaceholder(limit int) string {
+	if limit <= 0 {
+		return ""
+	}
+	if len(bodyToLongPlaceholder) <= limit {
+		return bodyToLongPlaceholder
+	}
+	return bodyToLongPlaceholder[:limit]
 }
 
 func minInt(a, b int) int {
@@ -1773,24 +1591,6 @@ func extractStreamingBodyValueForAttribute(apiName ApiName, attribute Attribute,
 	}
 
 	return extractStreamingBodyByJsonPath(streamEvents, attribute.Value, attribute.Rule, currentValue)
-}
-
-func isResponsesBuiltInStreamingUsageAttribute(apiName ApiName, attribute Attribute) bool {
-	return apiName == ApiNameResponses &&
-		attribute.Key == Usage &&
-		attribute.ValueSource == ResponseStreamingBody &&
-		attribute.Value == "usage" &&
-		attribute.Rule == RuleReplace
-}
-
-func extractLatestStreamingResultByJsonPath(events []StreamEvent, jsonPath string) gjson.Result {
-	for i := len(events) - 1; i >= 0; i-- {
-		result := gjson.Get(events[i].Data, jsonPath)
-		if result.Exists() && result.Type != gjson.Null {
-			return result
-		}
-	}
-	return gjson.Result{}
 }
 
 func extractStreamingBodyByJsonPath(events []StreamEvent, jsonPath string, rule string, currentValue interface{}) interface{} {

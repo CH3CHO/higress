@@ -526,6 +526,15 @@ func (e *StreamEvent) SetValue(key, value string) {
 	}
 }
 
+func (e *StreamEvent) AppendData(value string) {
+	// SSE 规范要求同一事件内的多行 data 用换行符拼接。
+	// 只有解析连续 data 行时使用追加语义；普通 SetValue 仍保持覆盖语义。
+	if e.Data != "" {
+		e.Data += "\n"
+	}
+	e.Data += value
+}
+
 func (e *StreamEvent) ToHttpString() string {
 	var builder strings.Builder
 	if e.Id != "" {

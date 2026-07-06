@@ -388,6 +388,9 @@ type ProviderConfig struct {
 	// @Title zh-CN 基于OpenAI协议的自定义后端URL
 	// @Description zh-CN 仅适用于支持 openai 协议的服务。
 	openaiCustomUrl string `required:"false" yaml:"openaiCustomUrl" json:"openaiCustomUrl"`
+	// @Title zh-CN 启用 Responses 经 Chat Completions 上游桥接
+	// @Description zh-CN 当入口请求为 /v1/responses，但上游实际走 /chat/completions 时，自动将请求转换为 Chat Completions，并在响应阶段转换回 Responses 格式。
+	enableResponsesViaChatCompletionsBridge bool `required:"false" yaml:"enableResponsesViaChatCompletionsBridge" json:"enableResponsesViaChatCompletionsBridge"`
 	// @Title zh-CN Moonshot File ID
 	// @Description zh-CN 仅适用于Moonshot AI服务。Moonshot AI服务的文件ID，其内容用于补充AI请求上下文
 	moonshotFileId string `required:"false" yaml:"moonshotFileId" json:"moonshotFileId"`
@@ -430,6 +433,9 @@ type ProviderConfig struct {
 	// @Title zh-CN Amazon Bedrock 额外模型请求参数
 	// @Description zh-CN 仅适用于Amazon Bedrock服务，用于设置模型特定的推理参数
 	bedrockAdditionalFields map[string]interface{} `required:"false" yaml:"bedrockAdditionalFields" json:"bedrockAdditionalFields"`
+	// @Title zh-CN Amazon Bedrock 允许的 anthropic-beta 特性白名单
+	// @Description zh-CN 仅适用于Amazon Bedrock /v1/messages 入口。配置后用于过滤请求 header 及 body 中的 anthropic-beta 特性，仅放行白名单内的值。为空时不做白名单过滤，仅去空和去重。
+	bedrockAllowedAnthropicBetaFeatures []string `required:"false" yaml:"bedrockAllowedAnthropicBetaFeatures" json:"bedrockAllowedAnthropicBetaFeatures"`
 	// @Title zh-CN minimax API type
 	// @Description zh-CN 仅适用于 minimax 服务。minimax API 类型，v2 和 pro 中选填一项，默认值为 v2
 	minimaxApiType string `required:"false" yaml:"minimaxApiType" json:"minimaxApiType"`
@@ -545,6 +551,10 @@ func (c *ProviderConfig) GetVllmServerHost() string {
 	return c.vllmServerHost
 }
 
+func (c *ProviderConfig) EnableResponsesViaChatCompletionsBridge() bool {
+	return c.enableResponsesViaChatCompletionsBridge
+}
+
 func (c *ProviderConfig) IsOpenAIProtocol() bool {
 	return c.protocol == protocolOpenAI
 }
@@ -563,6 +573,7 @@ func (c *ProviderConfig) FromJson(json gjson.Result) {
 	// first byte timeout
 	c.firstByteTimeout = uint32(json.Get("firstByteTimeout").Uint())
 	c.openaiCustomUrl = json.Get("openaiCustomUrl").String()
+	c.enableResponsesViaChatCompletionsBridge = json.Get("enableResponsesViaChatCompletionsBridge").Bool()
 	c.moonshotFileId = json.Get("moonshotFileId").String()
 	c.azureServiceUrl = json.Get("azureServiceUrl").String()
 	c.qwenFileIds = make([]string, 0)
@@ -606,6 +617,10 @@ func (c *ProviderConfig) FromJson(json gjson.Result) {
 		c.bedrockAdditionalFields = make(map[string]interface{})
 		for k, v := range json.Get("bedrockAdditionalFields").Map() {
 			c.bedrockAdditionalFields[k] = v.Value()
+		}
+		c.bedrockAllowedAnthropicBetaFeatures = make([]string, 0)
+		for _, feature := range json.Get("bedrockAllowedAnthropicBetaFeatures").Array() {
+			c.bedrockAllowedAnthropicBetaFeatures = append(c.bedrockAllowedAnthropicBetaFeatures, feature.String())
 		}
 	}
 	c.minimaxApiType = json.Get("minimaxApiType").String()
@@ -930,8 +945,15 @@ func performPatternMapping(input string, mapping map[string]string) string {
 }
 
 func ExtractStreamingEvents(ctx wrapper.HttpContext, chunk []byte) []StreamEvent {
+	return extractStreamingEventsWithBuffer(ctx, ctxKeyStreamingBody, chunk)
+}
+
+// extractStreamingEventsWithBuffer 解析当前 chunk 中完整的 SSE 事件, 并用指定
+// context key 保存上一个 chunk 遗留的未完整尾部。不同调用方使用不同 buffer key,
+// 可以避免已经被 ToHttpString 重新序列化的数据与上游原始 SSE 解析器互相污染尾部。
+func extractStreamingEventsWithBuffer(ctx wrapper.HttpContext, bufferKey string, chunk []byte) []StreamEvent {
 	body := chunk
-	if bufferedStreamingBody, has := ctx.GetContext(ctxKeyStreamingBody).([]byte); has {
+	if bufferedStreamingBody, has := ctx.GetContext(bufferKey).([]byte); has {
 		body = append(bufferedStreamingBody, chunk...)
 	}
 	body = bytes.ReplaceAll(body, []byte("\r\n"), []byte("\n"))
@@ -942,9 +964,9 @@ func ExtractStreamingEvents(ctx wrapper.HttpContext, chunk []byte) []StreamEvent
 	defer func() {
 		if eventStartIndex >= 0 && eventStartIndex < len(body) {
 			// Just in case the received chunk is not a complete event.
-			ctx.SetContext(ctxKeyStreamingBody, body[eventStartIndex:])
+			ctx.SetContext(bufferKey, body[eventStartIndex:])
 		} else {
-			ctx.SetContext(ctxKeyStreamingBody, nil)
+			ctx.SetContext(bufferKey, nil)
 		}
 	}()
 
@@ -991,7 +1013,11 @@ func ExtractStreamingEvents(ctx wrapper.HttpContext, chunk []byte) []StreamEvent
 				// Malformed line, skip it.
 			} else {
 				value := string(body[valueStartIndex:i])
-				currentEvent.SetValue(currentKey, value)
+				if currentKey == streamDataItemKey {
+					currentEvent.AppendData(value)
+				} else {
+					currentEvent.SetValue(currentKey, value)
+				}
 			}
 		} else {
 			// Extra new line. The current event is complete.
@@ -1043,6 +1069,7 @@ func (c *ProviderConfig) handleRequestBody(
 	}
 
 	var err error
+	effectiveApiName := apiName
 
 	// handle claude protocol input - auto-detect based on conversion marker
 	// If main.go detected a Claude request that needs conversion, convert the body
@@ -1057,9 +1084,26 @@ func (c *ProviderConfig) handleRequestBody(
 		log.Debugf("[Auto Protocol] converted Claude request body to OpenAI format")
 	}
 
+	if c.enableResponsesViaChatCompletionsBridge && apiName == ApiNameResponses && isResponsesViaChatCompletionsBridgeActivated(ctx) {
+		var toolNameMap map[string]string
+		var toolContext *ResponsesToolContext
+		body, toolContext, toolNameMap, err = ConvertResponsesRequestToChatCompletionWithToolContext(body)
+		if err != nil {
+			return types.ActionContinue, fmt.Errorf("failed to convert responses request to chat completion: %v", err)
+		}
+		if toolContext != nil {
+			ctx.SetContext(ChatCompletionToolContextKey(), toolContext)
+		}
+		if len(toolNameMap) > 0 {
+			ctx.SetContext(ChatCompletionToolNameMapContextKey(), toolNameMap)
+		}
+		effectiveApiName = ApiNameChatCompletion
+		log.Debugf("[Auto Protocol] converted Responses request body to Chat Completions format")
+	}
+
 	// use openai protocol (either original openai or converted from claude)
 
-	if handler, ok := provider.(AsyncTransformRequestBodyHandler); ok && handler.NeedAsyncTransform(ctx, apiName, body) {
+	if handler, ok := provider.(AsyncTransformRequestBodyHandler); ok && handler.NeedAsyncTransform(ctx, effectiveApiName, body) {
 		// Only call async handler when needed
 		callback := func(transformedBody []byte, callbackErr error) {
 			body = transformedBody
@@ -1076,7 +1120,7 @@ func (c *ProviderConfig) handleRequestBody(
 			}
 			_ = proxywasm.ResumeHttpRequest()
 		}
-		err = handler.TransformRequestBodyAsync(ctx, apiName, body, callback)
+		err = handler.TransformRequestBodyAsync(ctx, effectiveApiName, body, callback)
 		if err != nil {
 			return types.ActionContinue, err
 		}
@@ -1084,20 +1128,20 @@ func (c *ProviderConfig) handleRequestBody(
 	}
 
 	if handler, ok := provider.(TransformRequestBodyHandler); ok {
-		body, err = handler.TransformRequestBody(ctx, apiName, body)
+		body, err = handler.TransformRequestBody(ctx, effectiveApiName, body)
 	} else if handler, ok := provider.(TransformRequestBodyHeadersHandler); ok {
 		headers := util.GetRequestHeaders()
-		body, err = handler.TransformRequestBodyHeaders(ctx, apiName, body, headers)
+		body, err = handler.TransformRequestBodyHeaders(ctx, effectiveApiName, body, headers)
 		util.ReplaceRequestHeaders(headers)
 	} else {
-		body, err = c.defaultTransformRequestBody(ctx, apiName, body)
+		body, err = c.defaultTransformRequestBody(ctx, effectiveApiName, body)
 	}
 
 	if err != nil {
 		return types.ActionContinue, err
 	}
 
-	if apiName == ApiNameChatCompletion {
+	if effectiveApiName == ApiNameChatCompletion {
 		if c.context == nil {
 			return types.ActionContinue, replaceRequestBody(body)
 		}
@@ -1109,6 +1153,10 @@ func (c *ProviderConfig) handleRequestBody(
 		return types.ActionContinue, err
 	}
 	return types.ActionContinue, replaceRequestBody(body)
+}
+
+func isResponsesViaChatCompletionsBridgeActivated(ctx wrapper.HttpContext) bool {
+	return ctx.GetBoolContext(ResponsesViaChatCompletionsBridgeActivatedContextKey(), false)
 }
 
 func (c *ProviderConfig) handleRequestHeaders(provider Provider, ctx wrapper.HttpContext, apiName ApiName) {

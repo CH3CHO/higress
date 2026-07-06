@@ -103,7 +103,7 @@ func (m *mockBedrockHTTPContext) IsBinaryResponseBody() bool                  { 
 func TestSetBedrockAnthropicMessagesRequestDefaults(t *testing.T) {
 	headers := http.Header{}
 	headers.Set("anthropic-version", "2023-06-01")
-	headers.Set("anthropic-beta", "beta-a, beta-b")
+	headers.Set("anthropic-beta", "interleaved-thinking-2025-05-14, output-128k-2025-02-19, unknown-beta")
 	headers.Set("x-api-key", "secret")
 
 	body, err := setBedrockAnthropicMessagesRequestDefaults([]byte(`{
@@ -112,8 +112,8 @@ func TestSetBedrockAnthropicMessagesRequestDefaults(t *testing.T) {
 		"stream":true,
 		"messages":[{"role":"user","content":"hi"}],
 		"metadata":{"trace_id":"trace-1"},
-		"anthropic_beta":["body-beta"]
-	}`), headers)
+		"anthropic_beta":["computer-use-2025-01-24"]
+	}`), headers, nil)
 	assert.NoError(t, err)
 	assert.False(t, gjson.GetBytes(body, "model").Exists())
 	assert.False(t, gjson.GetBytes(body, "stream").Exists())
@@ -121,9 +121,11 @@ func TestSetBedrockAnthropicMessagesRequestDefaults(t *testing.T) {
 	assert.False(t, gjson.GetBytes(body, "metadata").Exists())
 	assert.Equal(t, "hi", gjson.GetBytes(body, "messages.0.content").String())
 	assert.Equal(t, bedrockAnthropicVersion, gjson.GetBytes(body, "anthropic_version").String())
-	assert.Equal(t, []string{"beta-a", "beta-b"}, []string{
+	// header 优先级高于 body；默认不做白名单过滤，unknown beta 原样透传。
+	assert.Equal(t, []string{"interleaved-thinking-2025-05-14", "output-128k-2025-02-19", "unknown-beta"}, []string{
 		gjson.GetBytes(body, "anthropic_beta.0").String(),
 		gjson.GetBytes(body, "anthropic_beta.1").String(),
+		gjson.GetBytes(body, "anthropic_beta.2").String(),
 	})
 	assert.Empty(t, headers.Get("anthropic-version"))
 	assert.Empty(t, headers.Get("anthropic-beta"))
@@ -136,11 +138,57 @@ func TestSetBedrockAnthropicMessagesRequestDefaultsPreservesBodyAnthropicBetaWhe
 	body, err := setBedrockAnthropicMessagesRequestDefaults([]byte(`{
 		"model":"claude-sonnet-4-5",
 		"max_tokens":64,
-		"anthropic_beta":["body-beta"]
-	}`), headers)
+		"anthropic_beta":["computer-use-2025-01-24", "unknown-beta"]
+	}`), headers, nil)
 	assert.NoError(t, err)
 	assert.Equal(t, bedrockAnthropicVersion, gjson.GetBytes(body, "anthropic_version").String())
-	assert.Equal(t, "body-beta", gjson.GetBytes(body, "anthropic_beta.0").String())
+	assert.Equal(t, "computer-use-2025-01-24", gjson.GetBytes(body, "anthropic_beta.0").String())
+	assert.Equal(t, "unknown-beta", gjson.GetBytes(body, "anthropic_beta.1").String())
+}
+
+func TestSetBedrockAnthropicMessagesRequestDefaultsCustomWhitelist(t *testing.T) {
+	headers := http.Header{}
+	headers.Set("anthropic-beta", "custom-beta-1, computer-use-2025-01-24, custom-beta-2")
+
+	body, err := setBedrockAnthropicMessagesRequestDefaults([]byte(`{
+		"model":"claude-sonnet-4-5",
+		"max_tokens":64,
+		"anthropic_beta":["custom-beta-1"]
+	}`), headers, []string{"custom-beta-1", "custom-beta-2"})
+	assert.NoError(t, err)
+	// header 优先级高于 body；自定义白名单替换默认白名单，默认白名单的 computer-use 会被过滤
+	assert.Equal(t, []string{"custom-beta-1", "custom-beta-2"}, []string{
+		gjson.GetBytes(body, "anthropic_beta.0").String(),
+		gjson.GetBytes(body, "anthropic_beta.1").String(),
+	})
+	assert.False(t, gjson.GetBytes(body, "anthropic_beta.2").Exists())
+}
+
+func TestSetBedrockAnthropicMessagesRequestDefaultsEmptyHeaderDoesNotOverrideBody(t *testing.T) {
+	headers := http.Header{}
+	headers.Set("anthropic-beta", " ")
+
+	body, err := setBedrockAnthropicMessagesRequestDefaults([]byte(`{
+		"model":"claude-sonnet-4-5",
+		"max_tokens":64,
+		"anthropic_beta":["computer-use-2025-01-24"],
+		"messages":[{"role":"user","content":"hi"}]
+	}`), headers, nil)
+	assert.NoError(t, err)
+	assert.Equal(t, "computer-use-2025-01-24", gjson.GetBytes(body, "anthropic_beta.0").String())
+	assert.False(t, gjson.GetBytes(body, "anthropic_beta.1").Exists())
+}
+
+func TestSetBedrockAnthropicMessagesRequestDefaultsOmitsAnthropicBetaWhenAbsent(t *testing.T) {
+	headers := http.Header{}
+
+	body, err := setBedrockAnthropicMessagesRequestDefaults([]byte(`{
+		"model":"claude-sonnet-4-5",
+		"max_tokens":64,
+		"messages":[{"role":"user","content":"hi"}]
+	}`), headers, nil)
+	assert.NoError(t, err)
+	assert.False(t, gjson.GetBytes(body, "anthropic_beta").Exists())
 }
 
 func TestSetBedrockAnthropicMessagesRequestDefaultsPreservesThinkingBlocks(t *testing.T) {
@@ -156,7 +204,7 @@ func TestSetBedrockAnthropicMessagesRequestDefaultsPreservesThinkingBlocks(t *te
 				{"type":"text","text":"final answer"}
 			]}
 		]
-	}`), headers)
+	}`), headers, nil)
 	assert.NoError(t, err)
 	assert.Equal(t, "thinking", gjson.GetBytes(body, "messages.1.content.0.type").String())
 	assert.Equal(t, "internal reasoning", gjson.GetBytes(body, "messages.1.content.0.thinking").String())
@@ -182,7 +230,7 @@ func TestSetBedrockAnthropicMessagesRequestDefaultsStripsDynamicCCHFromSystem(t 
 			}
 		],
 		"messages":[{"role":"user","content":"hi"}]
-	}`), headers)
+	}`), headers, nil)
 	assert.NoError(t, err)
 	assert.Equal(t, "x-anthropic-billing-header: cc_version=2.1.84.c8e; cc_entrypoint=claude-vscode;", gjson.GetBytes(body, "system.0.text").String())
 	assert.Equal(t, "You are helpful.", gjson.GetBytes(body, "system.1.text").String())
@@ -204,7 +252,7 @@ func TestSetBedrockAnthropicMessagesRequestDefaultsPreservesToolResultContentBlo
 				]}
 			]}
 		]
-	}`), headers)
+	}`), headers, nil)
 	assert.NoError(t, err)
 	assert.Equal(t, "tool_result", gjson.GetBytes(body, "messages.1.content.0.type").String())
 	assert.Equal(t, "toolu_123", gjson.GetBytes(body, "messages.1.content.0.tool_use_id").String())
@@ -223,7 +271,7 @@ func TestSetBedrockAnthropicMessagesRequestDefaultsPreservesEmptyToolUseInput(t 
 				{"type":"tool_use","id":"toolu_123","name":"fetch_doc","input":{}}
 			]}
 		]
-	}`), headers)
+	}`), headers, nil)
 	assert.NoError(t, err)
 	assert.True(t, gjson.GetBytes(body, "messages.0.content.0.input").Exists())
 	assert.Equal(t, "{}", gjson.GetBytes(body, "messages.0.content.0.input").Raw)
@@ -240,7 +288,7 @@ func TestSetBedrockAnthropicMessagesRequestDefaultsOmitsMissingToolUseInput(t *t
 				{"type":"tool_use","id":"toolu_123","name":"fetch_doc"}
 			]}
 		]
-	}`), headers)
+	}`), headers, nil)
 	assert.NoError(t, err)
 	assert.False(t, gjson.GetBytes(body, "messages.0.content.0.input").Exists())
 }
@@ -264,7 +312,7 @@ func TestSetBedrockAnthropicMessagesRequestDefaultsPreservesRicherToolUnion(t *t
 			"disable_parallel_tool_use":true
 		},
 		"messages":[{"role":"user","content":"hi"}]
-	}`), headers)
+	}`), headers, nil)
 	assert.NoError(t, err)
 	assert.Equal(t, "web_search_20250305", gjson.GetBytes(body, "tools.0.type").String())
 	assert.Equal(t, "web_search", gjson.GetBytes(body, "tools.0.name").String())
