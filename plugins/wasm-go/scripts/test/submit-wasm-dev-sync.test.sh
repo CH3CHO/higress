@@ -71,6 +71,7 @@ run_submit_dev() {
         cd "$WORK/higress/plugins/wasm-go" && \
         env \
             HOME="$WORK/home" \
+            TMPDIR="$WORK/tmp" \
             TRIGGER_BRANCH=dev \
             PLUGIN_SERVER_REPO="$WORK/plugin-server.git" \
             PLUGIN_SERVER_DEFAULT_BRANCH=trip \
@@ -89,7 +90,7 @@ run_submit_dev() {
 test_dev_no_artifact_syncs_wasmdev_to_trip() {
     echo "=== test: submit-wasm dev no-artifact syncs wasm-dev to trip ==="
     local WORK; WORK=$(mktemp -d)
-    mkdir -p "$WORK/home"
+    mkdir -p "$WORK/home" "$WORK/tmp"
     trap "rm -rf '$WORK' 2>/dev/null" RETURN
     setup_plugin_server "$WORK"
     setup_higress "$WORK"
@@ -100,7 +101,7 @@ test_dev_no_artifact_syncs_wasmdev_to_trip() {
 test_dev_with_artifact_commits_and_pushes() {
     echo "=== test: submit-wasm dev with artifact still commits and pushes ==="
     local WORK; WORK=$(mktemp -d)
-    mkdir -p "$WORK/home"
+    mkdir -p "$WORK/home" "$WORK/tmp"
     trap "rm -rf '$WORK' 2>/dev/null" RETURN
     setup_plugin_server "$WORK"
     setup_higress "$WORK"

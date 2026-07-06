@@ -64,6 +64,8 @@ esac
 EOF
 export GIT_ASKPASS="${ASKPASS_SCRIPT}"
 export GIT_TERMINAL_PROMPT=0
+# Clean up the askpass script (which embeds the git token) on any exit.
+trap 'rm -f "${ASKPASS_SCRIPT}"' EXIT
 
 # Clone plugin-server
 SCHEME=$(echo "${CI_SERVER_URL}" | cut -d: -f1)
