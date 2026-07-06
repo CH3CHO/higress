@@ -738,3 +738,50 @@ func TestSetBedrockUsageFieldsToResponse(t *testing.T) {
 		})
 	}
 }
+
+func TestFilterAnthropicBeta(t *testing.T) {
+	tests := []struct {
+		name      string
+		betas     []string
+		whitelist []string
+		expected  []string
+	}{
+		{
+			name:      "empty input returns empty",
+			betas:     nil,
+			whitelist: nil,
+			expected:  []string{},
+		},
+		{
+			name:      "empty whitelist preserves unknown features",
+			betas:     []string{"computer-use-2025-01-24", "unknown-beta", "output-128k-2025-02-19"},
+			whitelist: nil,
+			expected:  []string{"computer-use-2025-01-24", "unknown-beta", "output-128k-2025-02-19"},
+		},
+		{
+			name:      "custom whitelist overrides default",
+			betas:     []string{"custom-1", "computer-use-2025-01-24", "custom-2"},
+			whitelist: []string{"custom-1", "custom-2"},
+			expected:  []string{"custom-1", "custom-2"},
+		},
+		{
+			name:      "dedupes while preserving order",
+			betas:     []string{"output-128k-2025-02-19", " output-128k-2025-02-19 ", "unknown-beta"},
+			whitelist: nil,
+			expected:  []string{"output-128k-2025-02-19", "unknown-beta"},
+		},
+		{
+			name:      "custom whitelist filters unknown features",
+			betas:     []string{"foo", "bar"},
+			whitelist: []string{"bar"},
+			expected:  []string{"bar"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := FilterAnthropicBeta(tt.betas, tt.whitelist)
+			require.Equal(t, tt.expected, result)
+		})
+	}
+}

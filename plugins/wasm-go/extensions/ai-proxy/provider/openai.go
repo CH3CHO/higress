@@ -274,7 +274,7 @@ func applyChatCompletionResponseJSONSchema(body []byte, responseJSONSchema map[s
 }
 
 func (m *openaiProvider) transformRequestFields(ctx wrapper.HttpContext, apiName ApiName, body []byte) ([]byte, error) {
-	needReadResponseBody := false
+	needReadResponseBody := ctx.GetBoolContext(ResponsesViaChatCompletionsBridgeActivatedContextKey(), false)
 
 	defer func() {
 		if !needReadResponseBody {

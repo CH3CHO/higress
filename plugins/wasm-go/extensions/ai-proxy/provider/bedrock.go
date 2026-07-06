@@ -796,7 +796,7 @@ func (b *bedrockProvider) onAnthropicMessagesRequestBody(ctx wrapper.HttpContext
 	ctx.SetContext(ctxKeyIsStreaming, streaming)
 
 	var err error
-	body, err = setBedrockAnthropicMessagesRequestDefaults(body, headers)
+	body, err = setBedrockAnthropicMessagesRequestDefaults(body, headers, b.config.bedrockAllowedAnthropicBetaFeatures)
 	if err != nil {
 		return nil, err
 	}
@@ -814,7 +814,7 @@ func (b *bedrockProvider) onAnthropicMessagesRequestBody(ctx wrapper.HttpContext
 	return body, nil
 }
 
-func setBedrockAnthropicMessagesRequestDefaults(body []byte, headers http.Header) ([]byte, error) {
+func setBedrockAnthropicMessagesRequestDefaults(body []byte, headers http.Header, allowedBetaFeatures []string) ([]byte, error) {
 	var request anthropicMessagesRequest
 	if err := json.Unmarshal(body, &request); err != nil {
 		return nil, err
@@ -841,18 +841,23 @@ func setBedrockAnthropicMessagesRequestDefaults(body []byte, headers http.Header
 		AnthropicBeta:    request.AnthropicBeta,
 	}
 
-	if betaHeader := headers.Get(headerAnthropicBeta); betaHeader != "" {
-		betas := make([]string, 0)
-		for _, value := range strings.Split(betaHeader, ",") {
-			value = strings.TrimSpace(value)
-			if value != "" {
-				betas = append(betas, value)
+	// anthropic-beta 既可能来自 header（例如 Claude Code 的请求），也可能来自 body 的 anthropic_beta 字段。
+	// header 优先级更高，但只有解析出非空 token 时才覆盖 body，避免空 header 清空 body 中的 anthropic_beta。
+	if betaHeaders := headers.Values(headerAnthropicBeta); len(betaHeaders) > 0 {
+		betas := make([]string, 0, 4)
+		for _, betaHeader := range betaHeaders {
+			for _, value := range strings.Split(betaHeader, ",") {
+				value = strings.TrimSpace(value)
+				if value != "" {
+					betas = append(betas, value)
+				}
 			}
 		}
 		if len(betas) > 0 {
 			rebuilt.AnthropicBeta = betas
 		}
 	}
+	rebuilt.AnthropicBeta = bedrock.FilterAnthropicBeta(rebuilt.AnthropicBeta, allowedBetaFeatures)
 
 	headers.Del(headerAnthropicVersion)
 	headers.Del(headerAnthropicBeta)

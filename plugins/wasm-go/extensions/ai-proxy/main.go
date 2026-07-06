@@ -27,9 +27,6 @@ const (
 
 	defaultMaxBodyBytes uint32 = 100 * 1024 * 1024
 
-	ctxOriginalPath       = "original_path"
-	ctxOriginalHost       = "original_host"
-	ctxOriginalAuth       = "original_auth"
 	ctxStreamIncludeUsage = "original_stream_include_usage"
 )
 
@@ -39,16 +36,6 @@ type pair[K, V any] struct {
 }
 
 var (
-	headersCtxKeyMapping = map[string]string{
-		util.HeaderAuthority:     ctxOriginalHost,
-		util.HeaderPath:          ctxOriginalPath,
-		util.HeaderAuthorization: ctxOriginalAuth,
-	}
-	headerToOriginalHeaderMapping = map[string]string{
-		util.HeaderAuthority:     util.HeaderOriginalHost,
-		util.HeaderPath:          util.HeaderOriginalPath,
-		util.HeaderAuthorization: util.HeaderOriginalAuth,
-	}
 	pathSuffixToApiName = []pair[string, provider.ApiName]{
 		// OpenAI style
 		{provider.PathOpenAIChatCompletions, provider.ApiNameChatCompletion},
@@ -156,47 +143,6 @@ func parseOverrideRuleConfig(json gjson.Result, global config.PluginConfig, plug
 	return nil
 }
 
-func initContext(ctx wrapper.HttpContext) {
-	processed, _ := proxywasm.GetHttpRequestHeader(util.HeaderOriginalProcessed)
-	if processed == util.HeaderOriginalProcessedValue {
-		return
-	}
-
-	for header, ctxKey := range headersCtxKeyMapping {
-		value, _ := proxywasm.GetHttpRequestHeader(header)
-		ctx.SetContext(ctxKey, value)
-	}
-	for _, originHeader := range headerToOriginalHeaderMapping {
-		_ = proxywasm.RemoveHttpRequestHeader(originHeader)
-	}
-}
-
-func saveContextsToHeaders(ctx wrapper.HttpContext) {
-	processed, _ := proxywasm.GetHttpRequestHeader(util.HeaderOriginalProcessed)
-	if processed == util.HeaderOriginalProcessedValue {
-		return
-	}
-
-	for header, ctxKey := range headersCtxKeyMapping {
-		originalValue := ctx.GetStringContext(ctxKey, "")
-		if originalValue == "" {
-			continue
-		}
-		currentValue, _ := proxywasm.GetHttpRequestHeader(header)
-		// Always save the original value, even if it is the same as current value,
-		// because the value might be modified by an async http callback after finishing the regular request processing,
-		// for example, in the initial Vertex token request.
-		// Otherwise, the original value will be lost, causing 401 errors in failbacks or retries.
-		if currentValue == "" /* || originalValue == currentValue */ {
-			continue
-		}
-		originalHeader := headerToOriginalHeaderMapping[header]
-		if originalHeader != "" {
-			_ = proxywasm.ReplaceHttpRequestHeader(originalHeader, originalValue)
-		}
-	}
-}
-
 func onHttpRequestHeader(ctx wrapper.HttpContext, pluginConfig config.PluginConfig) types.Action {
 	activeProvider := pluginConfig.GetProvider()
 
@@ -211,13 +157,11 @@ func onHttpRequestHeader(ctx wrapper.HttpContext, pluginConfig config.PluginConf
 	// Disable the route re-calculation since the plugin may modify some headers related to the chosen route.
 	ctx.DisableReroute()
 
-	initContext(ctx)
-
 	rawPath := ctx.Path()
+	rawHost, _ := proxywasm.GetHttpRequestHeader(util.HeaderAuthority)
+	rawAuth, _ := proxywasm.GetHttpRequestHeader(util.HeaderAuthorization)
 
-	defer func() {
-		saveContextsToHeaders(ctx)
-	}()
+	defer saveOriginalHeaders(rawHost, rawPath, rawAuth)
 
 	path, _ := url.Parse(rawPath)
 	apiName := getApiName(path.Path)
@@ -281,6 +225,8 @@ func onHttpRequestHeader(ctx wrapper.HttpContext, pluginConfig config.PluginConf
 			return types.ActionContinue
 		}
 
+		rewriteResponsesBridgePathIfNeeded(ctx, providerConfig, apiName)
+
 		hasRequestBody := ctx.HasRequestBody()
 		if hasRequestBody {
 			_ = proxywasm.RemoveHttpRequestHeader("Content-Length")
@@ -290,6 +236,8 @@ func onHttpRequestHeader(ctx wrapper.HttpContext, pluginConfig config.PluginConf
 		}
 
 		ctx.DontReadRequestBody()
+	} else {
+		rewriteResponsesBridgePathIfNeeded(ctx, providerConfig, apiName)
 	}
 
 	if err := providerConfig.ApplyBundledRequestParams(ctx); err != nil {
@@ -300,6 +248,29 @@ func onHttpRequestHeader(ctx wrapper.HttpContext, pluginConfig config.PluginConf
 	return types.ActionContinue
 }
 
+func rewriteResponsesBridgePathIfNeeded(ctx wrapper.HttpContext, providerConfig *provider.ProviderConfig, apiName provider.ApiName) {
+	if providerConfig == nil || apiName != provider.ApiNameResponses || !providerConfig.EnableResponsesViaChatCompletionsBridge() {
+		return
+	}
+	// 这里不能放在 RequestHeadersHandler 分支内: 不自定义请求头的 provider
+	// 也必须先把 /responses 改写成 /chat/completions, 请求体转换才能继续生效。
+	currentPath, _ := proxywasm.GetHttpRequestHeader(util.HeaderPath)
+	if currentPath == "" {
+		currentPath = ctx.Path()
+	}
+	switch {
+	case provider.IsResponsesPath(currentPath):
+		newPath := strings.Replace(currentPath, provider.PathOpenAIResponses, provider.PathOpenAIChatCompletions, 1)
+		_ = proxywasm.ReplaceHttpRequestHeader(util.HeaderPath, newPath)
+		ctx.SetContext(provider.ResponsesViaChatCompletionsBridgeActivatedContextKey(), true)
+		log.Debugf("[Auto Protocol] Responses request detected, effective upstream path rewritten from %s to %s", currentPath, newPath)
+	case provider.IsChatCompletionsPath(currentPath):
+		// openaiCustomUrl 可能已直接指向 /chat/completions。此时无需再改写 path，
+		// 但仍要标记请求体需要从 Responses 转成 Chat Completions。
+		ctx.SetContext(provider.ResponsesViaChatCompletionsBridgeActivatedContextKey(), true)
+	}
+}
+
 func onHttpRequestBody(ctx wrapper.HttpContext, pluginConfig config.PluginConfig, body []byte) types.Action {
 	activeProvider := pluginConfig.GetProvider()
 
@@ -308,10 +279,6 @@ func onHttpRequestBody(ctx wrapper.HttpContext, pluginConfig config.PluginConfig
 		return types.ActionContinue
 	}
 	log.Debugf("[onHttpRequestBody] provider=%s", activeProvider.GetProviderType())
-
-	defer func() {
-		saveContextsToHeaders(ctx)
-	}()
 
 	var action types.Action
 	if handler, ok := activeProvider.(provider.RequestBodyHandler); ok {
@@ -385,10 +352,15 @@ func onHttpResponseHeaders(ctx wrapper.HttpContext, pluginConfig config.PluginCo
 	// the apiToken is removed only when the number of consecutive request failures exceeds the threshold.
 	providerConfig.ResetApiTokenRequestFailureCount(apiTokenInUse)
 
+	apiName, _ := ctx.GetContext(provider.CtxKeyApiName).(provider.ApiName)
 	headers := util.GetResponseHeaders()
+	bridgeResponsesToChat := isResponsesViaChatCompletionsBridgeActivated(ctx, providerConfig)
 	if handler, ok := activeProvider.(provider.TransformResponseHeadersHandler); ok {
-		apiName, _ := ctx.GetContext(provider.CtxKeyApiName).(provider.ApiName)
-		handler.TransformResponseHeaders(ctx, apiName, headers)
+		headerAPIName := apiName
+		if bridgeResponsesToChat {
+			headerAPIName = provider.ApiNameChatCompletion
+		}
+		handler.TransformResponseHeaders(ctx, headerAPIName, headers)
 	} else {
 		providerConfig.DefaultTransformResponseHeaders(ctx, headers)
 	}
@@ -410,7 +382,6 @@ func onHttpResponseHeaders(ctx wrapper.HttpContext, pluginConfig config.PluginCo
 
 	// Check if we need to read body for Claude response conversion
 	needClaudeConversion, _ := ctx.GetContext("needClaudeResponseConversion").(bool)
-
 	if !needHandleBody && !needHandleStreamingBody && !needClaudeConversion {
 		ctx.DontReadResponseBody()
 	} else {
@@ -421,6 +392,7 @@ func onHttpResponseHeaders(ctx wrapper.HttpContext, pluginConfig config.PluginCo
 }
 
 func onStreamingResponseBody(ctx wrapper.HttpContext, pluginConfig config.PluginConfig, chunk []byte, isLastChunk bool) []byte {
+
 	activeProvider := pluginConfig.GetProvider()
 
 	if activeProvider == nil {
@@ -433,19 +405,20 @@ func onStreamingResponseBody(ctx wrapper.HttpContext, pluginConfig config.Plugin
 
 	if handler, ok := activeProvider.(provider.StreamingResponseBodyHandler); ok {
 		apiName, _ := ctx.GetContext(provider.CtxKeyApiName).(provider.ApiName)
+		if isResponsesViaChatCompletionsBridgeActivated(ctx, pluginConfig.GetProviderConfig()) {
+			apiName = provider.ApiNameChatCompletion
+		}
 		modifiedChunk, err := handler.OnStreamingResponseBody(ctx, apiName, chunk, isLastChunk)
 		if err == nil && modifiedChunk != nil {
-			// Convert to Claude format if needed
-			claudeChunk, convertErr := convertStreamingResponseToClaude(ctx, modifiedChunk)
-			if convertErr != nil {
-				return modifiedChunk
-			}
-			return claudeChunk
+			return convertStreamingResponseToPublicProtocol(ctx, pluginConfig.GetProviderConfig(), modifiedChunk, isLastChunk)
 		}
 		return chunk
 	}
 	if handler, ok := activeProvider.(provider.StreamingEventHandler); ok {
 		apiName, _ := ctx.GetContext(provider.CtxKeyApiName).(provider.ApiName)
+		if isResponsesViaChatCompletionsBridgeActivated(ctx, pluginConfig.GetProviderConfig()) {
+			apiName = provider.ApiNameChatCompletion
+		}
 		events := provider.ExtractStreamingEvents(ctx, chunk)
 		log.Debugf("[onStreamingResponseBody] %d events received", len(events))
 		if len(events) == 0 {
@@ -478,13 +451,7 @@ func onStreamingResponseBody(ctx wrapper.HttpContext, pluginConfig config.Plugin
 		}
 
 		result := []byte(responseBuilder.String())
-
-		// Convert to Claude format if needed
-		claudeChunk, convertErr := convertStreamingResponseToClaude(ctx, result)
-		if convertErr != nil {
-			return result
-		}
-		return claudeChunk
+		return convertStreamingResponseToPublicProtocol(ctx, pluginConfig.GetProviderConfig(), result, isLastChunk)
 	}
 
 	// If provider doesn't implement any streaming handlers but we need Claude conversion
@@ -503,13 +470,7 @@ func onStreamingResponseBody(ctx wrapper.HttpContext, pluginConfig config.Plugin
 	}
 
 	result := []byte(responseBuilder.String())
-
-	// Convert to Claude format if needed
-	claudeChunk, convertErr := convertStreamingResponseToClaude(ctx, result)
-	if convertErr != nil {
-		return result
-	}
-	return claudeChunk
+	return convertStreamingResponseToPublicProtocol(ctx, pluginConfig.GetProviderConfig(), result, isLastChunk)
 }
 
 func onHttpResponseBody(ctx wrapper.HttpContext, pluginConfig config.PluginConfig, body []byte) types.Action {
@@ -526,6 +487,9 @@ func onHttpResponseBody(ctx wrapper.HttpContext, pluginConfig config.PluginConfi
 
 	if handler, ok := activeProvider.(provider.TransformResponseBodyHandler); ok {
 		apiName, _ := ctx.GetContext(provider.CtxKeyApiName).(provider.ApiName)
+		if isResponsesViaChatCompletionsBridgeActivated(ctx, pluginConfig.GetProviderConfig()) {
+			apiName = provider.ApiNameChatCompletion
+		}
 		transformedBody, err := handler.TransformResponseBody(ctx, apiName, body)
 		if err != nil {
 			_ = util.ErrorHandler("ai-proxy.proc_resp_body_failed", fmt.Errorf("failed to process response body: %v", err))
@@ -536,10 +500,9 @@ func onHttpResponseBody(ctx wrapper.HttpContext, pluginConfig config.PluginConfi
 		finalBody = body
 	}
 
-	// Convert to Claude format if needed (applies to both branches)
-	convertedBody, err := convertResponseBodyToClaude(ctx, finalBody)
+	convertedBody, err := convertResponseBodyToPublicProtocol(ctx, pluginConfig.GetProviderConfig(), finalBody)
 	if err != nil {
-		_ = util.ErrorHandler("ai-proxy.convert_resp_to_claude_failed", err)
+		_ = util.ErrorHandler("ai-proxy.convert_resp_to_public_protocol_failed", err)
 		return types.ActionContinue
 	}
 
@@ -547,6 +510,105 @@ func onHttpResponseBody(ctx wrapper.HttpContext, pluginConfig config.PluginConfi
 		_ = util.ErrorHandler("ai-proxy.replace_resp_body_failed", fmt.Errorf("failed to replace response body: %v", err))
 	}
 	return types.ActionContinue
+}
+
+// saveOriginalHeaders 把入口的 host/path/auth 存到 X-ENVOY-ORIGINAL-* 头,
+// 供后续阶段(如 azure 的 GetOriginalRequestPath)在这些值被改写后仍能取到原始值。
+// 用 defer 在请求头处理末尾执行,传入改写前的原始值,避免存到已改写的 path。
+// 仅在未设时写入,避免覆盖 async http callback 已写入的值。
+func saveOriginalHeaders(originalHost, originalPath, originalAuth string) {
+	if originalHost != "" {
+		if saved, _ := proxywasm.GetHttpRequestHeader(util.HeaderOriginalHost); saved == "" {
+			_ = proxywasm.ReplaceHttpRequestHeader(util.HeaderOriginalHost, originalHost)
+		}
+	}
+	if originalPath != "" {
+		if saved, _ := proxywasm.GetHttpRequestHeader(util.HeaderOriginalPath); saved == "" {
+			_ = proxywasm.ReplaceHttpRequestHeader(util.HeaderOriginalPath, originalPath)
+		}
+	}
+	if originalAuth != "" {
+		if saved, _ := proxywasm.GetHttpRequestHeader(util.HeaderOriginalAuth); saved == "" {
+			_ = proxywasm.ReplaceHttpRequestHeader(util.HeaderOriginalAuth, originalAuth)
+		}
+	}
+}
+
+func isResponsesViaChatCompletionsBridgeActivated(ctx wrapper.HttpContext, providerConfig *provider.ProviderConfig) bool {
+	if providerConfig == nil || !providerConfig.EnableResponsesViaChatCompletionsBridge() {
+		return false
+	}
+	return ctx.GetBoolContext(provider.ResponsesViaChatCompletionsBridgeActivatedContextKey(), false)
+}
+
+func convertStreamingResponseToPublicProtocol(ctx wrapper.HttpContext, providerConfig *provider.ProviderConfig, data []byte, isLastChunk bool) []byte {
+	convertedData, err := convertStreamingResponseToResponses(ctx, providerConfig, data, isLastChunk)
+	if err != nil {
+		return data
+	}
+	convertedData, err = convertStreamingResponseToClaude(ctx, convertedData)
+	if err != nil {
+		return convertedData
+	}
+	return convertedData
+}
+
+func convertResponseBodyToPublicProtocol(ctx wrapper.HttpContext, providerConfig *provider.ProviderConfig, body []byte) ([]byte, error) {
+	convertedBody, err := convertResponseBodyToResponses(ctx, providerConfig, body)
+	if err != nil {
+		return body, err
+	}
+	return convertResponseBodyToClaude(ctx, convertedBody)
+}
+
+func convertStreamingResponseToResponses(ctx wrapper.HttpContext, providerConfig *provider.ProviderConfig, data []byte, isLastChunk bool) ([]byte, error) {
+	if !isResponsesViaChatCompletionsBridgeActivated(ctx, providerConfig) {
+		return data, nil
+	}
+
+	var bridge *provider.ResponsesChatCompletionBridge
+	if bridgeData := ctx.GetContext(provider.ResponsesViaChatCompletionsBridgeContextKey()); bridgeData != nil {
+		if converter, ok := bridgeData.(*provider.ResponsesChatCompletionBridge); ok {
+			bridge = converter
+		}
+	}
+	if bridge == nil {
+		bridge = &provider.ResponsesChatCompletionBridge{}
+		if toolNameMap, ok := ctx.GetContext(provider.ChatCompletionToolNameMapContextKey()).(map[string]string); ok {
+			bridge.ToolNameMap = toolNameMap
+		}
+		if toolContext, ok := ctx.GetContext(provider.ChatCompletionToolContextKey()).(*provider.ResponsesToolContext); ok {
+			bridge.ToolContext = toolContext
+		}
+		ctx.SetContext(provider.ResponsesViaChatCompletionsBridgeContextKey(), bridge)
+	}
+
+	convertedData, err := bridge.ConvertStreamingChatCompletionToResponses(ctx, data, isLastChunk)
+	if err != nil {
+		log.Errorf("failed to convert streaming response to responses format: %v", err)
+		return data, err
+	}
+	return convertedData, nil
+}
+
+func convertResponseBodyToResponses(ctx wrapper.HttpContext, providerConfig *provider.ProviderConfig, body []byte) ([]byte, error) {
+	if !isResponsesViaChatCompletionsBridgeActivated(ctx, providerConfig) {
+		return body, nil
+	}
+
+	var toolNameMap map[string]string
+	if value, ok := ctx.GetContext(provider.ChatCompletionToolNameMapContextKey()).(map[string]string); ok {
+		toolNameMap = value
+	}
+	var toolContext *provider.ResponsesToolContext
+	if value, ok := ctx.GetContext(provider.ChatCompletionToolContextKey()).(*provider.ResponsesToolContext); ok {
+		toolContext = value
+	}
+	convertedBody, err := provider.ConvertChatCompletionResponseToResponsesWithToolContext(body, toolContext, toolNameMap)
+	if err != nil {
+		return body, fmt.Errorf("failed to convert response to responses format: %v", err)
+	}
+	return convertedBody, nil
 }
 
 // Helper function to check if Claude response conversion is needed

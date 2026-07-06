@@ -140,6 +140,35 @@ func NormalizeToolName(toolName string) string {
 	return result
 }
 
+// FilterAnthropicBeta 会去空、去重并保持顺序。只有显式配置了非空白名单时,
+// 才丢弃白名单外的 beta；空白名单默认放行未知 beta, 避免新发布的
+// Anthropic/Bedrock beta flag 被静默过滤。
+func FilterAnthropicBeta(betas []string, whitelist []string) []string {
+	if len(betas) == 0 {
+		return []string{}
+	}
+	allowedSet := make(map[string]bool, len(whitelist))
+	for _, b := range whitelist {
+		b = strings.TrimSpace(b)
+		if b == "" {
+			continue
+		}
+		allowedSet[b] = true
+	}
+	useWhitelist := len(allowedSet) > 0
+	result := make([]string, 0, len(betas))
+	seen := make(map[string]bool, len(betas))
+	for _, b := range betas {
+		b = strings.TrimSpace(b)
+		if b == "" || seen[b] || (useWhitelist && !allowedSet[b]) {
+			continue
+		}
+		result = append(result, b)
+		seen[b] = true
+	}
+	return result
+}
+
 // GetOriginalToolName retrieves the original tool name from the normalized name.
 // If the normalized name was not transformed, it returns the input as is.
 //

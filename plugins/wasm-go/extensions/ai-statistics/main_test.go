@@ -570,6 +570,31 @@ func TestOnHttpResponseHeaders(t *testing.T) {
 	})
 }
 
+func TestResponseBodyBufferLimitConfiguredForJSONResponse(t *testing.T) {
+	test.RunTest(t, func(t *testing.T) {
+		host, status := test.NewTestHost(basicConfig)
+		defer host.Reset()
+		require.Equal(t, types.OnPluginStartStatusOK, status)
+
+		action := host.CallOnHttpRequestHeaders([][2]string{
+			{":authority", "example.com"},
+			{":path", "/v1/chat/completions"},
+			{":method", "POST"},
+		})
+		require.Equal(t, types.HeaderStopIteration, action)
+
+		action = host.CallOnHttpResponseHeaders([][2]string{
+			{":status", "200"},
+			{"content-type", "application/json"},
+		})
+		require.Equal(t, types.ActionContinue, action)
+
+		encoderLimit, err := host.GetProperty([]string{"set_encoder_buffer_limit"})
+		require.NoError(t, err)
+		require.Equal(t, "104857600", string(encoderLimit))
+	})
+}
+
 func TestOnHttpStreamingBody(t *testing.T) {
 	test.RunTest(t, func(t *testing.T) {
 		// 测试流式响应体处理
@@ -1070,6 +1095,14 @@ func TestMetrics(t *testing.T) {
 			require.Equal(t, types.ActionContinue, action)
 			require.Equal(t, lastChunk, host.GetResponseBody())
 
+			aiLogRaw, err := host.GetProperty([]string{"ai_log"})
+			require.NoError(t, err)
+			responseBody := gjson.Get(wrapper.UnmarshalStr(string(aiLogRaw)), "response_body")
+			require.True(t, responseBody.Exists())
+			responseBodyJSON := gjson.Parse(responseBody.String())
+			require.Equal(t, "resp_123", responseBodyJSON.Get("id").String())
+			require.Equal(t, int64(15), responseBodyJSON.Get("usage.total_tokens").Int())
+
 			time.Sleep(10 * time.Millisecond)
 			host.CompleteHttp()
 
@@ -1545,6 +1578,350 @@ func TestCompactResponsesBodyForLog(t *testing.T) {
 	require.False(t, gjson.Get(compacted, "instructions").Exists())
 	require.False(t, gjson.Get(compacted, "output.0.encrypted_content").Exists())
 	require.NotEmpty(t, gjson.Get(compacted, "output.1.content.0.text").String())
+}
+
+func TestGetRequestBodyToLogForResponses(t *testing.T) {
+	test.RunTest(t, func(t *testing.T) {
+		configData, _ := json.Marshal(map[string]interface{}{
+			"attributes":                 []map[string]interface{}{},
+			"request_body_length_limit":  120,
+			"response_body_length_limit": 1024,
+		})
+
+		host, status := test.NewTestHost(configData)
+		defer host.Reset()
+		require.Equal(t, types.OnPluginStartStatusOK, status)
+
+		action := host.CallOnHttpRequestHeaders([][2]string{
+			{":authority", "example.com"},
+			{":path", "/v1/responses"},
+			{":method", "POST"},
+			{"content-type", "application/json"},
+		})
+		require.Equal(t, types.HeaderStopIteration, action)
+
+		body := []byte(`{
+			"model":"gpt-5.4",
+			"stream":true,
+			"instructions":"` + strings.Repeat("instruction-", 80) + `",
+			"input":[
+				{"role":"user","content":[{"type":"input_text","text":"` + strings.Repeat("hello-", 80) + `"}]},
+				{"role":"user","content":[{"type":"input_text","text":"` + strings.Repeat("world-", 80) + `"}]}
+			],
+			"tools":[{"type":"function"},{"type":"function"}]
+		}`)
+		action = host.CallOnHttpRequestBody(body)
+		require.Equal(t, types.ActionContinue, action)
+
+		aiLogRaw, err := host.GetProperty([]string{"ai_log"})
+		require.NoError(t, err)
+		requestBody := gjson.Get(wrapper.UnmarshalStr(string(aiLogRaw)), "request_body").String()
+		require.NotEqual(t, bodyToLongPlaceholder, requestBody)
+		require.LessOrEqual(t, len(requestBody), 120)
+		require.Equal(t, "gpt-5.4", gjson.Get(requestBody, "model").String())
+		require.True(t, gjson.Get(requestBody, "stream").Bool())
+		require.Equal(t, bodyToLongPlaceholder, gjson.Get(requestBody, "input").String())
+	})
+}
+
+func TestGetResponseBodyToLogForResponsesPrioritizesTools(t *testing.T) {
+	test.RunTest(t, func(t *testing.T) {
+		configData, _ := json.Marshal(map[string]interface{}{
+			"attributes":                 []map[string]interface{}{},
+			"request_body_length_limit":  1024,
+			"response_body_length_limit": 360,
+		})
+
+		host, status := test.NewTestHost(configData)
+		defer host.Reset()
+		require.Equal(t, types.OnPluginStartStatusOK, status)
+
+		action := host.CallOnHttpRequestHeaders([][2]string{
+			{":authority", "example.com"},
+			{":path", "/v1/responses"},
+			{":method", "POST"},
+			{"content-type", "application/json"},
+		})
+		require.Equal(t, types.HeaderStopIteration, action)
+
+		action = host.CallOnHttpResponseHeaders([][2]string{
+			{":status", "200"},
+			{"content-type", "application/json"},
+		})
+		require.Equal(t, types.ActionContinue, action)
+
+		body := []byte(`{
+				"id":"resp_123",
+				"object":"response",
+				"status":"completed",
+				"model":"gpt-5.4",
+				"output":[{"id":"msg_123","type":"message","status":"completed","role":"assistant","content":[{"type":"output_text","text":"hello"}]}],
+				"usage":{"input_tokens":10,"output_tokens":5,"total_tokens":15},
+				"tools":[{"type":"function","name":"tool1","description":"` + strings.Repeat("desc-", 40) + `"}]
+			}`)
+		action = host.CallOnHttpResponseBody(body)
+		require.Equal(t, types.ActionContinue, action)
+
+		aiLogRaw, err := host.GetProperty([]string{"ai_log"})
+		require.NoError(t, err)
+		responseBody := gjson.Get(wrapper.UnmarshalStr(string(aiLogRaw)), "response_body").String()
+		require.LessOrEqual(t, len(responseBody), 360)
+		require.Equal(t, bodyToLongPlaceholder, gjson.Get(responseBody, "tools").String())
+		require.Equal(t, "hello", gjson.Get(responseBody, "output.0.content.0.text").String())
+		require.Equal(t, int64(15), gjson.Get(responseBody, "usage.total_tokens").Int())
+	})
+}
+
+func TestStreamingResponseBodyOverLimitStillKeepsUsage(t *testing.T) {
+	test.RunTest(t, func(t *testing.T) {
+		t.Run("chat completions streaming over limit keeps usage", func(t *testing.T) {
+			configData, _ := json.Marshal(map[string]interface{}{
+				"attributes":                 []map[string]interface{}{},
+				"request_body_length_limit":  1024,
+				"response_body_length_limit": 160,
+			})
+
+			host, status := test.NewTestHost(configData)
+			defer host.Reset()
+			require.Equal(t, types.OnPluginStartStatusOK, status)
+
+			host.CallOnHttpRequestHeaders([][2]string{
+				{":authority", "example.com"},
+				{":path", "/v1/chat/completions"},
+				{":method", "POST"},
+			})
+
+			action := host.CallOnHttpResponseHeaders([][2]string{
+				{":status", "200"},
+				{"content-type", "text/event-stream"},
+			})
+			require.Equal(t, types.ActionContinue, action)
+
+			chunk := []byte("data: {\"id\":\"chatcmpl_123\",\"model\":\"gpt-5.4\",\"choices\":[{\"delta\":{\"content\":\"" + strings.Repeat("hello-", 30) + "\"}}],\"usage\":{\"prompt_tokens\":5,\"completion_tokens\":3,\"total_tokens\":8}}\n\n")
+			action = host.CallOnHttpStreamingResponseBody(chunk, true)
+			require.Equal(t, types.ActionContinue, action)
+
+			aiLogRaw, err := host.GetProperty([]string{"ai_log"})
+			require.NoError(t, err)
+			responseBody := gjson.Get(wrapper.UnmarshalStr(string(aiLogRaw)), "response_body").String()
+			require.LessOrEqual(t, len(responseBody), 160)
+			require.Equal(t, int64(8), gjson.Get(responseBody, "usage.total_tokens").Int())
+			require.Equal(t, "chatcmpl_123", gjson.Get(responseBody, "id").String())
+		})
+
+		t.Run("chat completions streaming over limit before usage keeps final usage", func(t *testing.T) {
+			configData, _ := json.Marshal(map[string]interface{}{
+				"attributes":                 []map[string]interface{}{},
+				"request_body_length_limit":  1024,
+				"response_body_length_limit": 160,
+			})
+
+			host, status := test.NewTestHost(configData)
+			defer host.Reset()
+			require.Equal(t, types.OnPluginStartStatusOK, status)
+
+			host.CallOnHttpRequestHeaders([][2]string{
+				{":authority", "example.com"},
+				{":path", "/v1/chat/completions"},
+				{":method", "POST"},
+			})
+
+			action := host.CallOnHttpResponseHeaders([][2]string{
+				{":status", "200"},
+				{"content-type", "text/event-stream"},
+			})
+			require.Equal(t, types.ActionContinue, action)
+
+			firstChunk := []byte("data: {\"id\":\"chatcmpl_123\",\"model\":\"gpt-5.4\",\"choices\":[{\"delta\":{\"content\":\"" + strings.Repeat("hello-", 30) + "\"}}]}\n\n")
+			action = host.CallOnHttpStreamingResponseBody(firstChunk, false)
+			require.Equal(t, types.ActionContinue, action)
+
+			aiLogRaw, err := host.GetProperty([]string{"ai_log"})
+			require.NoError(t, err)
+			responseBody := gjson.Get(wrapper.UnmarshalStr(string(aiLogRaw)), "response_body").String()
+			require.LessOrEqual(t, len(responseBody), 160)
+
+			lastChunk := []byte("data: {\"usage\":{\"prompt_tokens\":5,\"completion_tokens\":3,\"total_tokens\":8}}\n\n")
+			action = host.CallOnHttpStreamingResponseBody(lastChunk, true)
+			require.Equal(t, types.ActionContinue, action)
+
+			aiLogRaw, err = host.GetProperty([]string{"ai_log"})
+			require.NoError(t, err)
+			responseBody = gjson.Get(wrapper.UnmarshalStr(string(aiLogRaw)), "response_body").String()
+			require.LessOrEqual(t, len(responseBody), 160)
+			require.Equal(t, int64(8), gjson.Get(responseBody, "usage.total_tokens").Int())
+			require.Equal(t, "chatcmpl_123", gjson.Get(responseBody, "id").String())
+		})
+
+		t.Run("anthropic streaming over limit keeps usage", func(t *testing.T) {
+			configData, _ := json.Marshal(map[string]interface{}{
+				"attributes":                 []map[string]interface{}{},
+				"request_body_length_limit":  1024,
+				"response_body_length_limit": 180,
+			})
+
+			host, status := test.NewTestHost(configData)
+			defer host.Reset()
+			require.Equal(t, types.OnPluginStartStatusOK, status)
+
+			host.CallOnHttpRequestHeaders([][2]string{
+				{":authority", "example.com"},
+				{":path", "/v1/messages"},
+				{":method", "POST"},
+			})
+
+			action := host.CallOnHttpResponseHeaders([][2]string{
+				{":status", "200"},
+				{"content-type", "text/event-stream"},
+			})
+			require.Equal(t, types.ActionContinue, action)
+
+			firstChunk := []byte("event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"model\":\"claude-sonnet-4-5\",\"id\":\"msg_123\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[],\"usage\":{\"input_tokens\":23,\"output_tokens\":2}}}\n\n")
+			action = host.CallOnHttpStreamingResponseBody(firstChunk, false)
+			require.Equal(t, types.ActionContinue, action)
+
+			lastChunk := []byte("event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"" + strings.Repeat("long-text-", 30) + "\"}}\n\nevent: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"input_tokens\":23,\"output_tokens\":21}}\n\n")
+			action = host.CallOnHttpStreamingResponseBody(lastChunk, true)
+			require.Equal(t, types.ActionContinue, action)
+
+			aiLogRaw, err := host.GetProperty([]string{"ai_log"})
+			require.NoError(t, err)
+			responseBody := gjson.Get(wrapper.UnmarshalStr(string(aiLogRaw)), "response_body").String()
+			require.LessOrEqual(t, len(responseBody), 180)
+			require.Equal(t, int64(23), gjson.Get(responseBody, "usage.input_tokens").Int())
+			require.Equal(t, int64(21), gjson.Get(responseBody, "usage.output_tokens").Int())
+			require.Equal(t, "msg_123", gjson.Get(responseBody, "id").String())
+		})
+
+		t.Run("anthropic streaming over limit before usage keeps final usage", func(t *testing.T) {
+			configData, _ := json.Marshal(map[string]interface{}{
+				"attributes":                 []map[string]interface{}{},
+				"request_body_length_limit":  1024,
+				"response_body_length_limit": 180,
+			})
+
+			host, status := test.NewTestHost(configData)
+			defer host.Reset()
+			require.Equal(t, types.OnPluginStartStatusOK, status)
+
+			host.CallOnHttpRequestHeaders([][2]string{
+				{":authority", "example.com"},
+				{":path", "/v1/messages"},
+				{":method", "POST"},
+			})
+
+			action := host.CallOnHttpResponseHeaders([][2]string{
+				{":status", "200"},
+				{"content-type", "text/event-stream"},
+			})
+			require.Equal(t, types.ActionContinue, action)
+
+			firstChunk := []byte("event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"model\":\"claude-sonnet-4-5\",\"id\":\"msg_123\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"" + strings.Repeat("long-text-", 30) + "\"}],\"usage\":{\"input_tokens\":23,\"output_tokens\":2}}}\n\n")
+			action = host.CallOnHttpStreamingResponseBody(firstChunk, false)
+			require.Equal(t, types.ActionContinue, action)
+
+			aiLogRaw, err := host.GetProperty([]string{"ai_log"})
+			require.NoError(t, err)
+			responseBody := gjson.Get(wrapper.UnmarshalStr(string(aiLogRaw)), "response_body").String()
+			require.LessOrEqual(t, len(responseBody), 180)
+
+			lastChunk := []byte("event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"input_tokens\":23,\"output_tokens\":21}}\n\n")
+			action = host.CallOnHttpStreamingResponseBody(lastChunk, true)
+			require.Equal(t, types.ActionContinue, action)
+
+			aiLogRaw, err = host.GetProperty([]string{"ai_log"})
+			require.NoError(t, err)
+			responseBody = gjson.Get(wrapper.UnmarshalStr(string(aiLogRaw)), "response_body").String()
+			require.LessOrEqual(t, len(responseBody), 180)
+			require.Equal(t, int64(23), gjson.Get(responseBody, "usage.input_tokens").Int())
+			require.Equal(t, int64(21), gjson.Get(responseBody, "usage.output_tokens").Int())
+			require.Equal(t, "msg_123", gjson.Get(responseBody, "id").String())
+		})
+
+		t.Run("responses streaming over limit keeps usage", func(t *testing.T) {
+			configData, _ := json.Marshal(map[string]interface{}{
+				"attributes":                 []map[string]interface{}{},
+				"request_body_length_limit":  1024,
+				"response_body_length_limit": 200,
+			})
+
+			host, status := test.NewTestHost(configData)
+			defer host.Reset()
+			require.Equal(t, types.OnPluginStartStatusOK, status)
+
+			host.CallOnHttpRequestHeaders([][2]string{
+				{":authority", "example.com"},
+				{":path", "/v1/responses"},
+				{":method", "POST"},
+			})
+
+			action := host.CallOnHttpResponseHeaders([][2]string{
+				{":status", "200"},
+				{"content-type", "text/event-stream"},
+			})
+			require.Equal(t, types.ActionContinue, action)
+
+			// 单个 chunk 内 delta 累加即超限,且同 chunk 里 response.completed 携带 usage
+			deltaEvent := "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"output_index\":0,\"content_index\":0,\"delta\":\"" + strings.Repeat("hello-", 60) + "\"}\n\n"
+			completedEvent := "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_123\",\"object\":\"response\",\"status\":\"completed\",\"model\":\"gpt-5.4\",\"output\":[{\"id\":\"msg_123\",\"type\":\"message\",\"status\":\"completed\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"" + strings.Repeat("hello-", 60) + "\"}]}],\"usage\":{\"input_tokens\":10,\"output_tokens\":5,\"total_tokens\":15}}}}\n\n"
+			chunk := []byte(deltaEvent + completedEvent)
+			action = host.CallOnHttpStreamingResponseBody(chunk, true)
+			require.Equal(t, types.ActionContinue, action)
+
+			aiLogRaw, err := host.GetProperty([]string{"ai_log"})
+			require.NoError(t, err)
+			responseBody := gjson.Get(wrapper.UnmarshalStr(string(aiLogRaw)), "response_body").String()
+			require.LessOrEqual(t, len(responseBody), 200)
+			require.Equal(t, int64(15), gjson.Get(responseBody, "usage.total_tokens").Int())
+			require.Equal(t, "resp_123", gjson.Get(responseBody, "id").String())
+		})
+
+		t.Run("responses streaming over limit before usage keeps final usage", func(t *testing.T) {
+			configData, _ := json.Marshal(map[string]interface{}{
+				"attributes":                 []map[string]interface{}{},
+				"request_body_length_limit":  1024,
+				"response_body_length_limit": 200,
+			})
+
+			host, status := test.NewTestHost(configData)
+			defer host.Reset()
+			require.Equal(t, types.OnPluginStartStatusOK, status)
+
+			host.CallOnHttpRequestHeaders([][2]string{
+				{":authority", "example.com"},
+				{":path", "/v1/responses"},
+				{":method", "POST"},
+			})
+
+			action := host.CallOnHttpResponseHeaders([][2]string{
+				{":status", "200"},
+				{"content-type", "text/event-stream"},
+			})
+			require.Equal(t, types.ActionContinue, action)
+
+			// 第一个 chunk 超限触发内容累加守卫,usage 尚未出现
+			firstChunk := []byte("event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"output_index\":0,\"content_index\":0,\"delta\":\"" + strings.Repeat("hello-", 60) + "\"}\n\n")
+			action = host.CallOnHttpStreamingResponseBody(firstChunk, false)
+			require.Equal(t, types.ActionContinue, action)
+
+			aiLogRaw, err := host.GetProperty([]string{"ai_log"})
+			require.NoError(t, err)
+			responseBody := gjson.Get(wrapper.UnmarshalStr(string(aiLogRaw)), "response_body").String()
+			require.LessOrEqual(t, len(responseBody), 200)
+
+			// 后续 chunk 的 response.completed 携带 usage,内容守卫已跳过内容累加但 usage 旁路仍提取
+			lastChunk := []byte("event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_123\",\"object\":\"response\",\"status\":\"completed\",\"model\":\"gpt-5.4\",\"output\":[],\"usage\":{\"input_tokens\":10,\"output_tokens\":5,\"total_tokens\":15}}}}\n\n")
+			action = host.CallOnHttpStreamingResponseBody(lastChunk, true)
+			require.Equal(t, types.ActionContinue, action)
+
+			aiLogRaw, err = host.GetProperty([]string{"ai_log"})
+			require.NoError(t, err)
+			responseBody = gjson.Get(wrapper.UnmarshalStr(string(aiLogRaw)), "response_body").String()
+			require.LessOrEqual(t, len(responseBody), 200)
+			require.Equal(t, int64(15), gjson.Get(responseBody, "usage.total_tokens").Int())
+			require.Equal(t, "resp_123", gjson.Get(responseBody, "id").String())
+		})
+	})
 }
 
 func TestRequestHeadersLogging(t *testing.T) {

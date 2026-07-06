@@ -1150,6 +1150,10 @@ curl http://127.0.0.1:8080/v1/chat/completions \
 
 代码开发完成后，如果需要把插件发布到 FAT 环境，当前使用的流程如下。
 
+TCS 权限与 RBAC 相关说明参考：
+
+- `https://pages.release.ctripcorp.com/sysdev-docs/container-platform/docs/tcs/userguide/user-rbac`
+
 ### 12.1 更新 ai-gateway-plugin-server
 
 先在本地把对应插件的 wasm 打好。
@@ -1228,33 +1232,80 @@ tag 命名示例：
 - 让 `-z` 集群网关重新拉取新镜像
 - 不要只停留在配置已发布但 Pod 未重建的状态
 
-当前这套环境可以直接按下面四步执行：
+当前这套环境可以直接按下面步骤执行：
 
-1. 查看 Pod：
+1. 切换到 FAT `-z` 集群：
+
+```bash
+tdkcu ntgxh-x
+```
+
+2. 查看 Pod：
 
 ```bash
 tdk get pod -n fat-ai-gateway
 ```
 
-2. 查看 Pod 和 IP：
+3. 查看 Pod 和 IP：
 
 ```bash
 tdk get pod -n fat-ai-gateway -o wide
 ```
 
-3. 滚动重启 `ai-gateway`：
+4. 滚动重启 `ai-gateway`：
 
 ```bash
 tdk rollout restart deployment/ai-gateway -n fat-ai-gateway
 ```
 
-4. 查看重启状态：
+5. 查看重启状态：
 
 ```bash
 tdk rollout status deployment/ai-gateway -n fat-ai-gateway
 ```
 
-如果这里只是验证镜像是否已经重新拉取，通常第 `2` 步和第 `4` 步最关键。
+如果这里只是验证镜像是否已经重新拉取，通常第 `3` 步和第 `5` 步最关键。
+
+### 12.6 FAT Pod 日志与 OOM 排查
+
+如果要看挂掉 Pod 的日志，先找到当前 `ai-gateway` Pod：
+
+```bash
+tdk get pod -n fat-ai-gateway | grep ai-gateway
+```
+
+查看当前 Pod 日志：
+
+```bash
+tdk logs <pod名> -n fat-ai-gateway
+```
+
+查看上一个已经退出的容器日志，适合排查 OOM 或启动后崩溃：
+
+```bash
+tdk logs <pod名> -n fat-ai-gateway -p
+```
+
+如果直接按 deployment 查看上一轮日志：
+
+```bash
+tdk logs deployment/ai-gateway -n fat-ai-gateway -p
+```
+
+常用过滤参数：
+
+```bash
+tdk logs <pod名> -n fat-ai-gateway --tail=200
+tdk logs <pod名> -n fat-ai-gateway --since=1h
+```
+
+确认 Pod 是否发生过 OOMKilled：
+
+```bash
+tdk describe pod <pod名> -n fat-ai-gateway | grep -A5 -i "last state\|terminated\|reason"
+```
+
+如果命中 OOM，通常会看到 `Reason: OOMKilled` 或 `Exit Code: 137`。
 
 ## 13. 常见问题
 

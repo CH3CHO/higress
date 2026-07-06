@@ -18,8 +18,6 @@ const (
 	HeaderOriginalPath           = "X-ENVOY-ORIGINAL-PATH"
 	HeaderOriginalHost           = "X-ENVOY-ORIGINAL-HOST"
 	HeaderOriginalAuth           = "X-HI-ORIGINAL-AUTH"
-	HeaderOriginalProcessed      = "X-HI-ORIGINAL-PROCESSED"
-	HeaderOriginalProcessedValue = "1"
 
 	MimeTypeTextPlain       = "text/plain"
 	MimeTypeApplicationJson = "application/json"

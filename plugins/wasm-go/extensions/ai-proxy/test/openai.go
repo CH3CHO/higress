@@ -5,9 +5,11 @@ import (
 	"strings"
 	"testing"
 
+	proxyutil "github.com/alibaba/higress/plugins/wasm-go/extensions/ai-proxy/util"
 	"github.com/higress-group/proxy-wasm-go-sdk/proxywasm/types"
 	"github.com/higress-group/wasm-go/pkg/test"
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 )
 
 // 测试配置：基本OpenAI配置
@@ -125,6 +127,37 @@ var openAIPrefixedDirectChatCompletionConfig = func() json.RawMessage {
 	return data
 }()
 
+// 测试配置：OpenAI 兼容路径，开启 responses -> chat/completions 桥接
+var openAIResponsesBridgeConfig = func() json.RawMessage {
+	data, _ := json.Marshal(map[string]interface{}{
+		"provider": map[string]interface{}{
+			"type":      "openai",
+			"apiTokens": []string{"sk-openai-responses-bridge"},
+			"modelMapping": map[string]string{
+				"*": "gpt-4.1-mini",
+			},
+			"openaiCustomUrl":                         "https://custom.openai.com/compatible-mode/v1",
+			"enableResponsesViaChatCompletionsBridge": true,
+		},
+	})
+	return data
+}()
+
+// 测试配置：OpenAI 兼容路径，但未开启 responses -> chat/completions 桥接
+var openAIResponsesNoBridgeConfig = func() json.RawMessage {
+	data, _ := json.Marshal(map[string]interface{}{
+		"provider": map[string]interface{}{
+			"type":      "openai",
+			"apiTokens": []string{"sk-openai-responses-no-bridge"},
+			"modelMapping": map[string]string{
+				"*": "gpt-4.1-mini",
+			},
+			"openaiCustomUrl": "https://custom.openai.com/compatible-mode/v1",
+		},
+	})
+	return data
+}()
+
 // 测试配置：OpenAI完整配置（包含responseJsonSchema等字段）
 var completeOpenAIConfig = func() json.RawMessage {
 	data, _ := json.Marshal(map[string]interface{}{
@@ -217,6 +250,16 @@ func RunOpenAIParseConfigTests(t *testing.T) {
 		// 测试OpenAI完整配置解析
 		t.Run("openai complete config", func(t *testing.T) {
 			host, status := test.NewTestHost(completeOpenAIConfig)
+			defer host.Reset()
+			require.Equal(t, types.OnPluginStartStatusOK, status)
+
+			config, err := host.GetMatchConfig()
+			require.NoError(t, err)
+			require.NotNil(t, config)
+		})
+
+		t.Run("openai responses bridge config", func(t *testing.T) {
+			host, status := test.NewTestHost(openAIResponsesBridgeConfig)
 			defer host.Reset()
 			require.Equal(t, types.OnPluginStartStatusOK, status)
 
@@ -448,6 +491,30 @@ func RunOpenAIOnHttpRequestHeadersTests(t *testing.T) {
 			pathValue, hasPath := test.GetHeaderValue(requestHeaders, ":path")
 			require.True(t, hasPath)
 			require.Equal(t, "/proxy/openai/v1/chat/completions", pathValue)
+		})
+
+		t.Run("openai responses request headers rewrite upstream path to chat completions when bridge enabled", func(t *testing.T) {
+			host, status := test.NewTestHost(openAIResponsesBridgeConfig)
+			defer host.Reset()
+			require.Equal(t, types.OnPluginStartStatusOK, status)
+
+			action := host.CallOnHttpRequestHeaders([][2]string{
+				{":authority", "example.com"},
+				{":path", "/v1/responses"},
+				{":method", "POST"},
+				{"Content-Type", "application/json"},
+			})
+
+			require.Equal(t, types.HeaderStopIteration, action)
+
+			requestHeaders := host.GetRequestHeaders()
+			require.NotNil(t, requestHeaders)
+
+			pathValue, hasPath := test.GetHeaderValue(requestHeaders, ":path")
+			require.True(t, hasPath)
+			require.Equal(t, "/compatible-mode/v1/chat/completions", pathValue)
+			require.True(t, test.HasHeaderWithValue(requestHeaders, proxyutil.HeaderOriginalHost, "example.com"))
+			require.True(t, test.HasHeaderWithValue(requestHeaders, proxyutil.HeaderOriginalPath, "/v1/responses"))
 		})
 	})
 }
@@ -752,6 +819,116 @@ func RunOpenAIOnHttpRequestBodyTests(t *testing.T) {
 			}
 			require.True(t, hasSchemaLogs, "Should have response format processing logs")
 		})
+
+		t.Run("openai responses request body bridges to chat completions only when enabled", func(t *testing.T) {
+			host, status := test.NewTestHost(openAIResponsesBridgeConfig)
+			defer host.Reset()
+			require.Equal(t, types.OnPluginStartStatusOK, status)
+
+			host.CallOnHttpRequestHeaders([][2]string{
+				{":authority", "example.com"},
+				{":path", "/v1/responses"},
+				{":method", "POST"},
+				{"Content-Type", "application/json"},
+			})
+
+			requestBody := `{"model":"gpt-4.1-mini","max_output_tokens":64,"input":"test"}`
+			action := host.CallOnHttpRequestBody([]byte(requestBody))
+
+			require.Equal(t, types.ActionContinue, action)
+
+			processedBody := host.GetRequestBody()
+			require.NotNil(t, processedBody)
+			require.Equal(t, "user", gjson.GetBytes(processedBody, "messages.0.role").String())
+			require.Equal(t, "test", gjson.GetBytes(processedBody, "messages.0.content").String())
+			require.Equal(t, int64(64), gjson.GetBytes(processedBody, "max_tokens").Int())
+			require.NotContains(t, string(processedBody), `"input"`)
+			require.NotContains(t, string(processedBody), `"max_output_tokens"`)
+		})
+
+		t.Run("openai responses request body does not bridge without config", func(t *testing.T) {
+			host, status := test.NewTestHost(openAIResponsesNoBridgeConfig)
+			defer host.Reset()
+			require.Equal(t, types.OnPluginStartStatusOK, status)
+
+			host.CallOnHttpRequestHeaders([][2]string{
+				{":authority", "example.com"},
+				{":path", "/v1/responses"},
+				{":method", "POST"},
+				{"Content-Type", "application/json"},
+			})
+
+			requestBody := `{"model":"gpt-4.1-mini","input":"test"}`
+			action := host.CallOnHttpRequestBody([]byte(requestBody))
+
+			require.Equal(t, types.ActionContinue, action)
+
+			processedBody := host.GetRequestBody()
+			require.NotNil(t, processedBody)
+			require.Contains(t, string(processedBody), `"input":"test"`)
+			require.NotContains(t, string(processedBody), `"messages"`)
+		})
+
+		t.Run("openai responses request body bridges codex style input to chat completions", func(t *testing.T) {
+			host, status := test.NewTestHost(openAIResponsesBridgeConfig)
+			defer host.Reset()
+			require.Equal(t, types.OnPluginStartStatusOK, status)
+
+			host.CallOnHttpRequestHeaders([][2]string{
+				{":authority", "example.com"},
+				{":path", "/v1/responses"},
+				{":method", "POST"},
+				{"Content-Type", "application/json"},
+			})
+
+			requestBody := `{
+				"model":"kimi-k2.5",
+				"instructions":"You are a coding agent",
+				"client_metadata":{"session_id":"s1"},
+				"prompt_cache_key":"thread-1",
+				"reasoning":{"effort":"high"},
+				"parallel_tool_calls":false,
+				"input":[
+					{
+						"type":"message",
+						"role":"developer",
+						"content":[{"type":"input_text","text":"developer prompt"}]
+					},
+					{
+						"type":"message",
+						"role":"user",
+						"content":[{"type":"input_text","text":"test"}]
+					},
+					{
+						"type":"reasoning",
+						"summary":[{"type":"summary_text","text":"internal"}]
+					},
+					{
+						"type":"message",
+						"role":"assistant",
+						"content":[{"type":"output_text","text":"previous"}]
+					}
+				]
+			}`
+			action := host.CallOnHttpRequestBody([]byte(requestBody))
+
+			require.Equal(t, types.ActionContinue, action)
+
+			processedBody := host.GetRequestBody()
+			require.NotNil(t, processedBody)
+			require.Equal(t, "system", gjson.GetBytes(processedBody, "messages.0.role").String())
+			require.Equal(t, "You are a coding agent", gjson.GetBytes(processedBody, "messages.0.content").String())
+			require.Equal(t, "system", gjson.GetBytes(processedBody, "messages.1.role").String())
+			require.Equal(t, "developer prompt", gjson.GetBytes(processedBody, "messages.1.content").String())
+			require.Equal(t, "user", gjson.GetBytes(processedBody, "messages.2.role").String())
+			require.Equal(t, "test", gjson.GetBytes(processedBody, "messages.2.content").String())
+			require.Equal(t, "assistant", gjson.GetBytes(processedBody, "messages.3.role").String())
+			require.Equal(t, "previous", gjson.GetBytes(processedBody, "messages.3.content").String())
+			require.Equal(t, "high", gjson.GetBytes(processedBody, "reasoning_effort").String())
+			require.False(t, gjson.GetBytes(processedBody, "client_metadata").Exists())
+			require.False(t, gjson.GetBytes(processedBody, "prompt_cache_key").Exists())
+			require.False(t, gjson.GetBytes(processedBody, "reasoning").Exists())
+		})
 	})
 }
 
@@ -891,6 +1068,34 @@ func RunOpenAIOnHttpResponseHeadersTests(t *testing.T) {
 			require.True(t, hasRetry, "Retry-After header should exist")
 			require.Equal(t, "60", retryValue, "Retry-After should be 60 seconds")
 		})
+
+		t.Run("openai responses bridge response headers", func(t *testing.T) {
+			host, status := test.NewTestHost(openAIResponsesBridgeConfig)
+			defer host.Reset()
+			require.Equal(t, types.OnPluginStartStatusOK, status)
+
+			host.CallOnHttpRequestHeaders([][2]string{
+				{":authority", "example.com"},
+				{":path", "/v1/responses"},
+				{":method", "POST"},
+				{"Content-Type", "application/json"},
+			})
+
+			requestBody := `{"model":"gpt-4.1-mini","input":"test"}`
+			host.CallOnHttpRequestBody([]byte(requestBody))
+
+			responseHeaders := [][2]string{
+				{":status", "200"},
+				{"Content-Type", "application/json"},
+			}
+			action := host.CallOnHttpResponseHeaders(responseHeaders)
+
+			require.Equal(t, types.ActionContinue, action)
+
+			processedResponseHeaders := host.GetResponseHeaders()
+			require.NotNil(t, processedResponseHeaders)
+			require.True(t, test.HasHeaderWithValue(processedResponseHeaders, "Content-Type", "application/json"))
+		})
 	})
 }
 
@@ -965,6 +1170,41 @@ func RunOpenAIOnHttpResponseBodyTests(t *testing.T) {
 				}
 			}
 			require.True(t, hasResponseBodyLogs, "Should have response body processing logs")
+		})
+
+		// 回归测试:开启桥接后,普通 chat/completions 入口请求的响应不应被改写成 Responses 格式
+		t.Run("bridge enabled but plain chat completion response not rewritten to responses", func(t *testing.T) {
+			host, status := test.NewTestHost(openAIResponsesBridgeConfig)
+			defer host.Reset()
+			require.Equal(t, types.OnPluginStartStatusOK, status)
+
+			host.CallOnHttpRequestHeaders([][2]string{
+				{":authority", "example.com"},
+				{":path", "/v1/chat/completions"},
+				{":method", "POST"},
+				{"Content-Type", "application/json"},
+			})
+
+			requestBody := `{"model":"gpt-3.5-turbo","messages":[{"role":"user","content":"test"}]}`
+			host.CallOnHttpRequestBody([]byte(requestBody))
+
+			responseHeaders := [][2]string{
+				{":status", "200"},
+				{"Content-Type", "application/json"},
+			}
+			host.CallOnHttpResponseHeaders(responseHeaders)
+
+			responseBody := `{"id":"chatcmpl-123","object":"chat.completion","created":1677652288,"model":"gpt-3.5-turbo","choices":[{"index":0,"message":{"role":"assistant","content":"hello"},"finish_reason":"stop"}],"usage":{"prompt_tokens":9,"completion_tokens":12,"total_tokens":21}}`
+			action := host.CallOnHttpResponseBody([]byte(responseBody))
+			require.Equal(t, types.ActionContinue, action)
+
+			processedResponseBody := host.GetResponseBody()
+			require.NotNil(t, processedResponseBody)
+			responseStr := string(processedResponseBody)
+			// 普通请求不应被桥接成 Responses 信封
+			require.Contains(t, responseStr, "chat.completion", "plain chat completion response must not be rewritten to responses")
+			require.NotContains(t, responseStr, "\"object\":\"response\"", "response must not be rewritten into a responses envelope")
+			require.Contains(t, responseStr, "\"total_tokens\":21", "usage must be preserved")
 		})
 
 		// 测试OpenAI响应体处理（嵌入接口）
@@ -1068,6 +1308,99 @@ func RunOpenAIOnHttpResponseBodyTests(t *testing.T) {
 			require.Contains(t, responseStr, "url", "Response should contain image URL")
 			require.Contains(t, responseStr, "revised_prompt", "Response should contain revised prompt")
 		})
+
+		t.Run("openai responses bridge converts non-streaming response body", func(t *testing.T) {
+			host, status := test.NewTestHost(openAIResponsesBridgeConfig)
+			defer host.Reset()
+			require.Equal(t, types.OnPluginStartStatusOK, status)
+
+			host.CallOnHttpRequestHeaders([][2]string{
+				{":authority", "example.com"},
+				{":path", "/v1/responses"},
+				{":method", "POST"},
+				{"Content-Type", "application/json"},
+			})
+
+			requestBody := `{"model":"gpt-4.1-mini","max_output_tokens":16,"input":"Reply with exactly pong."}`
+			host.CallOnHttpRequestBody([]byte(requestBody))
+			requestHeaders := host.GetRequestHeaders()
+			require.True(t, test.HasHeaderWithValue(requestHeaders, proxyutil.HeaderOriginalPath, "/v1/responses"))
+			require.True(t, test.HasHeaderWithValue(requestHeaders, proxyutil.HeaderOriginalHost, "example.com"))
+
+			// 模拟上游返回(code_details=via_upstream),否则 IsResponseFromUpstream 返回 false 跳过 body 处理
+			require.NoError(t, host.SetProperty([]string{"response", "code_details"}, []byte("via_upstream")))
+			host.CallOnHttpResponseHeaders([][2]string{
+				{":status", "200"},
+				{"Content-Type", "application/json"},
+			})
+
+			responseBody := `{
+				"id":"chatcmpl-bridge",
+				"object":"chat.completion",
+				"created":1710000000,
+				"model":"gpt-4.1-mini",
+				"choices":[{
+					"index":0,
+					"message":{"role":"assistant","content":"pong"},
+					"finish_reason":"stop"
+				}],
+				"usage":{"prompt_tokens":11,"completion_tokens":1,"total_tokens":12}
+			}`
+			action := host.CallOnHttpResponseBody([]byte(responseBody))
+
+			require.Equal(t, types.ActionContinue, action)
+
+			processedResponseBody := host.GetResponseBody()
+			require.NotNil(t, processedResponseBody)
+			require.Equal(t, "response", gjson.GetBytes(processedResponseBody, "object").String())
+			require.Equal(t, "pong", gjson.GetBytes(processedResponseBody, "output_text").String())
+			require.Equal(t, int64(11), gjson.GetBytes(processedResponseBody, "usage.input_tokens").Int())
+			require.Equal(t, int64(1), gjson.GetBytes(processedResponseBody, "usage.output_tokens").Int())
+		})
+
+		t.Run("openai responses bridge disabled keeps chat completion response body", func(t *testing.T) {
+			host, status := test.NewTestHost(openAIResponsesNoBridgeConfig)
+			defer host.Reset()
+			require.Equal(t, types.OnPluginStartStatusOK, status)
+
+			host.CallOnHttpRequestHeaders([][2]string{
+				{":authority", "example.com"},
+				{":path", "/v1/responses"},
+				{":method", "POST"},
+				{"Content-Type", "application/json"},
+			})
+
+			requestBody := `{"model":"gpt-4.1-mini","input":"Reply with exactly pong."}`
+			host.CallOnHttpRequestBody([]byte(requestBody))
+
+			// 模拟上游返回,确保走 body 处理阶段
+			require.NoError(t, host.SetProperty([]string{"response", "code_details"}, []byte("via_upstream")))
+			host.CallOnHttpResponseHeaders([][2]string{
+				{":status", "200"},
+				{"Content-Type", "application/json"},
+			})
+
+			responseBody := `{
+				"id":"chatcmpl-no-bridge",
+				"object":"chat.completion",
+				"created":1710000000,
+				"model":"gpt-4.1-mini",
+				"choices":[{
+					"index":0,
+					"message":{"role":"assistant","content":"pong"},
+					"finish_reason":"stop"
+				}]
+			}`
+			action := host.CallOnHttpResponseBody([]byte(responseBody))
+
+			require.Equal(t, types.ActionContinue, action)
+
+			processedResponseBody := host.GetResponseBody()
+			require.NotNil(t, processedResponseBody)
+			require.Equal(t, "chat.completion", gjson.GetBytes(processedResponseBody, "object").String())
+			require.Equal(t, "pong", gjson.GetBytes(processedResponseBody, "choices.0.message.content").String())
+		})
+
 	})
 }
 
