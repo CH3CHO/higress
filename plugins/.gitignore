@@ -6,3 +6,5 @@
 *.wasm
 **/out
 **/test
+!wasm-go/scripts/test/
+!wasm-go/scripts/test/*.sh

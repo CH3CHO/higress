@@ -53,8 +53,12 @@ else
 fi
 
 if [ -z "${PLUGINS}" ]; then
-    echo "No plugins to build, generating no-op child pipeline"
-    cat > child-pipeline.yml << 'EOF'
+    if [ "${CI_COMMIT_BRANCH:-}" = "dev" ]; then
+        echo "No plugins changed on dev; will still sync wasm-dev to ${PLUGIN_SERVER_DEFAULT_BRANCH} via submit-wasm"
+        # Fall through to the main emission: 0 build jobs + submit-wasm (needs: [])
+    else
+        echo "No plugins to build, generating no-op child pipeline"
+        cat > child-pipeline.yml << 'EOF'
 stages: [noop]
 noop:
   stage: noop
@@ -62,10 +66,13 @@ noop:
   script:
     - echo "No plugins changed, nothing to build"
 EOF
-    exit 0
+        exit 0
+    fi
 fi
 
-echo "Plugins to build: $(echo "${PLUGINS}" | tr '\n' ' ')"
+if [ -n "${PLUGINS}" ]; then
+    echo "Plugins to build: $(echo "${PLUGINS}" | tr '\n' ' ')"
+fi
 
 # Write YAML header with shared job template
 cat > child-pipeline.yml << EOF
@@ -129,16 +136,21 @@ EOF
     BUILT_JOB_NAMES="${BUILT_JOB_NAMES}    - job: build:${PLUGIN}\n      artifacts: true\n"
 done <<< "${PLUGINS}"
 
-# Write submit job with needs referencing all build jobs
+# Write submit job. needs is an explicit empty array when there are no build
+# jobs (dev no-change path) so the job runs immediately.
 cat >> child-pipeline.yml << 'EOF'
 submit-wasm:
   stage: submit
   image: hub.cloud.ctripcorp.com/devops/almalinux-docker-20.10.24:0.0.1
   variables:
     GIT_DEPTH: "0"
-  needs:
 EOF
-printf '%b' "${BUILT_JOB_NAMES}" >> child-pipeline.yml
+if [ -n "${BUILT_JOB_NAMES}" ]; then
+    printf '  needs:\n' >> child-pipeline.yml
+    printf '%b' "${BUILT_JOB_NAMES}" >> child-pipeline.yml
+else
+    printf '  needs: []\n' >> child-pipeline.yml
+fi
 cat >> child-pipeline.yml << 'EOF'
   script:
     - cd plugins/wasm-go && bash scripts/submit-wasm.sh
