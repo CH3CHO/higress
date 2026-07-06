@@ -36,8 +36,13 @@ fi
 BUILT_PLUGINS=$(ls extensions/*/plugin.wasm 2>/dev/null | cut -d/ -f2 | sort -u || true)
 
 if [ -z "${BUILT_PLUGINS}" ]; then
-    echo "No plugin.wasm files found, nothing to submit"
-    exit 0
+    if [ "${TRIGGER_BRANCH}" != "dev" ]; then
+        echo "No plugin.wasm files found, nothing to submit"
+        exit 0
+    fi
+    # On dev, still proceed: wasm-dev must be re-pointed at trip even with no
+    # new wasm to carry. The push below performs the sync.
+    echo "No plugin.wasm on dev; still syncing ${TARGET_BRANCH} to ${PLUGIN_SERVER_DEFAULT_BRANCH}"
 fi
 
 echo "Submitting plugins to ${TARGET_BRANCH}: $(echo "${BUILT_PLUGINS}" | tr '\n' ' ')"
@@ -109,20 +114,30 @@ if [ "${TRIGGER_BRANCH}" = "trip" ]; then
     echo "${CI_COMMIT_SHA}" > LATEST_RELEASE
 fi
 
-# Commit and push only if there are changes
+# Commit and push. On dev, wasm-dev is rebuilt from trip each run, so we always
+# force-push to keep it in sync — even with no new wasm to commit, the push
+# re-points wasm-dev at trip (a no-op if already in sync). On trip, wasm-trip is
+# append-only: only push when we actually committed something.
 git add .
+HAS_CHANGES=true
 if git diff --cached --quiet; then
-    echo "No changes to commit, skipping"
-    exit 0
+    HAS_CHANGES=false
+    if [ "${TRIGGER_BRANCH}" = "dev" ]; then
+        echo "No new wasm on dev; force-pushing ${TARGET_BRANCH} to sync with ${PLUGIN_SERVER_DEFAULT_BRANCH}"
+    else
+        echo "No changes to commit, skipping"
+        exit 0
+    fi
 fi
 
-PLUGIN_LIST=$(echo "${BUILT_PLUGINS}" | tr '\n' ' ' | sed 's/ $//')
-git commit -m "chore: update wasm plugins (${CI_COMMIT_SHORT_SHA})
+if [ "${HAS_CHANGES}" = "true" ]; then
+    PLUGIN_LIST=$(echo "${BUILT_PLUGINS}" | tr '\n' ' ' | sed 's/ $//')
+    git commit -m "chore: update wasm plugins (${CI_COMMIT_SHORT_SHA})
 
 Plugins: ${PLUGIN_LIST}
 Commit: ${CI_PROJECT_URL}/-/commit/${CI_COMMIT_SHA}"
+fi
 
-# dev rebuilds wasm-dev from trip each run, so the push is non-fast-forward by design.
 if [ "${TRIGGER_BRANCH}" = "dev" ]; then
     git push --force-with-lease origin "${TARGET_BRANCH}"
 else
