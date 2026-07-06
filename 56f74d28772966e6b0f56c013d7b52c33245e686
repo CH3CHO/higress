@@ -1,0 +1,23 @@
+plugins/wasm-go/extensions/ai-proxy/provider/chat_completions_to_responses_test.go
+  s_bcae8127ec8fde::t_8bb7eea8e65ebe 417-455
+plugins/wasm-go/extensions/ai-proxy/HIGRESS_DEV_README.md
+  s_bcae8127ec8fde::t_a223c1129043e2 1153-1156,1235-1241,1243,1249,1255,1261,1267-1308
+plugins/wasm-go/extensions/ai-proxy/provider/chat_completions_to_responses.go
+  s_bcae8127ec8fde::t_3755c77c67c986 369-371,2184-2185,2215,2221-2231,2236
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.28-trip",
+  "base_commit_sha": "56f74d28772966e6b0f56c013d7b52c33245e686",
+  "prompts": {},
+  "sessions": {
+    "s_bcae8127ec8fde": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f2614-1451-74a1-a3f2-63a21ba2a189",
+        "model": "gpt-5.5-2026-04-24"
+      },
+      "human_author": "jkma <jkma@trip.com>"
+    }
+  }
+}
