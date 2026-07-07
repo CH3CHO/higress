@@ -1,0 +1,28 @@
+.gitignore
+  s_2b0f5c8af3f86c::t_77154a54b2d6c8 21-23
+plugins/wasm-go/extensions/ai-proxy/provider/anthropic_messages.go
+  s_2b0f5c8af3f86c::t_b0cc3f50fecdf9 78
+plugins/wasm-go/extensions/ai-proxy/provider/bedrock_messages_test.go
+  s_2b0f5c8af3f86c::t_6c2ac36f221d73 216-240
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.28-trip",
+  "base_commit_sha": "81cbf8e8ff4e0a211b8d888400ae07b0010e40ae",
+  "prompts": {},
+  "humans": {
+    "h_0f3647d1d3d241": {
+      "author": "jkma <jkma@trip.com>"
+    }
+  },
+  "sessions": {
+    "s_2b0f5c8af3f86c": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f3bdc-3282-7f31-9ed9-0bb2f2a3272d",
+        "model": "glm-5.2"
+      },
+      "human_author": null
+    }
+  }
+}
