@@ -1,0 +1,44 @@
+plugins/wasm-go/extensions/model-router/main_test.go
+  s_12dbc6d98772c5::t_b197565ececf64 1-540
+plugins/wasm-go/extensions/model-mapper/README.md
+  s_12dbc6d98772c5::t_c82f64baf80379 1,3-31
+plugins/wasm-go/extensions/model-mapper/main_test.go
+  s_12dbc6d98772c5::t_60c55a2a949a1c 1-464
+plugins/wasm-go/extensions/model-router/README.md
+  s_12dbc6d98772c5::t_c972b9aa4a8499 1,3-52
+plugins/wasm-go/extensions/model-mapper/go.mod
+  s_12dbc6d98772c5::t_5350e4528afbbd 1-26
+plugins/wasm-go/extensions/model-router/go.mod
+  s_12dbc6d98772c5::t_85f9d0f62548ab 1-26
+plugins/wasm-go/extensions/model-router/main.go
+  s_4721b7e8692779::t_a47ca86e13e919 174
+  s_12dbc6d98772c5::t_0561a2ab76812e 1-26,29-52,57-106,109-163,165-173,175-493
+  s_12dbc6d98772c5::t_6d6ed495f4ba66 27-28,53-56,107-108,164
+plugins/wasm-go/extensions/model-mapper/main.go
+  s_12dbc6d98772c5::t_484245ff3d7e2a 1-17,19-41,47-256,259-280
+  s_12dbc6d98772c5::t_2f054bfe754cc5 42-45,257-258
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.28-trip",
+  "base_commit_sha": "b3835fe5ef1d935399e6e4146b06cfaa4f613411",
+  "prompts": {},
+  "sessions": {
+    "s_12dbc6d98772c5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "7a5e8a05-eb37-4fbc-ab0d-12d1ea6488d0",
+        "model": "arn:aws:bedrock:us-west-2:133197901387:application-inference-profile/ypvzpmevzxdl"
+      },
+      "human_author": "Kevin Zhang <zhiw.zhang@trip.com>"
+    },
+    "s_4721b7e8692779": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ab09cd17-35c1-48db-829d-617cb7f76e20",
+        "model": "kimi-k2.6"
+      },
+      "human_author": "Kevin Zhang <zhiw.zhang@trip.com>"
+    }
+  }
+}

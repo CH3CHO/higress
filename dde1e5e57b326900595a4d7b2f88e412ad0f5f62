@@ -1,0 +1,25 @@
+plugins/wasm-go/extensions/model-mapper/main.go
+  s_bf335965a9bf5b::t_a639a3aef12136 113-115
+  s_bf335965a9bf5b::t_b81fe6f3291fcb 179-184
+plugins/wasm-go/extensions/model-router/main.go
+  s_bf335965a9bf5b::t_99a8760aa88af2 81-83
+  s_bf335965a9bf5b::t_45662bb9cef813 356-362
+plugins/wasm-go/extensions/model-router/main_test.go
+  s_bf335965a9bf5b::t_6b4c21102d8d4d 496,516,536
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.28-trip",
+  "base_commit_sha": "dde1e5e57b326900595a4d7b2f88e412ad0f5f62",
+  "prompts": {},
+  "sessions": {
+    "s_bf335965a9bf5b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e9497c4c-44c6-4e19-93b9-cf4dc3a8d2d7",
+        "model": "kimi-k2.6"
+      },
+      "human_author": "Kevin Zhang <zhiw.zhang@trip.com>"
+    }
+  }
+}
