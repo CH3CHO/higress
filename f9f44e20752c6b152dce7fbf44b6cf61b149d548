@@ -1,0 +1,27 @@
+plugins/wasm-go/extensions/key-auth/.buildrc
+  s_8c2d9f3d2cd7c4::t_ab3bad7038a343 1
+.github/workflows/build-and-push-wasm-plugin-image.yaml
+  s_8c2d9f3d2cd7c4::t_394b2361fb445d 114-128
+plugins/wasm-go/README_EN.md
+  s_8c2d9f3d2cd7c4::t_6d82fd9875d1ee 12-15
+plugins/wasm-go/extensions/jwt-auth/.buildrc
+  s_8c2d9f3d2cd7c4::t_52d2d8e8be58ab 1
+plugins/wasm-go/README.md
+  s_8c2d9f3d2cd7c4::t_35ae152b79c78d 14-17
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.28-trip",
+  "base_commit_sha": "f9f44e20752c6b152dce7fbf44b6cf61b149d548",
+  "prompts": {},
+  "sessions": {
+    "s_8c2d9f3d2cd7c4": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "2151f7b2-c091-4db0-8508-dec44be99794",
+        "model": "MiniMax-M3"
+      },
+      "human_author": null
+    }
+  }
+}

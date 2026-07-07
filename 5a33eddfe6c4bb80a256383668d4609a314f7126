@@ -1,0 +1,54 @@
+plugins/wasm-go/extensions/ai-statistics/main.go
+  s_bcae8127ec8fde::t_50a889a4536160 1273-1274,1277,1325-1326,1382-1383,1392-1393
+  s_bcae8127ec8fde::t_525cb840326274 1267-1268,1374
+plugins/wasm-go/extensions/ai-proxy/test/openai.go
+  s_bcae8127ec8fde::t_26715e48559b16 140
+  h_0f3647d1d3d241 7
+  s_bcae8127ec8fde::t_e9fb4380ae2fce 139
+plugins/wasm-go/extensions/ai-proxy/provider/provider.go
+  s_bcae8127ec8fde::t_6c0d53bf721c34 391,393,554-555
+  s_bcae8127ec8fde::t_87454a725001d6 1094
+  s_bcae8127ec8fde::t_0aee3da30dcb31 576,1087,1159
+  s_bcae8127ec8fde::t_51d4fcf91a45ea 1160
+  s_bcae8127ec8fde::t_26cd7a05c121d7 1016-1020
+plugins/wasm-go/extensions/ai-proxy/provider/model.go
+  s_bcae8127ec8fde::t_26cd7a05c121d7 521,529,532-535
+  s_bcae8127ec8fde::t_49f0248392d3a7 530-531
+plugins/wasm-go/extensions/ai-proxy/provider/openai.go
+  s_bcae8127ec8fde::t_51d4fcf91a45ea 277
+plugins/wasm-go/extensions/ai-proxy/main.go
+  s_bcae8127ec8fde::t_26715e48559b16 252,538,551
+  s_bcae8127ec8fde::t_49f0248392d3a7 268
+  s_bcae8127ec8fde::t_51d4fcf91a45ea 541,544,554
+  s_bcae8127ec8fde::t_87454a725001d6 265,270,583,596
+  s_bcae8127ec8fde::t_0aee3da30dcb31 228,240,251,257-263,266-267,269
+plugins/wasm-go/extensions/ai-proxy/provider/chat_completions_to_responses.go
+  s_bcae8127ec8fde::t_525cb840326274 1115,1135
+  s_bcae8127ec8fde::t_49f0248392d3a7 17,25-26
+  s_bcae8127ec8fde::t_2d5a7e2791390c 16,18-22,24
+  s_bcae8127ec8fde::t_87454a725001d6 23,27,42-43,46-51
+plugins/wasm-go/extensions/ai-statistics/responses_protocol.go
+  s_bcae8127ec8fde::t_525cb840326274 113-114
+  s_bcae8127ec8fde::t_50a889a4536160 118-119,143-145
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.28-trip",
+  "base_commit_sha": "5a33eddfe6c4bb80a256383668d4609a314f7126",
+  "prompts": {},
+  "humans": {
+    "h_0f3647d1d3d241": {
+      "author": "jkma <jkma@trip.com>"
+    }
+  },
+  "sessions": {
+    "s_bcae8127ec8fde": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f2614-1451-74a1-a3f2-63a21ba2a189",
+        "model": "gpt-5.5-2026-04-24"
+      },
+      "human_author": "jkma <jkma@trip.com>"
+    }
+  }
+}

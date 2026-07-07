@@ -1,0 +1,19 @@
+plugins/wasm-go/extensions/ai-proxy/main.go
+  s_bcae8127ec8fde::t_8303b42fc1f68c 513,516,521-522,526-527,531-532
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.28-trip",
+  "base_commit_sha": "9e5ceb04373be4a1086c1fd8ddd4c3a309c83e87",
+  "prompts": {},
+  "sessions": {
+    "s_bcae8127ec8fde": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f2614-1451-74a1-a3f2-63a21ba2a189",
+        "model": "gpt-5.5-2026-04-24"
+      },
+      "human_author": "jkma <jkma@trip.com>"
+    }
+  }
+}

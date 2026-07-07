@@ -1,0 +1,19 @@
+docs/superpowers/specs/2026-07-03-wasm-plugin-image-name-customization-design.md
+  s_8c2d9f3d2cd7c4::t_b4845c66861804 1-207
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.28-trip",
+  "base_commit_sha": "9e2900fe11715cf2d66333e424d4989ece61dbf6",
+  "prompts": {},
+  "sessions": {
+    "s_8c2d9f3d2cd7c4": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "2151f7b2-c091-4db0-8508-dec44be99794",
+        "model": "MiniMax-M3"
+      },
+      "human_author": "CH3CHO <ch3cho@qq.com>"
+    }
+  }
+}

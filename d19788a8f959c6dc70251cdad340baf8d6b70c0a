@@ -1,0 +1,21 @@
+plugins/wasm-go/extensions/ai-proxy/provider/anthropic_messages.go
+  s_2b0f5c8af3f86c::t_55d54aa55e9bb9 78
+.gitignore
+  s_2b0f5c8af3f86c::t_77154a54b2d6c8 21-23
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.28-trip",
+  "base_commit_sha": "d19788a8f959c6dc70251cdad340baf8d6b70c0a",
+  "prompts": {},
+  "sessions": {
+    "s_2b0f5c8af3f86c": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f3bdc-3282-7f31-9ed9-0bb2f2a3272d",
+        "model": "glm-5.2"
+      },
+      "human_author": "jkma <jkma@trip.com>"
+    }
+  }
+}

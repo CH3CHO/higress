@@ -1,0 +1,27 @@
+plugins/wasm-go/scripts/detect-changed-plugins.sh
+  s_bd8b10fa909c30::t_ade964dd34f1b9 73-75
+  s_bd8b10fa909c30::t_11e4624e78be59 139-140,148-153
+  s_bd8b10fa909c30::t_68f83bd914296a 56-61,69-70
+plugins/wasm-go/scripts/test/detect-changed-plugins.test.sh
+  s_bd8b10fa909c30::t_7e005c687650a9 22
+  s_bd8b10fa909c30::t_52141315c49139 85
+  s_bd8b10fa909c30::t_6991f7499e4aaa 1-21,23-84,86-114
+plugins/.gitignore
+  s_bd8b10fa909c30::t_dcc3dfa614e98c 9-10
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.28-trip",
+  "base_commit_sha": "6ef870508bf93ccac612a3d92e59fd08bf96b71f",
+  "prompts": {},
+  "sessions": {
+    "s_bd8b10fa909c30": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "803bae70-4f7f-4b3d-80cc-bc7dbcae2573",
+        "model": "glm-5.2"
+      },
+      "human_author": "CH3CHO <ch3cho@qq.com>"
+    }
+  }
+}

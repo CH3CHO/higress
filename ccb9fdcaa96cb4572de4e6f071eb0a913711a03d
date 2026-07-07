@@ -1,0 +1,23 @@
+plugins/wasm-go/scripts/submit-wasm.sh
+  s_bd8b10fa909c30::t_0506a20cce0acd 67-68
+plugins/wasm-go/scripts/test/submit-wasm-dev-sync.test.sh
+  s_bd8b10fa909c30::t_21beddd1f929ef 93
+  s_bd8b10fa909c30::t_d3def89689c2c1 104
+  s_bd8b10fa909c30::t_280b25d178d4d0 74
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.28-trip",
+  "base_commit_sha": "ccb9fdcaa96cb4572de4e6f071eb0a913711a03d",
+  "prompts": {},
+  "sessions": {
+    "s_bd8b10fa909c30": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "803bae70-4f7f-4b3d-80cc-bc7dbcae2573",
+        "model": "glm-5.2"
+      },
+      "human_author": "CH3CHO <ch3cho@qq.com>"
+    }
+  }
+}
