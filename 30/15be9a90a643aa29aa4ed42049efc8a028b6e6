@@ -1,0 +1,19 @@
+plugins/wasm-go/scripts/test/detect-changed-plugins.test.sh
+  s_5e861aea6f4aa7::t_98389dae87f1ce 108-140,144-145
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.33-trip",
+  "base_commit_sha": "3015be9a90a643aa29aa4ed42049efc8a028b6e6",
+  "prompts": {},
+  "sessions": {
+    "s_5e861aea6f4aa7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "2bb913e0-769d-46c2-b9d0-6a141be55912",
+        "model": "glm-5.2"
+      },
+      "human_author": "CH3CHO <ch3cho@qq.com>"
+    }
+  }
+}
