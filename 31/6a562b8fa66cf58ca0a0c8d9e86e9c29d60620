@@ -1,0 +1,19 @@
+plugins/wasm-go/scripts/add-to-lightmerge.sh
+  s_5e861aea6f4aa7::t_b9f5b081865f91 1-90
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.33-trip",
+  "base_commit_sha": "316a562b8fa66cf58ca0a0c8d9e86e9c29d60620",
+  "prompts": {},
+  "sessions": {
+    "s_5e861aea6f4aa7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "2bb913e0-769d-46c2-b9d0-6a141be55912",
+        "model": "glm-5.2"
+      },
+      "human_author": "CH3CHO <ch3cho@qq.com>"
+    }
+  }
+}
