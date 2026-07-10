@@ -1,0 +1,19 @@
+plugins/wasm-go/extensions/hello-world/main.go
+  s_5e861aea6f4aa7::t_9614285402d548 14
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.33-trip",
+  "base_commit_sha": "0615e985669491db59b98a1d99b8055d9605f65f",
+  "prompts": {},
+  "sessions": {
+    "s_5e861aea6f4aa7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "2bb913e0-769d-46c2-b9d0-6a141be55912",
+        "model": "glm-5.2"
+      },
+      "human_author": "CH3CHO <ch3cho@qq.com>"
+    }
+  }
+}
