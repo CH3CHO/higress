@@ -1,0 +1,20 @@
+.gitlab-ci.yml
+  s_5e861aea6f4aa7::t_4765871bb144c9 32-34
+  s_5e861aea6f4aa7::t_daea8ce17865c5 52-53
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.33-trip",
+  "base_commit_sha": "bf9be4ec2c000de7d336a680a4997042bd80c97f",
+  "prompts": {},
+  "sessions": {
+    "s_5e861aea6f4aa7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "2bb913e0-769d-46c2-b9d0-6a141be55912",
+        "model": "glm-5.2"
+      },
+      "human_author": "CH3CHO <ch3cho@qq.com>"
+    }
+  }
+}
