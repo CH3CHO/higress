@@ -1,0 +1,21 @@
+plugins/wasm-go/extensions/ai-proxy/provider/anthropic_messages.go
+  ai_agent 79
+plugins/wasm-go/extensions/ai-proxy/provider/bedrock_messages_test.go
+  s_cc0a22da3a62ae::t_91c44366e0cbdf 241-265
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.33-trip",
+  "base_commit_sha": "d047c2d64975cce7b4c09cf30a87b7dd47977c1c",
+  "prompts": {},
+  "sessions": {
+    "s_cc0a22da3a62ae": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f41a7-91ad-7582-87c5-1049d9a99597",
+        "model": "glm-5.2"
+      },
+      "human_author": "jkma <jkma@trip.com>"
+    }
+  }
+}
