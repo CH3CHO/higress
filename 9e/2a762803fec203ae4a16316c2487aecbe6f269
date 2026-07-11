@@ -1,0 +1,19 @@
+plugins/wasm-go/extensions/ai-cache/core.go
+  s_b81c65cfd87e7b::t_dc258ac5b74857 240-245
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.33-trip",
+  "base_commit_sha": "9e2a762803fec203ae4a16316c2487aecbe6f269",
+  "prompts": {},
+  "sessions": {
+    "s_b81c65cfd87e7b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "daa1d278-a35a-48cd-9159-acb63668b4c3",
+        "model": "MiniMax-M2.7"
+      },
+      "human_author": "CH3CHO <ch3cho@qq.com>"
+    }
+  }
+}
