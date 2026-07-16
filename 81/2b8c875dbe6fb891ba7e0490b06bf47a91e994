@@ -1,0 +1,20 @@
+plugins/wasm-go/extensions/bot-detect/.buildrc
+  h_eb3d1210109a84 1
+plugins/wasm-go/extensions/custom-response/.buildrc
+  h_eb3d1210109a84 1
+plugins/wasm-go/extensions/basic-auth/.buildrc
+  h_eb3d1210109a84 1
+plugins/wasm-go/extensions/sni-misdirect/.buildrc
+  h_eb3d1210109a84 1
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.34-trip",
+  "base_commit_sha": "812b8c875dbe6fb891ba7e0490b06bf47a91e994",
+  "prompts": {},
+  "humans": {
+    "h_eb3d1210109a84": {
+      "author": "CH3CHO <ch3cho@qq.com>"
+    }
+  }
+}
